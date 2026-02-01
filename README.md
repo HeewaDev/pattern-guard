@@ -2,7 +2,7 @@
 
 **Behavior anomaly guard for applications.**
 
-Pattern-Guard is a Rust-native behavior anomaly guard that detects and controls unusual application behavior before it becomes a problem.
+Pattern-Guard is a Rust-native behavior anomaly guard that detects unusual application behavior and recommends allow/warn/delay/block decisions—a signal generator, not a gatekeeper.
 
 - **Repository:** `pattern-guard`  
 
@@ -272,4 +272,4 @@ cargo run --example repetition_demo
 
 Use this everywhere (docs, crates.io, talks):
 
-> **Pattern-Guard is a Rust-native behavior anomaly guard that detects and controls unusual application behavior before it becomes a problem.**
+> **Pattern-Guard is a Rust-native behavior anomaly guard that detects unusual application behavior and recommends allow/warn/delay/block decisions—a signal generator, not a gatekeeper.**
