@@ -1,0 +1,24 @@
+[package]
+name = "pattern-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Behavior anomaly guard: observes events, detects patterns, recommends allow/warn/delay/block"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/heewadev/pattern-guard"
+
+[lib]
+name = "pattern_guard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pattern-guard"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
