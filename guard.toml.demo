@@ -1,0 +1,15 @@
+# Stricter config for demos: burst_max_events = 3, short window.
+# Run: cargo run -- --config guard.toml.demo -- true
+# 1–3 runs = Allow; 4+ = Warn then Delay then Block.
+
+[guard]
+window_secs = 60
+burst_max_events = 3
+repetition_max_count = 10
+hopping_max_targets = 50
+weight_max_total = 1000.0
+risk_combine = "max"
+allow_below = 0.3
+warn_below = 0.6
+delay_below = 0.85
+delay_secs = 2.0

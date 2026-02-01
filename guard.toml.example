@@ -1,0 +1,33 @@
+# Pattern-Guard example config
+# Copy to guard.toml and adjust. See docs/CONFIG.md for schema.
+
+[guard]
+# Default sliding window (seconds)
+window_secs = 300
+
+# Pattern thresholds
+burst_max_events = 100
+repetition_max_count = 10
+hopping_max_targets = 50
+weight_max_total = 1000.0
+
+# Fixed-interval detection (optional); omit to disable
+interval_secs = 2.0
+interval_tolerance_ratio = 0.2
+
+# How to combine per-pattern risk: "max" or "weighted_sum"
+risk_combine = "max"
+
+# Risk → decision bands (risk in [0, 1])
+allow_below = 0.3
+warn_below = 0.6
+delay_below = 0.85
+delay_secs = 5.0
+
+# Per-entity overrides (optional)
+[guard.actors."service:cron"]
+burst_max_events = 5
+window_secs = 60
+
+[guard.actors."ip:10.0.0.1"]
+burst_max_events = 200

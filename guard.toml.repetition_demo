@@ -1,0 +1,15 @@
+# Repetition demo: same (action, target) repeated.
+# Run: cargo run --example repetition_demo
+# 1–3 same events = Allow; 4+ = Warn then Delay then Block.
+
+[guard]
+window_secs = 60
+burst_max_events = 100
+repetition_max_count = 3
+hopping_max_targets = 50
+weight_max_total = 1000.0
+risk_combine = "max"
+allow_below = 0.3
+warn_below = 0.6
+delay_below = 0.85
+delay_secs = 2.0
