@@ -5,7 +5,7 @@
 Pattern-Guard is a Rust-native behavior anomaly guard that detects and controls unusual application behavior before it becomes a problem.
 
 - **Repository:** `pattern-guard`  
-- **Crate:** `pattern-guard`
+
 
 ---
 
