@@ -68,7 +68,7 @@ Event → Observe → Analyze Pattern → Risk Score → Decision (allow / warn 
 ```
 
 - Pattern-Guard is **stateless from the outside**, but **stateful internally**.
-- It maintains **short-lived behavioral memory**, not permanent logs.
+- It maintains **short-lived behavioral memory**, not permanent logs at least for now.
 - It **recommends** a decision; it does **not** enforce. Callers act on the decision.
 
 ---
