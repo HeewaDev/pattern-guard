@@ -266,10 +266,4 @@ cargo run --example repetition_demo
 
 `RUST_LOG=info` turns on log output for warn/delay/block.
 
----
 
-## One-Sentence Definition
-
-Use this everywhere (docs, crates.io, talks):
-
-> **Pattern-Guard is a Rust-native behavior anomaly guard that detects unusual application behavior and recommends allow/warn/delay/block decisions—a signal generator, not a gatekeeper.**
