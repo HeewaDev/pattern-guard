@@ -7,12 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target = "/api/foo";
 
     for i in 1..=8 {
-        let event = pattern_guard::Event::new(
-            "demo",
-            action,
-            target,
-            std::time::SystemTime::now(),
-        );
+        let event = pattern_guard::Event::new("demo", action, target, std::time::SystemTime::now());
         let (decision, risk) = guard.check_with_risk(&event);
         println!("  {}: risk = {:.2}  ->  {:?}", i, risk, decision);
     }

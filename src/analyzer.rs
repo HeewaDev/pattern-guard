@@ -1,6 +1,6 @@
 //! Risk from patterns; combined via max or weighted_sum.
 
-use crate::config::EffectiveConfig;
+use crate::config::{EffectiveConfig, RiskCombine};
 use crate::event::Event;
 
 pub fn burst_risk(count: usize, max_events: u32) -> f64 {
@@ -17,7 +17,11 @@ pub fn compute_risk(events: &[Event], config: &EffectiveConfig) -> f64 {
     let repetition = repetition_risk(events, config.repetition_max_count);
     let hopping = hopping_risk(events, config.hopping_max_targets);
     let weight = weighted_risk(events, config.weight_max_total);
-    let interval = interval_risk(events, config.interval_secs, config.interval_tolerance_ratio);
+    let interval = interval_risk(
+        events,
+        config.interval_secs,
+        config.interval_tolerance_ratio,
+    );
     combine_risk(&[burst, repetition, hopping, weight, interval], config)
 }
 
@@ -26,9 +30,11 @@ fn combine_risk(risks: &[f64], config: &EffectiveConfig) -> f64 {
     if effective.is_empty() {
         return 0.0;
     }
-    match config.risk_combine.as_str() {
-        "weighted_sum" => (effective.iter().sum::<f64>() / effective.len() as f64).min(1.0),
-        _ => effective.into_iter().fold(0.0_f64, f64::max),
+    match config.risk_combine {
+        RiskCombine::WeightedSum => {
+            (effective.iter().sum::<f64>() / effective.len() as f64).min(1.0)
+        }
+        RiskCombine::Max => effective.into_iter().fold(0.0_f64, f64::max),
     }
 }
 
@@ -36,7 +42,9 @@ pub fn repetition_risk(events: &[Event], max_count: u32) -> f64 {
     use std::collections::HashMap;
     let mut counts: HashMap<(String, String), usize> = HashMap::new();
     for e in events {
-        *counts.entry((e.action.clone(), e.target.clone())).or_default() += 1;
+        *counts
+            .entry((e.action.clone(), e.target.clone()))
+            .or_default() += 1;
     }
     let max = counts.values().copied().max().unwrap_or(0);
     let n = max_count as usize;
@@ -74,7 +82,11 @@ pub fn interval_risk(events: &[Event], expected_secs: Option<f64>, tolerance_rat
     }
     let mut timestamps: Vec<std::time::Duration> = events
         .iter()
-        .map(|e| e.timestamp.duration_since(std::time::UNIX_EPOCH).unwrap_or_default())
+        .map(|e| {
+            e.timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+        })
         .collect();
     timestamps.sort();
     let gaps: Vec<f64> = timestamps
@@ -93,6 +105,7 @@ pub fn interval_risk(events: &[Event], expected_secs: Option<f64>, tolerance_rat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RiskCombine;
     use std::time::UNIX_EPOCH;
 
     fn default_config() -> EffectiveConfig {
@@ -104,7 +117,7 @@ mod tests {
             weight_max_total: 100.0,
             interval_secs: None,
             interval_tolerance_ratio: 0.2,
-            risk_combine: "max".into(),
+            risk_combine: RiskCombine::Max,
             allow_below: 0.3,
             warn_below: 0.6,
             delay_below: 0.85,
@@ -162,5 +175,75 @@ mod tests {
             .collect();
         let risk = compute_risk(&events, &config);
         assert!(risk > 0.0);
+    }
+
+    #[test]
+    fn interval_risk_high_when_regular() {
+        let t0 = UNIX_EPOCH;
+        let t1 = t0 + std::time::Duration::from_secs(10);
+        let t2 = t1 + std::time::Duration::from_secs(10);
+        let events = vec![
+            Event::new("a", "x", "y", t0),
+            Event::new("a", "x", "y", t1),
+            Event::new("a", "x", "y", t2),
+        ];
+        let r = interval_risk(&events, Some(10.0), 0.2);
+        assert!(r > 0.9, "regular 10s gaps should score high, got {}", r);
+    }
+
+    #[test]
+    fn interval_risk_zero_when_irregular() {
+        let events = vec![
+            Event::new("a", "x", "y", UNIX_EPOCH),
+            Event::new(
+                "a",
+                "x",
+                "y",
+                UNIX_EPOCH + std::time::Duration::from_secs(3),
+            ),
+            Event::new(
+                "a",
+                "x",
+                "y",
+                UNIX_EPOCH + std::time::Duration::from_secs(100),
+            ),
+        ];
+        let r = interval_risk(&events, Some(10.0), 0.2);
+        assert!(r < 0.5, "irregular gaps should score lower, got {}", r);
+    }
+
+    #[test]
+    fn interval_risk_disabled_without_expected() {
+        let events = vec![
+            Event::new("a", "x", "y", UNIX_EPOCH),
+            Event::new(
+                "a",
+                "x",
+                "y",
+                UNIX_EPOCH + std::time::Duration::from_secs(10),
+            ),
+        ];
+        assert_eq!(interval_risk(&events, None, 0.2), 0.0);
+    }
+
+    #[test]
+    fn weighted_sum_averages_nonzero_risks() {
+        let mut c = default_config();
+        c.risk_combine = RiskCombine::WeightedSum;
+        c.burst_max_events = 5;
+        c.repetition_max_count = 2;
+        let events: Vec<Event> = (0..8)
+            .map(|_| Event::new("a", "GET", "/same", UNIX_EPOCH))
+            .collect();
+        let risk = compute_risk(&events, &c);
+        let burst = burst_risk(events.len(), c.burst_max_events);
+        let rep = repetition_risk(&events, c.repetition_max_count);
+        let expected = ((burst + rep) / 2.0).min(1.0);
+        assert!(
+            (risk - expected).abs() < 1e-9,
+            "risk {} expected ~{}",
+            risk,
+            expected
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "pattern-guard"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Behavior anomaly guard: observes events, detects patterns, recommends allow/warn/delay/block"
@@ -20,5 +20,12 @@ path = "src/main.rs"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "2"
-anyhow = "1"
 log = "0.4"
+lru = "0.12"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "check_bench"
+harness = false

@@ -24,6 +24,9 @@ warn_below = 0.6
 delay_below = 0.85
 delay_secs = 5.0
 
+# Optional: cap distinct actors in memory (LRU eviction). Omit = unbounded.
+# max_actors = 10000
+
 # Per-entity overrides (optional)
 [guard.actors."service:cron"]
 burst_max_events = 5

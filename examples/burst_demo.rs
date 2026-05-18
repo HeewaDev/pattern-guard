@@ -11,12 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::time::SystemTime::now(),
         );
         let (decision, risk) = guard.check_with_risk(&event);
-        println!(
-            "  {}: risk = {:.2}  ->  {:?}",
-            i,
-            risk,
-            decision
-        );
+        println!("  {}: risk = {:.2}  ->  {:?}", i, risk, decision);
     }
 
     Ok(())

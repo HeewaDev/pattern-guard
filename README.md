@@ -167,7 +167,10 @@ Either: continue | delay | block
 
 ```bash
 pattern-guard --config guard.toml -- my_script.sh
+# equivalent: pattern-guard --config guard.toml my_script.sh
 ```
+
+Unknown flags (other than `--config`, `--repeat`, and `--`) cause a non-zero exit with an error message.
 
 - Observes command behavior  
 - Helps prevent runaway scripts  

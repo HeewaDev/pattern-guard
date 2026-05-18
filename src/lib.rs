@@ -13,15 +13,15 @@
 //! ```
 //!
 
+mod analyzer;
 pub mod config;
 pub mod decision;
 pub mod error;
 pub mod event;
 pub mod guard;
-mod analyzer;
 mod tracker;
 
-pub use config::Config;
+pub use config::{Config, RiskCombine};
 pub use decision::Decision;
 pub use error::Error;
 pub use event::Event;
