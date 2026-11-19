@@ -8,6 +8,9 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/heewadev/pattern-guard"
 
+[workspace]
+members = ["gateway"]
+
 [lib]
 name = "pattern_guard"
 path = "src/lib.rs"
