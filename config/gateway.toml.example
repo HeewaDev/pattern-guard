@@ -135,3 +135,16 @@ max_query_args = 512          # else 400
 block_null_bytes = true       # %00 in the target → 400
 require_host = true
 restricted_extensions = []    # e.g. [".bak", ".old", ".sql", ".swp", ".env", ".git"] → 403
+
+# ---- Security headers on responses (only set when your app hasn't set them).
+# An empty string disables a default.
+[response_headers]
+enabled = true
+content_type_options = "nosniff"
+frame_options = "SAMEORIGIN"
+referrer_policy = "strict-origin-when-cross-origin"
+strict_transport_security = ""     # e.g. "max-age=31536000; includeSubDomains" when served over HTTPS
+content_security_policy = ""       # e.g. "default-src 'self'"
+permissions_policy = ""
+cross_origin_opener_policy = ""
+remove = ["server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version"]

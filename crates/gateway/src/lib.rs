@@ -7,6 +7,7 @@
 
 pub mod challenge;
 pub mod config;
+pub mod hardening;
 pub mod intel;
 pub mod ipnet;
 pub mod observability;
@@ -74,6 +75,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         rate_limiter: policy::rate_limit::RateLimiter::compile(&cfg.rate_limits)?,
         bans: policy::bans::Bans::new(cfg.bans.clone(), cfg.traps.clone()),
         protocol: policy::protocol::Protocol::new(cfg.protocol.clone()),
+        security_headers: hardening::headers::SecurityHeaders::new(&cfg.response_headers)?,
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),

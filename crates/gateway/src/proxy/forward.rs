@@ -124,6 +124,7 @@ pub(super) async fn forward(
             let status = resp.status().as_u16();
             let (mut rp, b) = resp.into_parts();
             strip_hop_by_hop(&mut rp.headers);
+            state.security_headers.apply(&mut rp.headers);
             (Response::from_parts(rp, b.boxed()), status)
         }
         Ok(Err(e)) => {

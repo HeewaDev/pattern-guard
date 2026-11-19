@@ -687,3 +687,15 @@ async fn protocol_enforcement_uses_the_right_status_codes() {
         m.body
     );
 }
+
+#[tokio::test]
+async fn responses_get_security_headers() {
+    let gw =
+        start_gateway("[response_headers]\ncontent_security_policy = \"default-src 'self'\"\n")
+            .await;
+    let r = send(gw.addr, "GET", "/", &[], "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers["x-content-type-options"], "nosniff");
+    assert_eq!(r.headers["x-frame-options"], "SAMEORIGIN");
+    assert_eq!(r.headers["content-security-policy"], "default-src 'self'");
+}

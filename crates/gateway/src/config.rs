@@ -77,6 +77,9 @@ pub struct GatewayConfig {
     /// HTTP protocol enforcement (methods, sizes, null bytes, restricted extensions).
     #[serde(default)]
     pub protocol: ProtocolConfig,
+    /// Security headers added to (and fingerprinting headers removed from) responses.
+    #[serde(default)]
+    pub response_headers: ResponseHeadersConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -370,6 +373,60 @@ impl Default for ProtocolConfig {
     fn default() -> Self {
         toml::from_str("").unwrap()
     }
+}
+
+/// Security headers set on upstream responses when the app hasn't set them itself.
+/// An empty string disables a default.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseHeadersConfig {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    #[serde(default = "d_nosniff")]
+    pub content_type_options: String,
+    #[serde(default = "d_frame")]
+    pub frame_options: String,
+    #[serde(default = "d_referrer")]
+    pub referrer_policy: String,
+    /// e.g. `max-age=31536000; includeSubDomains` (only when the site is served over HTTPS).
+    #[serde(default)]
+    pub strict_transport_security: String,
+    #[serde(default)]
+    pub content_security_policy: String,
+    #[serde(default)]
+    pub permissions_policy: String,
+    #[serde(default)]
+    pub cross_origin_opener_policy: String,
+    /// Response headers to strip (server fingerprinting).
+    #[serde(default = "d_remove_headers")]
+    pub remove: Vec<String>,
+}
+
+impl Default for ResponseHeadersConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+fn d_nosniff() -> String {
+    "nosniff".into()
+}
+fn d_frame() -> String {
+    "SAMEORIGIN".into()
+}
+fn d_referrer() -> String {
+    "strict-origin-when-cross-origin".into()
+}
+fn d_remove_headers() -> Vec<String> {
+    [
+        "server",
+        "x-powered-by",
+        "x-aspnet-version",
+        "x-aspnetmvc-version",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 fn d_methods() -> Vec<String> {
