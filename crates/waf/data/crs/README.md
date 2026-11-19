@@ -12,8 +12,11 @@ These files are copied unchanged from the OWASP CRS project:
 | `lfi-os-files.data` | OS / application files that path-traversal attacks try to read |
 | `restricted-files.data` | Files a client should never request directly (VCS, configs, backups) |
 | `unix-shell.data` | Unix shells, binaries and shell variables used in command injection |
+| `unix-shell-builtins.data` | Shell builtins, recognised as command names by the shell analyser |
 | `php-function-names-933150.data` | High-risk PHP function names |
 | `java-classes.data` | Java classes abused in deserialization / expression-injection attacks |
 
 Pattern-Guard reads them at build time (`include_str!`) and matches them with
-Aho-Corasick; see `crates/waf/src/lexicon.rs` for how each list is scored.
+Aho-Corasick; see `crates/waf/src/lexicon.rs` for how each list is scored. `unix-shell.data`
+(`bin/…` entries) and `unix-shell-builtins.data` also feed the command names of
+`crates/waf/src/shell.rs`.

@@ -8,6 +8,7 @@ use crate::decode::{base64_variants, decode, decode_keep_case, percent_decode};
 use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
 use crate::lexicon::Lexicons;
+use crate::shell::Shell;
 
 /// One suspicious value.
 #[derive(Debug, Clone)]
@@ -54,6 +55,7 @@ pub struct Inspector {
     comments: Regex,
     lookups: Regex,
     lexicons: Lexicons,
+    shell: Shell,
     /// Findings below this score are dropped.
     pub min_score: f64,
     /// Longest value inspected (bytes); longer values are truncated.
@@ -79,6 +81,7 @@ impl Inspector {
                 .map(|i| matches!(i.class, JndiInjection | JavaInjection))
                 .collect(),
             lexicons: Lexicons::new(),
+            shell: Shell::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
             // Log4j lookup obfuscation: ${lower:j} ${upper:j} ${::-j} ${env:X:-j} → j
             lookups: Regex::new(r"\$\{\s*(?:lower|upper|::-|[a-z]*:[^:}$]*:-)\s*:?([^}$]*)\}")
@@ -130,7 +133,8 @@ impl Inspector {
             decoded.clone(),
         ];
         // Payloads hidden in base64 (whole values or fragments).
-        variants.extend(base64_variants(&decode_keep_case(raw, form)));
+        let kept_case = decode_keep_case(raw, form);
+        variants.extend(base64_variants(&kept_case));
         for v in &variants {
             for idx in self.set.matches(v).into_iter() {
                 if jndi_only && !self.jndi_only[idx] {
@@ -152,6 +156,12 @@ impl Inspector {
             }
         }
         if !jndi_only {
+            // Shell commands: newlines kept, they separate commands.
+            if location != "path" {
+                for (name, w) in self.shell.scan(&kept_case.to_lowercase()) {
+                    add(CommandInjection, name, w);
+                }
+            }
             // Binary upload bodies legitimately contain NUL bytes; parameters never should.
             if location != "body"
                 && (decoded.contains('\0') || raw.to_ascii_lowercase().contains("%00"))

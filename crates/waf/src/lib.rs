@@ -14,6 +14,7 @@ mod decode;
 mod indicators;
 mod inspect;
 mod lexicon;
+mod shell;
 
 pub use decode::decode;
 pub use indicators::AttackClass;
