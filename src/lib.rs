@@ -23,6 +23,7 @@ pub mod error;
 pub mod event;
 pub mod features;
 pub mod guard;
+pub mod logs;
 pub mod model;
 pub mod normalize;
 mod stats;
