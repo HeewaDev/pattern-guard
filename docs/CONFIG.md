@@ -89,4 +89,4 @@ burst_max_events = 5
 window_secs = 60
 ```
 
-Full example: [guard.toml.example](../guard.toml.example)
+Full example: [config/guard.toml.example](../config/guard.toml.example)

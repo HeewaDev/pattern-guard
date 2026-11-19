@@ -4,13 +4,40 @@
 
 | Component | Crate / path | What it is |
 |---|---|---|
-| Detection engine | `pattern-guard` (`src/`) | Library: behavioural ML (`features.rs`, `model.rs`, `guard.rs`), WAF (`waf.rs`), optional threshold rules (`tracker.rs`, `analyzer.rs`), log parsing (`logs.rs`) |
-| CLI | `pattern-guard` binary (`src/main.rs`) | `replay` logs, `train` models, wrap commands |
-| Gateway | `pattern-guard-gateway` (`gateway/`) | Reverse proxy that runs the engine on live traffic and enforces decisions |
-| Evaluation | `examples/` | Traffic simulator, `realworld_eval`, `waf_eval`, `gen_traffic`; `gateway/examples/loadtest.rs` |
+| Behavioural engine | `pattern-guard` (`crates/engine`) | Library: `ml/` (features, model), `rules/` (optional thresholds), `util/` (route templating, decayed counters), `guard.rs`, `config.rs`, `logs.rs`; re-exports the WAF as `pattern_guard::waf` |
+| WAF | `pattern-guard-waf` (`crates/waf`) | Payload inspection: `decode` (normalisation), `indicators` (attack signatures), `inspect` (request walking, scoring) |
+| CLI | `pattern-guard-cli` (`crates/cli`, binary `pattern-guard`) | `replay` logs, `train` models, wrap commands |
+| Gateway | `pattern-guard-gateway` (`crates/gateway`) | Reverse proxy: `proxy/`, `challenge/`, `intel/`, `observability/`; runs the engines on live traffic and enforces decisions |
+| Evaluation | `pattern-guard-eval` (`tools/eval`, unpublished) | Traffic simulator, `realworld_eval`, `gen_traffic`, `waf_eval`, `crs_eval`; plus `crates/gateway/examples/loadtest.rs` |
 
-The engine has no network or async dependencies, so it can be embedded anywhere: an axum
-middleware, a CLI, a log pipeline. The gateway is one consumer of it.
+The engine and WAF have no network or async dependencies, so they can be embedded anywhere: an
+axum middleware, a CLI, a log pipeline. The gateway is one consumer of them.
+
+## Project layout
+
+```
+crates/
+  engine/    pattern-guard          behavioural engine library
+             src/ml/                  streaming features, explainable model, built-in model
+             src/rules/               optional threshold rules
+             src/util/                route templating, decayed counters
+             src/{guard,config,event,logs}.rs
+  waf/       pattern-guard-waf      payload inspection: decode · indicators · inspect
+  cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
+  gateway/   pattern-guard-gateway  reverse proxy
+             src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
+             src/challenge/           proof-of-work challenge (+ page.html)
+             src/intel/               reputation store, CrowdSec bouncer, Suricata/Wazuh feeds
+             src/observability/       metrics, JSON decision log, API inventory
+tools/
+  eval/      pattern-guard-eval     simulator + realworld_eval, gen_traffic, waf_eval, crs_eval
+config/      example configs (guard.toml, gateway.toml) and demo/ configs
+scripts/     extract_crs_tests.py (OWASP CRS regression tests → JSONL)
+docs/        documentation
+```
+
+One crate per product area, feature folders inside each crate. Dependencies point one way:
+`waf` ← `engine` ← `cli`, `gateway`, `tools/eval`.
 
 ## Request lifecycle (gateway)
 

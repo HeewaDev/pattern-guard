@@ -12,7 +12,7 @@ Paths below refer to those repositories. Items marked *unverified* were not conf
 
 ## 1. Where we stand: CRS regression benchmark
 
-`examples/crs_eval.rs` runs CRS's own regression tests through our WAF
+`tools/eval/src/bin/crs_eval.rs` runs CRS's own regression tests through our WAF
 (`scripts/extract_crs_tests.py` extracts them; 5 247 tests, of which 3 730 are attack
 requests in categories 930–944).
 

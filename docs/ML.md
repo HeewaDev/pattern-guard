@@ -38,7 +38,7 @@ signal's contribution in log-odds; the top ones are returned as `Assessment::rea
 diff and version. Inference is a 28-term dot product (whole `assess` ≈ 2 µs).
 
 The **built-in model** is trained on 3 hours of synthetic traffic from
-`examples/common/sim.rs` (`gen_traffic --seed 101 --hours 3`). It is a reasonable starting
+`tools/eval/src/sim.rs` (`cargo run -p pattern-guard-eval --bin gen_traffic -- --seed 101 --hours 3`). It is a reasonable starting
 point, not a substitute for your own data.
 
 ## 3. Train on your own traffic
@@ -75,7 +75,7 @@ point, not a substitute for your own data.
 Without labels you can still replay plain nginx/Apache logs to see what *would* be
 flagged and why: `pattern-guard replay access.log`.
 
-## 4. Results on synthetic traffic (`cargo run --release --example realworld_eval`)
+## 4. Results on synthetic traffic (`cargo run --release -p pattern-guard-eval --bin realworld_eval`)
 
 One simulated site, 60 minutes, ~260 000 requests: shoppers, an office NAT, casual visitors,
 a 2-second polling dashboard, a partner API, a mobile app, uptime monitors, a viral spike

@@ -20,11 +20,11 @@ go around the gateway.
 ## 1. Build
 
 ```bash
-cargo build --release -p pattern-guard-gateway -p pattern-guard
+cargo build --release -p pattern-guard-gateway -p pattern-guard-cli
 sudo install -m 0755 target/release/pattern-guard-gateway target/release/pattern-guard /usr/local/bin/
 sudo mkdir -p /etc/pattern-guard /var/log/pattern-guard
-sudo cp gateway.toml.example /etc/pattern-guard/gateway.toml
-sudo cp guard.toml.example   /etc/pattern-guard/guard.toml      # optional, ML tuning
+sudo cp config/gateway.toml.example /etc/pattern-guard/gateway.toml
+sudo cp config/guard.toml.example   /etc/pattern-guard/guard.toml      # optional, ML tuning
 ```
 
 Edit `/etc/pattern-guard/gateway.toml`:
@@ -166,7 +166,7 @@ block_secs = 3600
 ## 6. Sizing
 
 - One instance did about 32,000 fully inspected req/s on 4 vCPU that it shared with the
-  load generator and the upstream (`gateway/examples/loadtest.rs`). Measure on your own
+  load generator and the upstream (`crates/gateway/examples/loadtest.rs`). Measure on your own
   hardware and traffic mix.
 - Memory is bounded by the LRU caps (`max_actors`, `adaptive.max_routes`,
   `max_fingerprints`, `max_subnets`), plus request buffers up to `max_body_bytes` per

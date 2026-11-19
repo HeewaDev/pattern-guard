@@ -28,16 +28,16 @@ re-verified line by line.
 
 | # | Feature | open-appsec edition | Pattern-Guard | Where / next step |
 |---|---|---|---|---|
-| 1.1 | ML-based WAF for web apps & APIs (OWASP Top 10, zero-day) | Community | 🧪 behavioural ML (`src/features.rs`, `src/model.rs`) · 🧪 payload scoring engine (`src/waf.rs`, see §3) | Raise hold-out SQLi / LFI / command-injection detection; validate on a labelled real dataset |
+| 1.1 | ML-based WAF for web apps & APIs (OWASP Top 10, zero-day) | Community | 🧪 behavioural ML (`crates/engine/src/ml/`) · 🧪 payload scoring engine (`crates/waf`, see §3) | Raise hold-out SQLi / LFI / command-injection detection; validate on a labelled real dataset |
 | 1.2 | Supervised model trained offline on malicious/benign requests | Community (basic) / Production (advanced) | 🧪 behaviour model trained via `pattern-guard train` · ⬜ supervised *payload* model | Train a payload classifier on top of `waf.rs` indicators |
 | 1.3 | Unsupervised model learned in the protected environment | Community | 🧪 per-route learned baselines (rate, failures, new clients) · ⬜ per-parameter value profiles (length, charset, type) | Add per-route/param profiles to `waf.rs` |
-| 1.4 | Two-phase evaluation: attack indicators → contextual scoring | Community | ✅ WAF indicators + behavioural risk + reputation fused into one decision (`gateway/src/proxy.rs`) | |
-| 1.5 | Request decoding, JSON/XML extraction | Community | ✅ multi-pass URL/`%u`/HTML/JS decoding, SQL comments, JSON walk, form, XML/text (`src/waf.rs`) | Add multipart part-by-part parsing |
-| 1.6 | IPS engine (Snort 3.0 signatures) | Community | 🔌✅ Suricata alongside; gateway tails `eve.json` and blocks alerting IPs (`gateway/src/feeds.rs`, e2e-tested) | |
+| 1.4 | Two-phase evaluation: attack indicators → contextual scoring | Community | ✅ WAF indicators + behavioural risk + reputation fused into one decision (`crates/gateway/src/proxy/`) | |
+| 1.5 | Request decoding, JSON/XML extraction | Community | ✅ multi-pass URL/`%u`/HTML/JS decoding, SQL comments, JSON walk, form, XML/text (`crates/waf`) | Add multipart part-by-part parsing |
+| 1.6 | IPS engine (Snort 3.0 signatures) | Community | 🔌✅ Suricata alongside; gateway tails `eve.json` and blocks alerting IPs (`crates/gateway/src/intel/feeds.rs`, e2e-tested) | |
 | 1.7 | Automatic IPS signature updates | Premium | 🔌 via Suricata-update / ET Open | Document |
 | 1.8 | Behavioural anti-bot | Premium | 🧪 behaviour ML + bot score 1–99 · ✅ proof-of-work challenge with IP-bound HMAC cookie (verified in real headless Chromium: solved in 142 ms; curl stays blocked) | Verified good bots (2.4) |
 | 1.9 | API schema enforcement (OpenAPI) | Premium | ⬜ | Load OpenAPI spec; validate method/path/params/body types per route template |
-| 1.10 | Block malicious IPs (ThreatCloud reputation) | Enterprise | 🔌✅ CrowdSec bouncer: community blocklist + local decisions, ban → block, captcha → challenge (`gateway/src/crowdsec.rs`, tested against a mock LAPI) | Test against a live CrowdSec |
+| 1.10 | Block malicious IPs (ThreatCloud reputation) | Enterprise | 🔌✅ CrowdSec bouncer: community blocklist + local decisions, ban → block, captcha → challenge (`crates/gateway/src/intel/crowdsec.rs`, tested against a mock LAPI) | Test against a live CrowdSec |
 | 1.11 | Block anonymizers & Tor | Enterprise | ⬜ | Load Tor exit list + VPN/hosting ASN lists as features/blocks |
 | 1.12 | IP-level access control on every request | Community | ✅ allow / deny / challenge CIDR lists, trusted-proxy client-IP resolution | |
 | 1.13 | CrowdSec integration | Community | ✅ (as bouncer) · ⬜ push our decisions to CrowdSec (`POST /v1/alerts`) | |
@@ -59,7 +59,7 @@ re-verified line by line.
 
 | # | Capability | Pattern-Guard | Notes |
 |---|---|---|---|
-| 2.1 | WAF with managed signatures | 🧪 `src/waf.rs` scoring engine, 9 attack classes · ⬜ optional Coraza + OWASP CRS second opinion | |
+| 2.1 | WAF with managed signatures | 🧪 `crates/waf` scoring engine, 9 attack classes · ⬜ optional Coraza + OWASP CRS second opinion | |
 | 2.2 | Custom security rules | ✅ rule thresholds, WAF path/param exclusions, IP lists · ⬜ per-route custom match rules | |
 | 2.3 | Virtual patching | ⬜ | Custom rules per route template |
 | 2.4 | Advanced bot protection | 🧪 behaviour ML, fingerprints · 🚧 challenge · ⬜ verified good bots (reverse DNS), headless-browser signals | |
@@ -102,12 +102,12 @@ re-verified line by line.
 
 | # | Item | Status |
 |---|---|---|
-| 3.1 | Behaviour ML on synthetic mixed traffic (incl. unseen attacks) | 🧪 ~0.3% FP / ~98.5% detection (`examples/realworld_eval.rs`) |
-| 3.2a | WAF, own corpus (`tests/waf_corpus.rs`, tuned against) | 🧪 75/77 attacks blocked, 0/62 tricky benign blocked |
+| 3.1 | Behaviour ML on synthetic mixed traffic (incl. unseen attacks) | 🧪 ~0.3% FP / ~98.5% detection (`tools/eval/src/bin/realworld_eval.rs`) |
+| 3.2a | WAF, own corpus (`crates/waf/tests/corpus.rs`, tuned against) | 🧪 75/77 attacks blocked, 0/62 tricky benign blocked |
 | 3.2b | WAF, PayloadsAllTheThings (MIT) + benign: 4.9k names, 10k words, 2.1k doc lines with code, 2.1k user agents (used to fix *categories*) | 🧪 85.4% of 1 380 attacks blocked · **0 of 19 215** benign blocked |
-| 3.2c | WAF hold-out, never tuned on: SecLists / fuzzdb (`waf_eval` example) | 🧪 XSS 83–94%, SQLi 50%, LFI 29%, commix command injection 24% — **the real gap** |
-| 3.2d | **WAF on the OWASP CRS regression tests** (3 730 attack requests, never tuned on; `examples/crs_eval.rs`) | 🧪 **11.8 % blocked overall**: XSS 35 %, SQLi 20 %, LFI 24 %, RCE 9 %, PHP 1.8 %, Java 6.6 %. The main gap; see [RESEARCH.md](RESEARCH.md) |
+| 3.2c | WAF hold-out, never tuned on: SecLists / fuzzdb (`waf_eval` tool) | 🧪 XSS 83–94%, SQLi 50%, LFI 29%, commix command injection 24% — **the real gap** |
+| 3.2d | **WAF on the OWASP CRS regression tests** (3 730 attack requests, never tuned on; `tools/eval/src/bin/crs_eval.rs`) | 🧪 **11.8 % blocked overall**: XSS 35 %, SQLi 20 %, LFI 24 %, RCE 9 %, PHP 1.8 %, Java 6.6 %. The main gap; see [RESEARCH.md](RESEARCH.md) |
 | 3.2e | Zero-day-style PHP code execution (PHP tags + OS command in a multipart field such as `PHP_SESSION_UPLOAD_PROGRESS`) | ⬜ only logged (score 4), not blocked |
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
-| 3.4 | Performance under load | 🧪 ~32 000 req/s, p99 ≈ 3 ms through the gateway (4 vCPU shared with client and upstream, `gateway/examples/loadtest.rs`) · ⬜ shard the engine lock |
+| 3.4 | Performance under load | 🧪 ~32 000 req/s, p99 ≈ 3 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`) · ⬜ shard the engine lock |
 | 3.5 | End-to-end gateway tests | ✅ 9 tests over real TCP: WAF, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints |

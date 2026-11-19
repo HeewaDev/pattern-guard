@@ -57,7 +57,7 @@ Run detect mode on your own traffic before enforcing.
 
 ```bash
 cargo build --release -p pattern-guard-gateway
-cp gateway.toml.example gateway.toml        # set `upstream = "http://127.0.0.1:3000"`
+cp config/gateway.toml.example gateway.toml        # set `upstream = "http://127.0.0.1:3000"`
 ./target/release/pattern-guard-gateway --config gateway.toml --check
 ./target/release/pattern-guard-gateway --config gateway.toml
 ```
@@ -79,7 +79,7 @@ let status = handle(request);
 guard.observe_response(&event, status);
 ```
 
-Payload inspection on its own: `pattern_guard::waf::Inspector::new().inspect(&request)`.
+Payload inspection on its own: the `pattern-guard-waf` crate (`Inspector::new().inspect(&request)`), also re-exported as `pattern_guard::waf`.
 
 ## Test on your own logs
 
@@ -93,7 +93,7 @@ cargo build --release
 
 ## How it works
 
-**WAF** ([src/waf.rs](src/waf.rs)). Each value (path, query, form, JSON keys and values, XML,
+**WAF** ([crates/waf](crates/waf/src)). Each value (path, query, form, JSON keys and values, XML,
 cookies, user agent, referer, and every header for Log4Shell) is decoded the way servers
 and browsers would decode it: repeated URL-decoding, `%uXXXX`, HTML entities, JS escapes,
 SQL comments and Log4j lookups. It is then scored per attack class from weighted
@@ -126,11 +126,29 @@ rather than spoofable disguises.
 
 ## Layout
 
-| Path | |
+```
+crates/
+  engine/    pattern-guard          behavioural engine library
+             src/ml/                  streaming features, explainable model, built-in model
+             src/rules/               optional threshold rules
+             src/util/                route templating, decayed counters
+             src/{guard,config,event,logs}.rs
+  waf/       pattern-guard-waf      payload inspection: decode · indicators · inspect
+  cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
+  gateway/   pattern-guard-gateway  reverse proxy
+             src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
+             src/challenge/           proof-of-work challenge (+ page.html)
+             src/intel/               reputation store, CrowdSec bouncer, Suricata/Wazuh feeds
+             src/observability/       metrics, JSON decision log, API inventory
+tools/
+  eval/      pattern-guard-eval     simulator + realworld_eval, gen_traffic, waf_eval, crs_eval
+config/      example configs (guard.toml, gateway.toml) and demo/ configs
+scripts/     extract_crs_tests.py (OWASP CRS regression tests → JSONL)
+docs/        documentation
+```
+
+| Docs | |
 |---|---|
-| `src/` | `pattern-guard` library + CLI (`replay`, `train`, command wrapper) |
-| `gateway/` | `pattern-guard-gateway` reverse proxy |
-| `examples/` | `realworld_eval`, `gen_traffic`, `waf_eval`, `crs_eval`, demos |
 | `docs/` | [index](docs/README.md) · [RESEARCH](docs/RESEARCH.md) · [GATEWAY](docs/GATEWAY.md) · [DEPLOYMENT](docs/DEPLOYMENT.md) · [OPERATIONS](docs/OPERATIONS.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [ML](docs/ML.md) · [CONFIG](docs/CONFIG.md) · [USE-CASES](docs/USE-CASES.md) · [FEATURES](docs/FEATURES.md) · [ROADMAP (product plan)](docs/ROADMAP.md) |
 
 ## Why this project

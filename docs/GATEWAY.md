@@ -16,7 +16,7 @@ client ─► [TLS terminator / CDN] ─► pattern-guard-gateway ─► your ap
 
 ```bash
 cargo build --release -p pattern-guard-gateway
-cp gateway.toml.example gateway.toml          # set `upstream` to your app
+cp config/gateway.toml.example gateway.toml          # set `upstream` to your app
 ./target/release/pattern-guard-gateway --config gateway.toml --check
 ./target/release/pattern-guard-gateway --config gateway.toml
 ```
@@ -121,7 +121,7 @@ software on your server can absorb more traffic than its uplink carries.
 
 ## Performance
 
-`cargo run --release -p pattern-guard-gateway --example loadtest` (4 vCPU shared by load
+`cargo run --release -p pattern-guard-gateway --example loadtest` (`crates/gateway/examples/loadtest.rs`) (4 vCPU shared by load
 generator, gateway and upstream; every request fully inspected and proxied in detect mode):
 **~32 000 req/s, p50 ≈ 2 ms, p99 ≈ 3 ms**, against ~200 000 req/s for the bare upstream.
 The behavioural engine runs behind a single lock today; sharding it is the next

@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Project layout**: a virtual workspace with one crate per product area and
+  feature folders inside each: `crates/engine` (`pattern-guard`: `ml/`, `rules/`,
+  `util/`), `crates/waf` (`pattern-guard-waf`, new crate, re-exported as
+  `pattern_guard::waf`), `crates/cli` (`pattern-guard-cli`, binary `pattern-guard`),
+  `crates/gateway` (`proxy/`, `challenge/`, `intel/`, `observability/`), `tools/eval`
+  (simulator and benchmarks), `config/` (example and demo configs). Public Rust paths
+  are unchanged; commands now take `-p <crate>` (see README).
+
 ### Added
 
 - **`pattern-guard-gateway`** (new crate in `gateway/`): a reverse proxy that enforces

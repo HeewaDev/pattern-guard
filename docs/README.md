@@ -32,4 +32,4 @@
 
 ## Example configs
 
-[`gateway.toml.example`](../gateway.toml.example) · [`guard.toml.example`](../guard.toml.example)
+[`config/gateway.toml.example`](../config/gateway.toml.example) · [`config/guard.toml.example`](../config/guard.toml.example)
