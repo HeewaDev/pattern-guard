@@ -1,7 +1,7 @@
 //! Server- and browser-like decoding of inspected values.
 
-/// Decodes like a permissive server/browser would, then lowercases and collapses whitespace.
-pub fn decode(raw: &str, form: bool) -> String {
+/// URL / `%u` / HTML-entity / JS-escape decoding (repeated), keeping case and whitespace.
+pub(crate) fn decode_keep_case(raw: &str, form: bool) -> String {
     let mut s = raw.to_string();
     for _ in 0..4 {
         let next = percent_decode(&s, form);
@@ -12,6 +12,73 @@ pub fn decode(raw: &str, form: bool) -> String {
         }
         s = next;
     }
+    s
+}
+
+/// If `s` looks like base64 (or a base64 fragment), its readable decodings at each of the
+/// four alignments, lowercased. Lets indicators see payloads hidden in base64.
+pub(crate) fn base64_variants(s: &str) -> Vec<String> {
+    let s = s.trim();
+    let is_b64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '-' | '_' | '=');
+    if s.len() < 12 || s.len() > 16 * 1024 || !s.chars().all(is_b64) {
+        return Vec::new();
+    }
+    let has_digit_or_upper = s
+        .chars()
+        .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    if !has_digit_or_upper {
+        return Vec::new();
+    }
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a' + 26) as u32,
+            b'0'..=b'9' => (c - b'0' + 52) as u32,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        })
+    };
+    let bytes: Vec<u8> = s.bytes().filter(|b| *b != b'=').collect();
+    let mut out = Vec::new();
+    for skip in 0..4 {
+        if bytes.len() < skip + 8 {
+            break;
+        }
+        let mut decoded = Vec::with_capacity(bytes.len() * 3 / 4);
+        for chunk in bytes[skip..].chunks(4) {
+            if chunk.len() < 2 {
+                break;
+            }
+            let mut n = 0u32;
+            for (k, c) in chunk.iter().enumerate() {
+                n |= val(*c).unwrap_or(0) << (18 - 6 * k);
+            }
+            decoded.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                decoded.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                decoded.push(n as u8);
+            }
+        }
+        let printable = decoded
+            .iter()
+            .filter(|b| b.is_ascii_graphic() || **b == b' ' || **b == b'\n' || **b == b'\t')
+            .count();
+        if decoded.len() >= 6 && printable * 10 >= decoded.len() * 8 {
+            let text = String::from_utf8_lossy(&decoded).to_lowercase();
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        }
+    }
+    out
+}
+
+/// Decodes like a permissive server/browser would, then lowercases and collapses whitespace.
+pub fn decode(raw: &str, form: bool) -> String {
+    let s = decode_keep_case(raw, form);
     let lower = s.to_lowercase();
     let mut out = String::with_capacity(lower.len());
     let mut prev_space = false;
@@ -198,6 +265,32 @@ fn js_escapes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_payloads_are_revealed() {
+        // "processbuilder" and an unaligned fragment of a longer encoding
+        assert!(
+            base64_variants("cHJvY2Vzc2J1aWxkZXI")
+                .iter()
+                .any(|v| v.contains("processbuilder"))
+        );
+        // an unaligned fragment loses its first character: "…nstantiatefactory"
+        assert!(
+            base64_variants("BpbnN0YW50aWF0ZWZhY3Rvcnk")
+                .iter()
+                .any(|v| v.contains("nstantiatefactory"))
+        );
+        assert!(
+            base64_variants("PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==")
+                .iter()
+                .any(|v| v.contains("<script>"))
+        );
+        assert!(
+            base64_variants("internationalization").is_empty(),
+            "plain words are skipped"
+        );
+        assert!(base64_variants("short").is_empty());
+    }
 
     #[test]
     fn decoding() {

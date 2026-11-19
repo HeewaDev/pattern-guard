@@ -71,7 +71,7 @@ impl Lexicons {
             (
                 "java_class",
                 AttackClass::JavaInjection,
-                6.0,
+                7.0,
                 Scope::Values,
                 include_str!("../data/crs/java-classes.data"),
             ),

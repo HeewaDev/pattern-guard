@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use regex::{Regex, RegexSet};
 
-use crate::decode::{decode, percent_decode};
+use crate::decode::{base64_variants, decode, decode_keep_case, percent_decode};
 use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
 use crate::lexicon::Lexicons;
@@ -74,7 +74,10 @@ impl Inspector {
         Self {
             set,
             meta: ind.iter().map(|i| (i.class, i.name, i.weight)).collect(),
-            jndi_only: ind.iter().map(|i| i.class == JndiInjection).collect(),
+            jndi_only: ind
+                .iter()
+                .map(|i| matches!(i.class, JndiInjection | JavaInjection))
+                .collect(),
             lexicons: Lexicons::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
             // Log4j lookup obfuscation: ${lower:j} ${upper:j} ${::-j} ${env:X:-j} → j
@@ -120,12 +123,14 @@ impl Inspector {
             }
             resolved = next;
         }
-        let variants = [
+        let mut variants = vec![
             self.comments.replace_all(&decoded, "").into_owned(),
             self.comments.replace_all(&decoded, " ").into_owned(),
             resolved,
             decoded.clone(),
         ];
+        // Payloads hidden in base64 (whole values or fragments).
+        variants.extend(base64_variants(&decode_keep_case(raw, form)));
         for v in &variants {
             for idx in self.set.matches(v).into_iter() {
                 if jndi_only && !self.jndi_only[idx] {
@@ -135,12 +140,18 @@ impl Inspector {
                 add(class, name, w);
             }
         }
-        if !jndi_only {
-            for v in [&decoded, &variants[0]] {
-                for (class, name, w) in self.lexicons.scan(location, v) {
+        // Word lists: decoded value, comment-stripped value and base64 decodings.
+        let mut lexicon_inputs: Vec<&String> = vec![&decoded, &variants[0]];
+        lexicon_inputs.extend(variants.iter().skip(4));
+        for v in lexicon_inputs {
+            for (class, name, w) in self.lexicons.scan(location, v) {
+                // other headers: only header-safe classes (Log4Shell, Java)
+                if !jndi_only || class == JavaInjection {
                     add(class, name, w);
                 }
             }
+        }
+        if !jndi_only {
             // Binary upload bodies legitimately contain NUL bytes; parameters never should.
             if location != "body"
                 && (decoded.contains('\0') || raw.to_ascii_lowercase().contains("%00"))

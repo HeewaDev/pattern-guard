@@ -437,6 +437,25 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             4.0,
             r"\b(eval|assert|system|passthru|shell_exec|popen|proc_open|pcntl_exec|create_function|call_user_func(_array)?)\s*\(",
         ),
+        // ---- Java attacks (deserialization, expression / class abuse) ----
+        i(
+            JavaInjection,
+            "java_serialized_object",
+            8.0,
+            r"\b(ro0ab|kztaau|cs7qaf|aced0005)",
+        ),
+        i(
+            JavaInjection,
+            "java_gadget",
+            7.0,
+            r"(rocessbuilder|nvokertransformer|nstantiatetransformer|nstantiatefactory|lonetransformer|hainedtransformer|onstanttransformer|\bforclosure|hileclosure|rototypeclonefactory|rototypeserializationfactory|emplatesimpl|\bxmldecoder)|runtime\s*\.\s*getruntime\s*\(|\bclass\.module\.classloader|\bjava\.lang\.reflect\.|\bjavax\.script\.scriptenginemanager",
+        ),
+        i(
+            JavaInjection,
+            "java_dotted_exec",
+            7.0,
+            r"\bjava\.[\w.]{0,60}\b(runtime|processbuilder)\b",
+        ),
         // ---- NoSQL injection ----
         i(NoSqlInjection, "mongo_operator", 7.0, mongo_bracket),
         i(NoSqlInjection, "mongo_where", 8.0, r#"\$where\b"#),
