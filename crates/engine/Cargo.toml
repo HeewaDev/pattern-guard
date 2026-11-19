@@ -1,0 +1,33 @@
+[package]
+name = "pattern-guard"
+description = "Adaptive request-abuse detection: learns normal traffic, scores requests with an explainable ML model, recommends allow/warn/delay/challenge/block"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "pattern_guard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pattern-guard"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+log.workspace = true
+lru.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "check_bench"
+harness = false

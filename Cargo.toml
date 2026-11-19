@@ -1,36 +1,28 @@
-[package]
-name = "pattern-guard"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Adaptive request-abuse detection: learns normal traffic, scores requests with an explainable ML model, recommends allow/warn/delay/challenge/block"
-readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/heewadev/pattern-guard"
 
-[workspace]
-members = ["gateway"]
-
-[lib]
-name = "pattern_guard"
-path = "src/lib.rs"
-
-[[bin]]
-name = "pattern-guard"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
+pattern-guard = { path = "crates/engine" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 thiserror = "2"
 log = "0.4"
 lru = "0.12"
-serde_json = "1"
 regex = "1"
-
-[dev-dependencies]
 criterion = "0.5"
-
-[[bench]]
-name = "check_bench"
-harness = false
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+http-body-util = "0.1"
+bytes = "1"
+sha2 = "0.10"
+hmac = "0.12"

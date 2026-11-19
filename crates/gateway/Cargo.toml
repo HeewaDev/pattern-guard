@@ -1,0 +1,21 @@
+[package]
+name = "pattern-guard-gateway"
+version = "0.1.0"
+description = "Reverse proxy protecting web apps with Pattern-Guard: WAF, behavioural ML, proof-of-work bot challenge, CrowdSec/Suricata/Wazuh intelligence"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pattern-guard.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+hmac.workspace = true

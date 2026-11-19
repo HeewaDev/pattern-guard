@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn repo_file(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(name)
 }
 
 fn pattern_guard_exe() -> PathBuf {
