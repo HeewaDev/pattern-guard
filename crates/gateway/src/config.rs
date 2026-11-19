@@ -62,6 +62,9 @@ pub struct GatewayConfig {
     pub feeds: Vec<FeedConfig>,
     #[serde(default)]
     pub log: LogConfig,
+    /// Custom firewall rules, evaluated in order (see docs/GATEWAY.md#custom-rules).
+    #[serde(default)]
+    pub rules: Vec<RuleConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -213,6 +216,69 @@ pub struct FeedConfig {
     pub block_secs: u64,
     #[serde(default)]
     pub action: FeedAction,
+}
+
+/// What a matching rule does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleAction {
+    /// Forward without any further inspection (terminal).
+    Allow,
+    /// Refuse with 403 (terminal).
+    Block,
+    /// Proof-of-work challenge unless the client holds a clearance (terminal).
+    Challenge,
+    /// Slow the request down, then continue (terminal).
+    Delay,
+    /// Record the match in the decision log and keep evaluating.
+    Log,
+    /// Skip WAF payload inspection for this request and keep evaluating.
+    SkipWaf,
+}
+
+/// A header condition: present (optionally matching `regex`) or `absent`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeaderMatch {
+    pub name: String,
+    #[serde(default)]
+    pub regex: Option<String>,
+    #[serde(default)]
+    pub absent: bool,
+}
+
+/// One custom rule. Every condition that is set must match (AND); unset conditions are ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleConfig {
+    pub name: String,
+    /// Path prefix, e.g. `/admin`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Regex on the path (without the query string).
+    #[serde(default)]
+    pub path_regex: Option<String>,
+    /// HTTP methods (case-insensitive); empty = any.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// Host names; `*.example.com` matches subdomains. Empty = any.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// Client IP must be in one of these CIDRs.
+    #[serde(default)]
+    pub ips: Vec<String>,
+    /// Client IP must be in none of these CIDRs.
+    #[serde(default)]
+    pub not_ips: Vec<String>,
+    /// Regex on the User-Agent (missing UA = empty string).
+    #[serde(default)]
+    pub user_agent_regex: Option<String>,
+    /// Regex on the raw query string (missing query = empty string).
+    #[serde(default)]
+    pub query_regex: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<HeaderMatch>,
+    pub action: RuleAction,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

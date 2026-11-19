@@ -566,6 +566,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "pattern-guard",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

@@ -10,6 +10,7 @@ pub mod config;
 pub mod intel;
 pub mod ipnet;
 pub mod observability;
+pub mod policy;
 pub mod proxy;
 pub mod state;
 
@@ -69,6 +70,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         allow: cidrs(&cfg.access.allow),
         deny: cidrs(&cfg.access.deny),
         challenge_list: cidrs(&cfg.access.challenge),
+        rules: policy::rules::RuleSet::compile(&cfg.rules)?,
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),

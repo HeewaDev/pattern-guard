@@ -498,3 +498,65 @@ async fn body_limit_and_admin_endpoints() {
     let h = send(gw.admin, "GET", "/healthz", &[], "").await;
     assert_eq!(h.body, "ok");
 }
+
+#[tokio::test]
+async fn custom_rules_gatekeep() {
+    let gw = start_gateway(
+        r#"
+[[rules]]
+name = "admin only from office"
+path = "/admin"
+not_ips = ["10.0.0.0/8"]
+action = "block"
+[[rules]]
+name = "trusted scanner"
+headers = [{ name = "x-scanner-token", regex = "^s3cret$" }]
+action = "allow"
+[[rules]]
+name = "no sqlmap"
+user_agent_regex = "(?i)sqlmap"
+action = "block"
+"#,
+    )
+    .await;
+    let outsider = ("x-forwarded-for", "203.0.113.5");
+    let office = ("x-forwarded-for", "10.1.1.1");
+    assert_eq!(
+        send(gw.addr, "GET", "/admin/users", &[outsider], "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(gw.addr, "GET", "/admin/users", &[office], "")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    // an allow rule bypasses every other layer, even an obvious payload
+    let r = send(
+        gw.addr,
+        "GET",
+        "/search?q=%27%20OR%20%271%27%3D%271",
+        &[outsider, ("x-scanner-token", "s3cret")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = send(
+        gw.addr,
+        "GET",
+        "/",
+        &[outsider, ("user-agent", "sqlmap/1.8")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let m = send(gw.admin, "GET", "/metrics", &[], "").await;
+    assert!(
+        m.body
+            .contains("pattern_guard_blocked_total{layer=\"rule\"} 2"),
+        "{}",
+        m.body
+    );
+}

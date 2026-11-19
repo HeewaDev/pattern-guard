@@ -30,7 +30,7 @@ use responses::{block_page, header_str, respond, wants_html};
 use verify::verify;
 
 use crate::challenge::VERIFY_PATH;
-use crate::config::Mode;
+use crate::config::{Mode, RuleAction};
 use crate::intel::IntelAction;
 use crate::ipnet::any_contains;
 use crate::state::State;
@@ -112,6 +112,12 @@ pub async fn handle(
         return Ok(forward(&state, parts, body, ip, &id, None).await.0);
     }
 
+    // ---- custom rules (an `allow` rule bypasses inspection like the allow list) ----
+    let rule = state.rules.evaluate(ip, &parts);
+    if matches!(rule.terminal, Some((RuleAction::Allow, _))) {
+        return Ok(forward(&state, parts, body, ip, &id, None).await.0);
+    }
+
     // ---- behavioural ML (always recorded, even if another layer blocks) ----
     let mut event = Event::new(
         format!("ip:{ip}"),
@@ -136,6 +142,7 @@ pub async fn handle(
 
     // ---- WAF ----
     let findings: Vec<Finding> = if state.cfg.waf.enabled
+        && !rule.skip_waf
         && !state
             .cfg
             .waf
@@ -203,6 +210,23 @@ pub async fn handle(
             Action::Block,
             "deny_list",
             "deny_list".into(),
+            &mut action,
+            &mut layer,
+        );
+    }
+    if let Some((a, name)) = &rule.terminal {
+        let a = match a {
+            RuleAction::Block => Action::Block,
+            RuleAction::Challenge => Action::Challenge,
+            _ => Action::Delay,
+        };
+        raise(a, "rule", format!("rule:{name}"), &mut action, &mut layer);
+    }
+    for name in &rule.logged {
+        raise(
+            Action::Allow,
+            "rule",
+            format!("rule-log:{name}"),
             &mut action,
             &mut layer,
         );
@@ -342,7 +366,7 @@ pub async fn handle(
             Action::Delay => {
                 let d = match assessment.decision {
                     Decision::Delay(d) => d,
-                    _ => Duration::from_secs(1),
+                    _ => Duration::from_secs_f64(state.cfg.delay_max_secs.max(0.0)),
                 };
                 tokio::time::sleep(
                     d.min(Duration::from_secs_f64(state.cfg.delay_max_secs.max(0.0))),
@@ -359,7 +383,11 @@ pub async fn handle(
     state
         .inventory
         .record(parts.method.as_str(), &template, status, false);
-    if action > Action::Allow || !findings.is_empty() || state.cfg.log.include_allowed {
+    if action > Action::Allow
+        || !findings.is_empty()
+        || !rule.logged.is_empty()
+        || state.cfg.log.include_allowed
+    {
         log_decision(&state, &parts, &ctx, status);
     }
     Ok(resp)

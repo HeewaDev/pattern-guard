@@ -69,3 +69,24 @@ poll_secs = 10
 [log]
 decisions = "decisions.jsonl"          # EVE/ECS-like JSON lines for Wazuh / Elastic / Splunk
 include_allowed = false
+
+# ---- Custom rules: evaluated in order; the first allow/block/challenge/delay wins.
+# Conditions (all optional, AND-ed): path, path_regex, methods, hosts, ips, not_ips,
+# user_agent_regex, query_regex, headers = [{ name, regex | absent = true }].
+# Actions: allow (skip all inspection), block, challenge, delay, log, skip_waf.
+# [[rules]]
+# name = "admin only from the office"
+# path = "/admin"
+# not_ips = ["10.0.0.0/8"]
+# action = "block"
+#
+# [[rules]]
+# name = "challenge known attack tools"
+# user_agent_regex = "(?i)sqlmap|nikto|nuclei|masscan|zgrab"
+# action = "challenge"
+#
+# [[rules]]
+# name = "webhooks are signed, skip payload inspection"
+# path = "/webhooks/"
+# headers = [{ name = "x-signature" }]
+# action = "skip_waf"
