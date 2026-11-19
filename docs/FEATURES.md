@@ -78,6 +78,26 @@ re-verified line by line.
 | 2.17 | Host security monitoring | 🔌✅ Wazuh alongside; gateway tails `alerts.json` and blocks `data.srcip` | |
 | 2.18 | Network IDS | 🔌✅ Suricata (see 1.6) | |
 
+## 2b. Gaps found by studying OWASP CRS and open-appsec ([RESEARCH.md](RESEARCH.md))
+
+| # | Capability | Pattern-Guard | Source of the technique |
+|---|---|---|---|
+| 2b.1 | libinjection SQLi/XSS detection | ⬜ | CRS 942100 / 941100 (`libinjectionrs`, BSD-3) |
+| 2b.2 | Evasion re-scan loop (decode only on trigger, keep if new indicators) | ⬜ | open-appsec `WaapAssetState::apply` |
+| 2b.3 | Large attack word lists (OS files, shell, Windows, SQL/PHP functions, Java classes, SSRF) | ⬜ | CRS `rules/*.data` (Apache-2.0) |
+| 2b.4 | One anomaly score per request, per-class sub-scores | ⬜ | CRS 901/949 |
+| 2b.5 | Paranoia levels 1–4, separate detection/blocking level | ⬜ | CRS |
+| 2b.6 | Keyword-pair scores + saturating combiner | ⬜ | open-appsec `WaapScores.cc` |
+| 2b.7 | Recursive parsing: multipart per part, base64, JSON-in-string, delimiters | ⬜ | open-appsec `DeepParser.cc` |
+| 2b.8 | Per-parameter learned value types and keyword-confidence filtering | ⬜ | open-appsec `TypeIndicatorsFilter.cc`, `KeywordIndicatorFilter.cc` |
+| 2b.9 | PHP code injection (tags, functions, superglobals, wrappers, serialized objects) | ⬜ (CRS 933: 1.8 %) | CRS 933, `php-function-names` |
+| 2b.10 | Java attacks (deserialization magic bytes incl. base64, class names) | ⬜ (CRS 944: 6.6 %) | CRS 944, `java-classes.data` |
+| 2b.11 | Protocol enforcement (null/non-printable bytes, double encoding, CL+TE, CRLF, parameter pollution, restricted extensions) | ⬜ (CRS 920/921: 1–3 %) | CRS 920 / 921 |
+| 2b.12 | Reputation-weighted WAF score (behavioural bot score scales payload score) | ⬜ | open-appsec `D2Main.cc` |
+| 2b.13 | Quantitative false-positive gate in CI (100k English sentences) | ⬜ | CRS `quantitative.yaml` |
+| 2b.14 | Response inspection (SQL/PHP/Java errors, web shells) | ⬜ | CRS 95x, open-appsec `resp_body_*` |
+| 2b.15 | Exclusions per indicator × target, packaged per app (WordPress, Drupal…) | ⬜ | CRS exclusion plugins, open-appsec `WaapOverride.h` |
+
 ## 3. Proof
 
 | # | Item | Status |
@@ -86,6 +106,8 @@ re-verified line by line.
 | 3.2a | WAF, own corpus (`tests/waf_corpus.rs`, tuned against) | 🧪 75/77 attacks blocked, 0/62 tricky benign blocked |
 | 3.2b | WAF, PayloadsAllTheThings (MIT) + benign: 4.9k names, 10k words, 2.1k doc lines with code, 2.1k user agents (used to fix *categories*) | 🧪 85.4% of 1 380 attacks blocked · **0 of 19 215** benign blocked |
 | 3.2c | WAF hold-out, never tuned on: SecLists / fuzzdb (`waf_eval` example) | 🧪 XSS 83–94%, SQLi 50%, LFI 29%, commix command injection 24% — **the real gap** |
+| 3.2d | **WAF on the OWASP CRS regression tests** (3 730 attack requests, never tuned on; `examples/crs_eval.rs`) | 🧪 **11.8 % blocked overall**: XSS 35 %, SQLi 20 %, LFI 24 %, RCE 9 %, PHP 1.8 %, Java 6.6 %. The main gap; see [RESEARCH.md](RESEARCH.md) |
+| 3.2e | Zero-day-style PHP code execution (PHP tags + OS command in a multipart field such as `PHP_SESSION_UPLOAD_PROGRESS`) | ⬜ only logged (score 4), not blocked |
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
 | 3.4 | Performance under load | 🧪 ~32 000 req/s, p99 ≈ 3 ms through the gateway (4 vCPU shared with client and upstream, `gateway/examples/loadtest.rs`) · ⬜ shard the engine lock |
 | 3.5 | End-to-end gateway tests | ✅ 9 tests over real TCP: WAF, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints |

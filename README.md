@@ -44,6 +44,7 @@ The full feature list, compared against open-appsec and Imperva, is in
 | Behavioural ML, 1 h simulated mixed traffic, including attacks it never trained on | ~0.3 % of legitimate requests stopped, ~98.5 % of attack requests stopped |
 | WAF, PayloadsAllTheThings attack lists vs 19 215 benign values (names, words, docs with code, user agents) | 85.4 % of attacks blocked, **0** benign blocked |
 | WAF hold-out lists never tuned on (SecLists / fuzzdb) | XSS 83–94 %, SQLi 50 %, file inclusion 29 %, command injection 24 %. This is the main gap to close |
+| WAF on the OWASP CRS regression tests (3 730 attack requests) | **11.8 % blocked**. Far behind CRS coverage; the fix is planned in [ROADMAP M2](docs/ROADMAP.md) and [RESEARCH.md](docs/RESEARCH.md) |
 | Proof-of-work challenge in real Chromium | solved in 142 ms, clearance cookie set; curl without JS stays blocked |
 | Gateway throughput, full inspection | ~32 000 req/s, p99 ≈ 3 ms (4 vCPU shared with client and upstream) |
 
@@ -129,8 +130,8 @@ rather than spoofable disguises.
 |---|---|
 | `src/` | `pattern-guard` library + CLI (`replay`, `train`, command wrapper) |
 | `gateway/` | `pattern-guard-gateway` reverse proxy |
-| `examples/` | `realworld_eval`, `gen_traffic`, `waf_eval`, demos |
-| `docs/` | [index](docs/README.md) · [GATEWAY](docs/GATEWAY.md) · [DEPLOYMENT](docs/DEPLOYMENT.md) · [OPERATIONS](docs/OPERATIONS.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [ML](docs/ML.md) · [CONFIG](docs/CONFIG.md) · [USE-CASES](docs/USE-CASES.md) · [FEATURES](docs/FEATURES.md) · [ROADMAP (product plan)](docs/ROADMAP.md) |
+| `examples/` | `realworld_eval`, `gen_traffic`, `waf_eval`, `crs_eval`, demos |
+| `docs/` | [index](docs/README.md) · [RESEARCH](docs/RESEARCH.md) · [GATEWAY](docs/GATEWAY.md) · [DEPLOYMENT](docs/DEPLOYMENT.md) · [OPERATIONS](docs/OPERATIONS.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [ML](docs/ML.md) · [CONFIG](docs/CONFIG.md) · [USE-CASES](docs/USE-CASES.md) · [FEATURES](docs/FEATURES.md) · [ROADMAP (product plan)](docs/ROADMAP.md) |
 
 ## Why this project
 

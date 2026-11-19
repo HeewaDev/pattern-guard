@@ -30,7 +30,7 @@ Rust binary.
 | Area | State |
 |---|---|
 | Behavioural ML | ~0.3 % legit stopped / ~98.5 % attacks stopped on synthetic traffic incl. unseen attacks |
-| WAF | 85 % on PayloadsAllTheThings, 0 / 19 215 benign blocked; **hold-out: XSS 83–94 %, SQLi 50 %, LFI 29 %, command injection 24 %** |
+| WAF | 85 % on PayloadsAllTheThings, 0 / 19 215 benign blocked; hold-out: XSS 83–94 %, SQLi 50 %, LFI 29 %, command injection 24 %; **OWASP CRS regression tests: 11.8 % blocked** |
 | Gateway | proxy, detect/prevent, PoW challenge (real browser verified), CrowdSec, Suricata/Wazuh feeds, metrics, decision log, API inventory |
 | Performance | ~32k req/s, p99 ≈ 3 ms (4 vCPU shared) |
 | Real-world proof | **none yet** |
@@ -42,6 +42,7 @@ Rust binary.
 | Legit requests **blocked**, real shadow traffic | unknown | ≤ 0.05 % |
 | Legit requests challenged, real shadow traffic | unknown | ≤ 0.5 % |
 | WAF hold-out detection (SecLists/fuzzdb, never tuned on), per class | 24–94 % | ≥ 85 % every class |
+| WAF on OWASP CRS PL1 attack tests (930–944) | 11.3 % | ≥ 80 % |
 | WAF benign false blocks (19k benign corpus + real logs) | 0 % (corpus) | ≤ 0.01 % |
 | Behaviour ML detection on unseen simulated attacks (avg per type) | ~93 % | ≥ 95 % |
 | Throughput per 8 vCPU, full inspection | ~32k (4 vCPU shared) | ≥ 100k req/s, p99 ≤ 5 ms |
@@ -62,15 +63,44 @@ Effort: S ≈ days, M ≈ 1–2 weeks, L ≈ 3–5 weeks, for one experienced de
 **Done when:** real-traffic KPIs above are measured and published in FEATURES.md §3, CI
 gates are live, and fuzzers have run 24 h without crashes.
 
-### M2 — WAF accuracy 2.0 · L
-**Goal:** close the hold-out gap without overfitting.
-- [ ] Supervised payload classifier: indicator hits, character n-grams and token statistics as features; logistic or GBDT model, trained like the behaviour model (open-appsec "supervised model").
-- [ ] Learned parameter profiles per route template: type (int/uuid/email/free text), length, character classes. Flag deviations, e.g. `id=1 OR 1=1` where `id` is always numeric (open-appsec "unsupervised model").
-- [ ] Multipart parsing per part; file-upload checks (extension, magic bytes, size).
-- [ ] Optional Coraza + OWASP CRS sidecar as a second opinion.
+### M2 — WAF accuracy 2.0 and zero-day RCE protection · L
+**Goal:** close the CRS benchmark gap without raising false positives, and block
+code-execution attempts without CVE-specific signatures. Uses the techniques from
+open-appsec's engine (Apache-2.0) and OWASP CRS. The full list, with source paths, is in
+[RESEARCH.md](RESEARCH.md) §4.
 
-**Done when:** hold-out detection is ≥ 85 % for every class, measured on lists never used
-in development, with benign false blocks ≤ 0.01 %.
+- [ ] **Measure first.** `crs_eval` (CRS regression tests) and a quantitative
+      false-positive corpus (100k English sentences, CRS-style) run in CI; every change
+      reports before/after numbers.
+- [ ] **Full-request decoding.** Multipart parsed part by part, keeping each field name.
+      Base64, JSON-in-string and delimiter splitting, with a depth limit. Evasion re-scan
+      loop: decode only when a trigger is present, and keep the result only if new
+      indicators appear.
+- [ ] **Indicator library.**
+  - libinjection SQLi/XSS (`libinjectionrs`).
+  - CRS word lists via Aho-Corasick: OS files, Unix shell, Windows, SQL and PHP
+    functions, Java classes, SSRF.
+  - PHP code tags, superglobals and stream wrappers; Java deserialization magic bytes,
+    including base64.
+  - Protocol anomalies.
+- [ ] **Scoring.** One anomaly score per request, with per-class sub-scores.
+      Keyword-pair scores with a saturating combiner, learned from labelled data.
+      Paranoia levels 1–4, with separate detection and blocking levels.
+- [ ] **Context, the zero-day part.**
+  - Per-parameter learned value types (open-appsec "unsupervised model"): code or URLs in
+    a parameter that never carries them raise the score.
+  - The client's behavioural bot score and IP reputation scale the payload score
+    (open-appsec's final-score formula).
+- [ ] **Exclusions** per indicator × target, packaged per application.
+
+**Done when:**
+- CRS PL1 attack tests (categories 930–944) are ≥ 80 % blocked.
+- Our hold-out lists are ≥ 85 % per class.
+- Benign false blocks are ≤ 0.01 % on the 100k-sentence corpus plus the existing 19k
+  benign corpus.
+- A request carrying PHP code tags plus an OS command in a multipart field (the shape of
+  PHP2Shell-style exploits) is blocked in prevent mode with no CVE-specific rule, and the
+  log explains why (location, indicators, reputation).
 
 ### M3 — Production hardening · L
 **Goal:** safe to run as the front door of a busy site.

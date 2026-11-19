@@ -12,6 +12,7 @@
 | Know how it's built | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | See every feature, its status and the gaps | [FEATURES.md](FEATURES.md) |
 | See where the product is going and what "done" means | [ROADMAP.md](ROADMAP.md) |
+| Learn what OWASP CRS and open-appsec do and what we adopt | [RESEARCH.md](RESEARCH.md) |
 
 ## Reference
 
@@ -26,6 +27,7 @@
 | [USE-CASES.md](USE-CASES.md) | Library integration patterns (HTTP middleware, CLI, cron, service-to-service) |
 | [FEATURES.md](FEATURES.md) | Feature tracker vs open-appsec and Imperva; measured results |
 | [ROADMAP.md](ROADMAP.md) | Vision, KPIs, milestones with acceptance criteria, risks, workflow |
+| [RESEARCH.md](RESEARCH.md) | OWASP CRS and open-appsec internals, CRS benchmark results, techniques to adopt |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes and breaking changes |
 
 ## Example configs
