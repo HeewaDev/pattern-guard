@@ -325,6 +325,7 @@ dependencies = [
  "criterion",
  "log",
  "lru",
+ "regex",
  "serde",
  "serde_json",
  "thiserror",

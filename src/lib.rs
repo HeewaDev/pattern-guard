@@ -28,6 +28,7 @@ pub mod model;
 pub mod normalize;
 mod stats;
 mod tracker;
+pub mod waf;
 
 pub use config::{Config, Mode, RiskCombine, TimeSource};
 pub use decision::Decision;
