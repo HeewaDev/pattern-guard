@@ -3,6 +3,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -36,6 +37,44 @@ async fn start_upstream() -> SocketAddr {
                         .to_string();
                     let body = format!("upstream {} {} bot_score={score}", req.method(), req.uri());
                     Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+                });
+                let _ = http1::Builder::new()
+                    .serve_connection(TokioIo::new(s), svc)
+                    .await;
+            });
+        }
+    });
+    addr
+}
+
+/// Mock CrowdSec LAPI: bans 192.0.2.70; records that the API key arrived.
+async fn start_crowdsec(saw_key: Arc<AtomicBool>) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (s, _) = l.accept().await.unwrap();
+            let saw = saw_key.clone();
+            tokio::spawn(async move {
+                let svc = service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let saw = saw.clone();
+                    async move {
+                        if req
+                            .headers()
+                            .get("x-api-key")
+                            .map(|v| v == "test-key")
+                            .unwrap_or(false)
+                        {
+                            saw.store(true, Ordering::SeqCst);
+                        }
+                        let startup = req.uri().query().unwrap_or("").contains("startup=true");
+                        let body = if startup {
+                            r#"{"new":[{"scope":"Ip","value":"192.0.2.70","type":"ban","origin":"CAPI","scenario":"crowdsecurity/http-probing","duration":"4h"}],"deleted":null}"#
+                        } else {
+                            r#"{"new":null,"deleted":null}"#
+                        };
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+                    }
                 });
                 let _ = http1::Builder::new()
                     .serve_connection(TokioIo::new(s), svc)
@@ -319,6 +358,40 @@ async fn proof_of_work_challenge_round_trip() {
     )
     .await;
     assert_eq!(bad.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn crowdsec_decisions_are_enforced() {
+    let saw_key = Arc::new(AtomicBool::new(false));
+    let cs = start_crowdsec(saw_key.clone()).await;
+    let gw = start_gateway(&format!(
+        "[crowdsec]\nenabled = true\nurl = \"http://{cs}\"\napi_key = \"test-key\"\npoll_secs = 1"
+    ))
+    .await;
+    for _ in 0..50 {
+        if !gw.state.intel.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(saw_key.load(Ordering::SeqCst), "bouncer sent X-Api-Key");
+    let r = send(
+        gw.addr,
+        "GET",
+        "/",
+        &[("x-forwarded-for", "192.0.2.70")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let m = send(gw.admin, "GET", "/metrics", &[], "").await;
+    assert!(
+        m.body
+            .contains("pattern_guard_blocked_total{layer=\"reputation\"} 1"),
+        "{}",
+        m.body
+    );
+    assert!(m.body.contains("pattern_guard_crowdsec_up 1"));
 }
 
 #[tokio::test]

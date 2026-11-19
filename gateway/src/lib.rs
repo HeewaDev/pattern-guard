@@ -7,6 +7,7 @@
 
 pub mod challenge;
 pub mod config;
+pub mod crowdsec;
 pub mod eventlog;
 pub mod intel;
 pub mod inventory;
@@ -82,6 +83,15 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
 
 /// Starts background tasks (CrowdSec, feeds, sweeper) and the admin server.
 pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Result<(), String> {
+    if state.cfg.crowdsec.enabled {
+        let key = crowdsec::api_key(&state.cfg.crowdsec)?;
+        tokio::spawn(crowdsec::run(
+            state.cfg.crowdsec.clone(),
+            key,
+            state.intel.clone(),
+            state.metrics.clone(),
+        ));
+    }
     let intel = state.intel.clone();
     tokio::spawn(async move {
         loop {
