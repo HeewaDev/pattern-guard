@@ -1,36 +1,53 @@
-# Pattern-Guard example config
-# Copy to guard.toml and adjust. See docs/CONFIG.md for schema.
+# Pattern-Guard example config. Copy to guard.toml and adjust. Full schema: docs/CONFIG.md
+#
+# An empty file is a valid config: adaptive engine + built-in model, no hard rules.
 
 [guard]
-# Default sliding window (seconds)
-window_secs = 300
+# "hybrid" (default) = adaptive ML engine + any rules you set below.
+# "adaptive" = ML only. "rules" = only the explicit thresholds (0.2 behaviour).
+mode = "hybrid"
 
-# Pattern thresholds
-burst_max_events = 100
-repetition_max_count = 10
-hopping_max_targets = 50
-weight_max_total = 1000.0
+# "event" (default): windows use Event::timestamp (server time / log time) — required
+# for replaying logs. "system": the process clock at check time.
+time_source = "event"
 
-# Fixed-interval detection (optional); omit to disable
-interval_secs = 2.0
-interval_tolerance_ratio = 0.2
-
-# How to combine per-pattern risk: "max" or "weighted_sum"
-risk_combine = "max"
-
-# Risk → decision bands (risk in [0, 1])
+# Risk → decision bands (risk in [0, 1]).
 allow_below = 0.3
 warn_below = 0.6
 delay_below = 0.85
+# Uncomment to answer the band [delay_below, challenge_below) with Challenge
+# (CAPTCHA / JS check / re-auth) instead of Block. Recommended for public sites.
+# challenge_below = 0.95
 delay_secs = 5.0
 
-# Optional: cap distinct actors in memory (LRU eviction). Omit = unbounded.
-# max_actors = 10000
+# After `cooldown_after_blocks` blocks, keep blocking the actor for cooldown_secs.
+cooldown_secs = 60.0
+cooldown_after_blocks = 3
 
-# Per-entity overrides (optional)
+# Memory caps (LRU). Defaults shown.
+max_actors = 100000
+
+# Use a model you trained with `pattern-guard train` (path relative to this file).
+# model = "model.toml"
+
+# ---- Optional hard limits (opt-in; unset = disabled) ----
+# Use them as safety nets, sized well above normal traffic: a browser page load can
+# easily be 20–40 requests, and an office NAT is many users behind one IP.
+# window_secs = 60
+# burst_max_events = 1200
+# repetition_max_count = 600
+
+[guard.adaptive]
+warmup_secs = 300       # how long a route is observed before its baseline is trusted
+ipv4_prefix = 24        # group IPv4 clients into /24 networks
+ipv6_prefix = 56        # group IPv6 clients into /56 networks
+# probe_paths = ["/secret-admin"]   # extra scanner paths specific to your app
+
+# Monitors, partners, internal jobs: always Allow (still observed for baselines).
+[guard.actors."ip:198.51.100.50"]
+trusted = true
+
+# Per-actor overrides use the same keys as [guard].
 [guard.actors."service:cron"]
 burst_max_events = 5
 window_secs = 60
-
-[guard.actors."ip:10.0.0.1"]
-burst_max_events = 200

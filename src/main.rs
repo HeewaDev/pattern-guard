@@ -44,6 +44,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 log::warn!("{}", msg);
                 std::process::exit(2);
             }
+            pattern_guard::Decision::Challenge => {
+                let msg = format!(
+                    "pattern-guard: challenge (risk {:.2}) — refusing to run unattended",
+                    risk
+                );
+                eprintln!("{}", msg);
+                log::warn!("{}", msg);
+                std::process::exit(2);
+            }
             pattern_guard::Decision::Delay(d) => {
                 let msg = format!("pattern-guard: delay {:?} (risk {:.2})", d, risk);
                 eprintln!("{}", msg);

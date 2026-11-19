@@ -7,4 +7,13 @@ pub enum Error {
 
     #[error("invalid config: {0}")]
     ConfigParse(#[source] toml::de::Error),
+
+    #[error("invalid config: {0}")]
+    ConfigInvalid(String),
+
+    #[error("failed to read model from {0}: {1}")]
+    ModelLoad(PathBuf, #[source] std::io::Error),
+
+    #[error("invalid model: {0}")]
+    ModelParse(String),
 }

@@ -1,4 +1,4 @@
-//! Event in, decision out (allow / warn / delay / block). Your code enforces.
+//! Event in, decision out (allow / warn / delay / challenge / block). Your code enforces.
 //!
 //! ```no_run
 //! use pattern_guard::{Guard, Event};
@@ -11,7 +11,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
 
 mod analyzer;
 pub mod config;
@@ -23,8 +22,8 @@ pub mod normalize;
 mod stats;
 mod tracker;
 
-pub use config::{Config, RiskCombine};
+pub use config::{Config, Mode, RiskCombine, TimeSource};
 pub use decision::Decision;
 pub use error::Error;
 pub use event::Event;
-pub use guard::Guard;
+pub use guard::{Assessment, Guard, Reason};

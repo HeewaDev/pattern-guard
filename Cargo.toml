@@ -1,9 +1,9 @@
 [package]
 name = "pattern-guard"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Behavior anomaly guard: observes events, detects patterns, recommends allow/warn/delay/block"
+description = "Adaptive request-abuse detection: learns normal traffic, scores requests with an explainable ML model, recommends allow/warn/delay/challenge/block"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/heewadev/pattern-guard"
