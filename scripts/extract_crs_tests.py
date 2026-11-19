@@ -4,7 +4,7 @@ The CRS tests are Apache-2.0: https://github.com/coreruleset/coreruleset (tests/
 Usage:
   git clone --depth 1 https://github.com/coreruleset/coreruleset /tmp/coreruleset
   python3 -I scripts/extract_crs_tests.py /tmp/coreruleset crs_tests.jsonl   # needs PyYAML
-  cargo run --release --example crs_eval -- crs_tests.jsonl
+  cargo run --release -p pattern-guard-eval --bin crs_eval -- crs_tests.jsonl
 """
 import base64
 import collections

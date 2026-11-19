@@ -1,6 +1,6 @@
 //! WAF accuracy on payload/benign files (one value per line).
 //!
-//! `cargo run --release --example waf_eval -- --attack sqli.txt --attack xss.txt --benign words.txt`
+//! `cargo run --release -p pattern-guard-eval --bin waf_eval -- --attack sqli.txt --attack xss.txt --benign words.txt`
 use pattern_guard::waf::Inspector;
 
 fn main() {

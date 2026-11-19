@@ -2,14 +2,13 @@
 //! staggered attacks — including attack variants and a legitimate traffic spike that
 //! the built-in model never saw during training (marked `[unseen]`).
 //!
-//! `cargo run --release --example realworld_eval [-- --model path/to/model.toml] [--seed N]`
+//! `cargo run --release -p pattern-guard-eval --bin realworld_eval [-- --model path/to/model.toml] [--seed N]`
 //!
 //! Runs the same traffic through:
 //!  1. the 0.2-style rules (thresholds from the old guard.toml.example), and
 //!  2. the adaptive engine with the built-in (or given) model.
 
-#[path = "common/sim.rs"]
-mod sim;
+use pattern_guard_eval::sim;
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;

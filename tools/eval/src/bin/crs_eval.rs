@@ -3,7 +3,7 @@
 //! The CRS tests (Apache-2.0, github.com/coreruleset/coreruleset, tests/regression/tests)
 //! are not vendored. Extract them to JSONL with `scripts/extract_crs_tests.py`, then:
 //!
-//! `cargo run --release --example crs_eval -- crs_tests.jsonl [--pl 1]`
+//! `cargo run --release -p pattern-guard-eval --bin crs_eval -- crs_tests.jsonl [--pl 1]`
 //!
 //! Each CRS test asserts that *one CRS rule* does (positive) or does not (negative) fire,
 //! run at paranoia level 4. So:

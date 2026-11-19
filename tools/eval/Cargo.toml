@@ -1,0 +1,13 @@
+[package]
+name = "pattern-guard-eval"
+description = "Evaluation tools: traffic simulator, behaviour/WAF benchmarks (simulated traffic, payload lists, OWASP CRS regression tests)"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pattern-guard.workspace = true
+serde_json.workspace = true

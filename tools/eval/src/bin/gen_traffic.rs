@@ -1,9 +1,8 @@
 //! Writes labelled synthetic traffic as JSONL to stdout (for `pattern-guard train/replay`).
 //!
-//! `cargo run --release --example gen_traffic -- [--seed N] [--hours H] [--unseen] > traffic.jsonl`
+//! `cargo run --release -p pattern-guard-eval --bin gen_traffic -- [--seed N] [--hours H] [--unseen] > traffic.jsonl`
 
-#[path = "common/sim.rs"]
-mod sim;
+use pattern_guard_eval::sim;
 
 use std::io::{BufWriter, Write};
 

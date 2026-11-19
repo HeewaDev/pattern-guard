@@ -549,6 +549,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pattern-guard-eval"
+version = "0.3.0"
+dependencies = [
+ "pattern-guard",
+ "serde_json",
+]
+
+[[package]]
 name = "pattern-guard-gateway"
 version = "0.1.0"
 dependencies = [

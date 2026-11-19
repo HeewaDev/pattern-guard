@@ -118,20 +118,20 @@ impl Rng {
     pub fn new(seed: u64) -> Self {
         Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
         self.0
     }
     pub fn f(&mut self) -> f64 {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
     pub fn range(&mut self, lo: f64, hi: f64) -> f64 {
         lo + (hi - lo) * self.f()
     }
     pub fn int(&mut self, lo: u64, hi: u64) -> u64 {
-        lo + self.next() % (hi - lo + 1)
+        lo + self.next_u64() % (hi - lo + 1)
     }
     pub fn chance(&mut self, p: f64) -> bool {
         self.f() < p
@@ -594,7 +594,7 @@ fn single_flood(s: &mut Sim, from: f64, to: f64) {
     };
     let mut t = from;
     while t < to {
-        let q = s.rng.next() % 100_000;
+        let q = s.rng.next_u64() % 100_000;
         s.push(&w, t, "GET", format!("/search?q={q}"), 200);
         t += 0.02;
     }
@@ -615,7 +615,7 @@ fn fresh_endpoint_flood(s: &mut Sim, from: f64, to: f64) {
     let rate = s.rng.range(10.0, 40.0);
     let mut t = from;
     while t < to {
-        let id = s.rng.next() % 1_000_000;
+        let id = s.rng.next_u64() % 1_000_000;
         s.push(&w, t, "GET", format!("/api/reports/export?id={id}"), 200);
         t += 1.0 / rate;
     }
@@ -635,7 +635,7 @@ fn distributed_flood(s: &mut Sim, from: f64, to: f64) {
         };
         let mut t = from + s.rng.range(0.0, 4.0);
         while t < to {
-            let q = s.rng.next() % 100_000;
+            let q = s.rng.next_u64() % 100_000;
             s.push(&w, t, "GET", format!("/search?q={q}"), 200);
             t += s.rng.range(3.0, 5.0);
         }
