@@ -38,6 +38,7 @@ pub struct State {
     pub deny: Vec<Cidr>,
     pub challenge_list: Vec<Cidr>,
     pub rules: crate::policy::rules::RuleSet,
+    pub rate_limiter: crate::policy::rate_limit::RateLimiter,
     pub conns: Mutex<HashMap<IpAddr, u32>>,
     pub req_counter: AtomicU64,
     pub console_second: AtomicU64,

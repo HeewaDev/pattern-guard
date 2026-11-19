@@ -560,3 +560,37 @@ action = "block"
         m.body
     );
 }
+
+#[tokio::test]
+async fn rate_limits_answer_429_with_retry_after() {
+    let gw = start_gateway(
+        r#"
+[[rate_limits]]
+name = "login"
+path = "/login"
+methods = ["POST"]
+requests = 3
+per_secs = 60
+"#,
+    )
+    .await;
+    let ip = ("x-forwarded-for", "203.0.113.40");
+    for _ in 0..3 {
+        let r = send(gw.addr, "POST", "/login", &[ip], "user=a&pass=b").await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    let r = send(gw.addr, "POST", "/login", &[ip], "user=a&pass=b").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(r.headers.get("retry-after").unwrap(), "20");
+    assert!(r.body.contains("rate_limited"));
+    // other IPs and other routes are unaffected
+    let other = ("x-forwarded-for", "203.0.113.41");
+    assert_eq!(
+        send(gw.addr, "POST", "/login", &[other], "").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(gw.addr, "GET", "/shop", &[ip], "").await.status,
+        StatusCode::OK
+    );
+}

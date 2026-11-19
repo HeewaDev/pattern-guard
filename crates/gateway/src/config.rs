@@ -65,6 +65,9 @@ pub struct GatewayConfig {
     /// Custom firewall rules, evaluated in order (see docs/GATEWAY.md#custom-rules).
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
+    /// Rate limits per route and key (see docs/GATEWAY.md#rate-limits).
+    #[serde(default)]
+    pub rate_limits: Vec<RateLimitConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -279,6 +282,42 @@ pub struct RuleConfig {
     #[serde(default)]
     pub headers: Vec<HeaderMatch>,
     pub action: RuleAction,
+}
+
+/// What happens when a rate limit is exceeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitAction {
+    /// 429 Too Many Requests with Retry-After.
+    #[default]
+    Block,
+    Challenge,
+    Delay,
+}
+
+/// A token-bucket rate limit: `requests` per `per_secs`, bursts up to `requests`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitConfig {
+    pub name: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub path_regex: Option<String>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// `ip` (default), `ip_route` (per IP and route template), or `header:<name>`
+    /// (e.g. `header:x-api-key`; falls back to the IP when the header is missing).
+    #[serde(default = "d_limit_key")]
+    pub key: String,
+    pub requests: u32,
+    pub per_secs: f64,
+    #[serde(default)]
+    pub action: LimitAction,
+}
+
+fn d_limit_key() -> String {
+    "ip".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

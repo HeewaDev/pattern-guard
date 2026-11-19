@@ -58,3 +58,28 @@ pub(super) fn block_page(h: &HeaderMap, id: &str) -> Response<Body> {
         )
     }
 }
+
+/// 429 with `Retry-After`, as HTML for browsers and JSON for API clients.
+pub(super) fn too_many_requests(h: &HeaderMap, id: &str, retry_after: u64) -> Response<Body> {
+    let mut r = if wants_html(h) {
+        respond(
+            StatusCode::TOO_MANY_REQUESTS,
+            "text/html; charset=utf-8",
+            format!(
+                "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Too many requests</title></head>\
+                 <body style=\"font:16px/1.5 system-ui,sans-serif;max-width:30rem;margin:4rem auto;padding:0 1rem\"><h1>Too many requests</h1><p>Please wait {retry_after} seconds and try again.</p><p><code>{id}</code></p></body></html>"
+            ),
+        )
+    } else {
+        respond(
+            StatusCode::TOO_MANY_REQUESTS,
+            "application/json",
+            format!(
+                "{{\"error\":\"rate_limited\",\"retry_after\":{retry_after},\"request_id\":\"{id}\"}}"
+            ),
+        )
+    };
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
+    r
+}

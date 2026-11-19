@@ -565,6 +565,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "lru",
  "pattern-guard",
  "regex",
  "serde",

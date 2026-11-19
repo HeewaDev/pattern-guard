@@ -26,11 +26,11 @@ pub use responses::full;
 
 use decision_log::{LogCtx, log_decision};
 use forward::{CloneHead, forward};
-use responses::{block_page, header_str, respond, wants_html};
+use responses::{block_page, header_str, respond, too_many_requests, wants_html};
 use verify::verify;
 
 use crate::challenge::VERIFY_PATH;
-use crate::config::{Mode, RuleAction};
+use crate::config::{LimitAction, Mode, RuleAction};
 use crate::intel::IntelAction;
 use crate::ipnet::any_contains;
 use crate::state::State;
@@ -117,6 +117,7 @@ pub async fn handle(
     if matches!(rule.terminal, Some((RuleAction::Allow, _))) {
         return Ok(forward(&state, parts, body, ip, &id, None).await.0);
     }
+    let limit = state.rate_limiter.check(ip, &parts);
 
     // ---- behavioural ML (always recorded, even if another layer blocks) ----
     let mut event = Event::new(
@@ -221,6 +222,20 @@ pub async fn handle(
             _ => Action::Delay,
         };
         raise(a, "rule", format!("rule:{name}"), &mut action, &mut layer);
+    }
+    if let Some(hit) = &limit {
+        let a = match hit.action {
+            LimitAction::Block => Action::Block,
+            LimitAction::Challenge => Action::Challenge,
+            LimitAction::Delay => Action::Delay,
+        };
+        raise(
+            a,
+            "rate_limit",
+            format!("rate_limit:{}", hit.name),
+            &mut action,
+            &mut layer,
+        );
     }
     for name in &rule.logged {
         raise(
@@ -334,12 +349,17 @@ pub async fn handle(
     if enforce {
         match action {
             Action::Block => {
-                state.guard.observe_response(&event, 403);
+                let rate_limited = layer == "rate_limit";
+                let status = if rate_limited { 429 } else { 403 };
+                state.guard.observe_response(&event, status);
                 state
                     .inventory
-                    .record(parts.method.as_str(), &template, 403, true);
-                log_decision(&state, &parts, &ctx, 403);
-                return Ok(block_page(&parts.headers, &id));
+                    .record(parts.method.as_str(), &template, status, true);
+                log_decision(&state, &parts, &ctx, status);
+                return Ok(match (&limit, rate_limited) {
+                    (Some(hit), true) => too_many_requests(&parts.headers, &id, hit.retry_after),
+                    _ => block_page(&parts.headers, &id),
+                });
             }
             Action::Challenge => {
                 // Neutral for the behavioural engine: a human who meets a challenge must

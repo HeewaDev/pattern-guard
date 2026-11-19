@@ -20,3 +20,4 @@ toml.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 regex.workspace = true
+lru.workspace = true

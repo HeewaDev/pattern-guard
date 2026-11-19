@@ -71,6 +71,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         deny: cidrs(&cfg.access.deny),
         challenge_list: cidrs(&cfg.access.challenge),
         rules: policy::rules::RuleSet::compile(&cfg.rules)?,
+        rate_limiter: policy::rate_limit::RateLimiter::compile(&cfg.rate_limits)?,
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),

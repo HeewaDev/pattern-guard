@@ -90,3 +90,19 @@ include_allowed = false
 # path = "/webhooks/"
 # headers = [{ name = "x-signature" }]
 # action = "skip_waf"
+
+# ---- Rate limits (token bucket: `requests` per `per_secs`, bursts up to `requests`).
+# key = "ip" | "ip_route" | "header:<name>"; action = "block" (429) | "challenge" | "delay".
+# [[rate_limits]]
+# name = "login attempts"
+# path = "/login"
+# methods = ["POST"]
+# requests = 10
+# per_secs = 60
+#
+# [[rate_limits]]
+# name = "API per key"
+# path = "/api/"
+# key = "header:x-api-key"
+# requests = 600
+# per_secs = 60
