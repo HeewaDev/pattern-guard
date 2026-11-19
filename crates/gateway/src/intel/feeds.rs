@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use crate::config::{FeedAction, FeedConfig, FeedKind};
 use crate::intel::{IntelAction, IntelEntry, IntelStore};
 use crate::ipnet::Cidr;
-use crate::metrics::Metrics;
+use crate::observability::metrics::Metrics;
 
 /// Extracts (attacker IP, reason) from one alert line, if it qualifies.
 pub fn parse_alert(

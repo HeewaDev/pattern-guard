@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::config::CrowdSecConfig;
 use crate::intel::{IntelAction, IntelEntry, IntelStore};
 use crate::ipnet::Cidr;
-use crate::metrics::Metrics;
+use crate::observability::metrics::Metrics;
 
 #[derive(Deserialize)]
 struct Stream {

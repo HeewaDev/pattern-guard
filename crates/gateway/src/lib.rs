@@ -7,13 +7,9 @@
 
 pub mod challenge;
 pub mod config;
-pub mod crowdsec;
-pub mod eventlog;
-pub mod feeds;
 pub mod intel;
-pub mod inventory;
 pub mod ipnet;
-pub mod metrics;
+pub mod observability;
 pub mod proxy;
 pub mod state;
 
@@ -34,11 +30,11 @@ use tokio::net::TcpListener;
 
 use crate::challenge::Challenger;
 use crate::config::GatewayConfig;
-use crate::eventlog::EventLog;
 use crate::intel::IntelStore;
-use crate::inventory::Inventory;
 use crate::ipnet::{Cidr, any_contains, normalize};
-use crate::metrics::Metrics;
+use crate::observability::eventlog::EventLog;
+use crate::observability::inventory::Inventory;
+use crate::observability::metrics::Metrics;
 use crate::state::State;
 
 /// Builds the shared state (loads the engine config, starts the decision log writer).
@@ -85,8 +81,8 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
 /// Starts background tasks (CrowdSec, feeds, sweeper) and the admin server.
 pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Result<(), String> {
     if state.cfg.crowdsec.enabled {
-        let key = crowdsec::api_key(&state.cfg.crowdsec)?;
-        tokio::spawn(crowdsec::run(
+        let key = intel::crowdsec::api_key(&state.cfg.crowdsec)?;
+        tokio::spawn(intel::crowdsec::run(
             state.cfg.crowdsec.clone(),
             key,
             state.intel.clone(),
@@ -94,7 +90,7 @@ pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Resul
         ));
     }
     for f in &state.cfg.feeds {
-        tokio::spawn(feeds::run(
+        tokio::spawn(intel::feeds::run(
             f.clone(),
             state.intel.clone(),
             state.metrics.clone(),

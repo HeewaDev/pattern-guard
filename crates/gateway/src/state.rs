@@ -15,11 +15,11 @@ use pattern_guard::waf::Inspector;
 
 use crate::challenge::Challenger;
 use crate::config::GatewayConfig;
-use crate::eventlog::EventLog;
 use crate::intel::IntelStore;
-use crate::inventory::Inventory;
 use crate::ipnet::Cidr;
-use crate::metrics::Metrics;
+use crate::observability::eventlog::EventLog;
+use crate::observability::inventory::Inventory;
+use crate::observability::metrics::Metrics;
 
 pub struct State {
     pub cfg: GatewayConfig,

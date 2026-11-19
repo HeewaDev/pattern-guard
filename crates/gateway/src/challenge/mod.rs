@@ -236,30 +236,8 @@ pub fn safe_return(r: &str) -> &str {
     }
 }
 
-const CHALLENGE_HTML: &str = r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>Checking your browser…</title>
-<style>
-:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#1d2330;--muted:#5b6475;--bar:#3b82f6}
-@media (prefers-color-scheme:dark){:root{--bg:#11141a;--fg:#e6e9ef;--muted:#9aa3b2}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-main{max-width:28rem;padding:2rem 1rem;text-align:center}
-h1{font-size:1.25rem;margin:0 0 .5rem}p{color:var(--muted);margin:.25rem 0}
-.track{height:6px;border-radius:3px;background:rgba(127,127,127,.25);overflow:hidden;margin:1.25rem 0 .5rem}
-.fill{height:100%;width:0;background:var(--bar);transition:width .2s}
-</style></head><body><main>
-<h1>Checking that you're not a bot</h1>
-<p>This takes a moment and happens once. Please keep this page open.</p>
-<div class="track"><div class="fill" id="f"></div></div>
-<p id="s">Working…</p>
-<noscript><p>JavaScript is required to continue.</p></noscript>
-</main><script>
-function sha256(a){function r(v,n){return(v>>>n)|(v<<(32-n))}var p=Math.pow,M=p(2,32),o='',w=[],L=a.length*8,h=sha256.h=sha256.h||[],k=sha256.k=sha256.k||[],K=k.length,c={},i,j;for(var x=2;K<64;x++){if(!c[x]){for(i=0;i<313;i+=x)c[i]=x;h[K]=(p(x,.5)*M)|0;k[K++]=(p(x,1/3)*M)|0}}a+='\x80';while(a.length%64-56)a+='\x00';for(i=0;i<a.length;i++){j=a.charCodeAt(i);w[i>>2]|=j<<((3-i)%4)*8}w[w.length]=((L/M)|0);w[w.length]=L;for(j=0;j<w.length;){var W=w.slice(j,j+=16),O=h;h=h.slice(0,8);for(i=0;i<64;i++){var a15=W[i-15],a2=W[i-2],A=h[0],E=h[4],t1=h[7]+(r(E,6)^r(E,11)^r(E,25))+((E&h[5])^((~E)&h[6]))+k[i]+(W[i]=(i<16)?W[i]:(W[i-16]+(r(a15,7)^r(a15,18)^(a15>>>3))+W[i-7]+(r(a2,17)^r(a2,19)^(a2>>>10)))|0),t2=(r(A,2)^r(A,13)^r(A,22))+((A&h[1])^(A&h[2])^(h[1]&h[2]));h=[(t1+t2)|0].concat(h);h[4]=(h[4]+t1)|0}for(i=0;i<8;i++)h[i]=(h[i]+O[i])|0}for(i=0;i<8;i++){for(j=3;j+1;j--){var b=(h[i]>>(j*8))&255;o+=((b<16)?0:'')+b.toString(16)}}return o}
-function zeros(hx){var n=0;for(var i=0;i<hx.length;i++){var v=parseInt(hx[i],16);if(v===0){n+=4;continue}n+=Math.clz32(v)-28;break}return n}
-var N="__NONCE__",E=__EXPIRES__,D=__DIFFICULTY__,S="__SIG__",R=__RETURN__,c=0,exp=Math.pow(2,D),f=document.getElementById('f'),s=document.getElementById('s');
-function step(){var t=Date.now();while(Date.now()-t<50){if(zeros(sha256(N+':'+c))>=D){s.textContent='Done — redirecting…';f.style.width='100%';location.replace("__VERIFY__?n="+N+"&e="+E+"&d="+D+"&s="+S+"&c="+c+"&r="+encodeURIComponent(R));return}c++}f.style.width=Math.min(95,100*c/exp)+'%';setTimeout(step,0)}
-step();
-</script></body></html>"#;
+/// The challenge page; `__NONCE__`-style placeholders are filled per request.
+const CHALLENGE_HTML: &str = include_str!("page.html");
 
 #[cfg(test)]
 mod tests {
