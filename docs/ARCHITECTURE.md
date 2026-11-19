@@ -26,6 +26,9 @@ crates/
   cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
   gateway/   pattern-guard-gateway  reverse proxy
              src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
+             src/policy/              custom rules, rate limits, bans + traps, protocol enforcement
+             src/hardening/           security headers, data-leak blocking
+             src/geo.rs               IP → country lookup and country policy
              src/challenge/           proof-of-work challenge (+ page.html)
              src/intel/               reputation store, CrowdSec bouncer, Suricata/Wazuh feeds
              src/observability/       metrics, JSON decision log, API inventory
@@ -54,8 +57,11 @@ client IP  (peer, or right-most untrusted X-Forwarded-For entry if the peer is a
 buffer body (≤ max_body_bytes, else 413)
    │
    ├─ IP on allow list ─────────────────────────────────────────────► forward
+   ├─ custom rule `allow` ──────────────────────────────────────────► forward
    │
    ▼
+0. gatekeeper policy: custom rules · country policy · protocol enforcement ·
+   honeypot traps (→ immediate ban) · rate limits (→ 429)
 1. behavioural ML    guard.assess(event)          → risk, bot score, Allow/Warn/Delay/Challenge/Block
 2. WAF               waf.inspect(request)          → findings per location, score 0–10
 3. reputation        intel.lookup(ip)              → CrowdSec / Suricata / Wazuh entry

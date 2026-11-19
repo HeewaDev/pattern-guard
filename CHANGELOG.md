@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Gatekeeper features** in the gateway (new `policy/` and `hardening/` modules):
+  - custom firewall rules (`[[rules]]`);
+  - per-route rate limits with 429 and Retry-After (`[[rate_limits]]`);
+  - escalating automatic bans and honeypot traps (`[bans]`, `[traps]`, plus `/bans` and
+    `/bans/unban` admin endpoints);
+  - HTTP protocol enforcement (`[protocol]`);
+  - security headers (`[response_headers]`);
+  - data-leak blocking on responses (`[response_inspection]`);
+  - country access control from an IP-to-country CSV (`[geo]`).
 - **`pattern-guard-gateway`** (new crate in `gateway/`): a reverse proxy that enforces
   Pattern-Guard decisions in front of any HTTP app.
   - Detect (shadow) and prevent modes.

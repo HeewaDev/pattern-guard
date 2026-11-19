@@ -39,9 +39,9 @@ re-verified line by line.
 | 1.9 | API schema enforcement (OpenAPI) | Premium | ⬜ | Load OpenAPI spec; validate method/path/params/body types per route template |
 | 1.10 | Block malicious IPs (ThreatCloud reputation) | Enterprise | 🔌✅ CrowdSec bouncer: community blocklist + local decisions, ban → block, captcha → challenge (`crates/gateway/src/intel/crowdsec.rs`, tested against a mock LAPI) | Test against a live CrowdSec |
 | 1.11 | Block anonymizers & Tor | Enterprise | ⬜ | Load Tor exit list + VPN/hosting ASN lists as features/blocks |
-| 1.12 | IP-level access control on every request | Community | ✅ allow / deny / challenge CIDR lists, trusted-proxy client-IP resolution | |
+| 1.12 | IP-level access control on every request | Community | ✅ allow / deny / challenge CIDR lists, custom rules on IP / not-IP, country policy, trusted-proxy client-IP resolution | |
 | 1.13 | CrowdSec integration | Community | ✅ (as bouncer) · ⬜ push our decisions to CrowdSec (`POST /v1/alerts`) | |
-| 1.14 | Rate limiting | (docs; edition unverified) | ✅ explicit rules + adaptive surge detection, enforced by the gateway; per-IP connection cap | |
+| 1.14 | Rate limiting | (docs; edition unverified) | ✅ per-route token buckets keyed by IP, IP+route or API-key header (`[[rate_limits]]`, 429 + Retry-After) · adaptive surge detection · per-IP connection cap | |
 | 1.15 | File upload security | Enterprise (third-party listings; unverified) | ⬜ | Multipart: type/extension/magic-byte checks, size limits, optional ClamAV hook |
 | 1.16 | Deploy as NGINX / Kong / APISIX / Envoy / Istio attachment | Community | ✅ standalone reverse proxy (`gateway/`) · ⬜ nginx `auth_request` / Envoy `ext_authz` decision endpoint · ⬜ WebSocket passthrough · ⬜ HTTP/2 | |
 | 1.17 | Kubernetes ingress / Helm | Community | ⬜ | Container image + Helm chart |
@@ -60,16 +60,16 @@ re-verified line by line.
 | # | Capability | Pattern-Guard | Notes |
 |---|---|---|---|
 | 2.1 | WAF with managed signatures | 🧪 `crates/waf` scoring engine, 9 attack classes · ⬜ optional Coraza + OWASP CRS second opinion | |
-| 2.2 | Custom security rules | ✅ rule thresholds, WAF path/param exclusions, IP lists · ⬜ per-route custom match rules | |
-| 2.3 | Virtual patching | ⬜ | Custom rules per route template |
+| 2.2 | Custom security rules | ✅ `[[rules]]`: path, method, host, IP, country, UA, query, header conditions; allow / block / challenge / delay / log / skip_waf | |
+| 2.3 | Virtual patching | ✅ via `[[rules]]` (block a vulnerable route / parameter pattern until patched) | |
 | 2.4 | Advanced bot protection | 🧪 behaviour ML, fingerprints · 🚧 challenge · ⬜ verified good bots (reverse DNS), headless-browser signals | |
 | 2.5 | Account takeover protection | 🧪 credential stuffing detection (failure ratios, route failure surge) · ⬜ breached-password check (k-anonymity), per-username tracking | |
-| 2.6 | Application-layer DDoS protection | 🧪 surge detection + blocking · ✅ per-IP connection cap, header-read timeout (slowloris), body size limit | |
+| 2.6 | Application-layer DDoS protection | 🧪 surge detection + blocking · ✅ rate limits, escalating bans, per-IP connection cap, header-read timeout (slowloris), body size limit | |
 | 2.7 | Network-layer (L3/L4) volumetric DDoS scrubbing | ❌ | Needs upstream bandwidth/scrubbing centres. Self-hosted: put behind a CDN/ISP scrubbing service |
 | 2.8 | API discovery & inventory | ✅ `/inventory` on the admin port: route templates, volume, blocks, status codes | |
 | 2.9 | API schema protection | ⬜ | Same as 1.9 |
-| 2.10 | Sensitive data exposure detection (responses) | ⬜ | Scan responses for card numbers, keys, stack traces |
-| 2.11 | Client-side protection (third-party JS, CSP) | ⬜ | Inject CSP headers + collect reports |
+| 2.10 | Sensitive data exposure detection (responses) | ✅ `[response_inspection]`: SQL/stack-trace/error pages, directory listings, private keys, AWS keys → generic 500 or log | Card numbers / PII masking |
+| 2.11 | Client-side protection (third-party JS, CSP) | 🧪 CSP and other security headers injected (`[response_headers]`) · ⬜ CSP report collection, script inventory | |
 | 2.12 | RASP (in-app runtime protection) | 🧪 library mode is in-process · ⬜ sink-level hooks | Long-term |
 | 2.13 | Threat intelligence / IP reputation | 🔌✅ CrowdSec | |
 | 2.14 | Attack analytics (grouping incidents) | ⬜ | Cluster decision log by actor/fingerprint/time |
@@ -92,11 +92,34 @@ re-verified line by line.
 | 2b.8 | Per-parameter learned value types and keyword-confidence filtering | ⬜ | open-appsec `TypeIndicatorsFilter.cc`, `KeywordIndicatorFilter.cc` |
 | 2b.9 | PHP code injection (tags, functions, superglobals, wrappers, serialized objects) | ⬜ (CRS 933: 1.8 %) | CRS 933, `php-function-names` |
 | 2b.10 | Java attacks (deserialization magic bytes incl. base64, class names) | ⬜ (CRS 944: 6.6 %) | CRS 944, `java-classes.data` |
-| 2b.11 | Protocol enforcement (null/non-printable bytes, double encoding, CL+TE, CRLF, parameter pollution, restricted extensions) | ⬜ (CRS 920/921: 1–3 %) | CRS 920 / 921 |
+| 2b.11 | Protocol enforcement (null/non-printable bytes, double encoding, CL+TE, CRLF, parameter pollution, restricted extensions) | 🧪 `[protocol]`: methods, URL / header / argument limits, NUL bytes, Host, restricted extensions · ⬜ double encoding, CRLF, parameter pollution | CRS 920 / 921 |
 | 2b.12 | Reputation-weighted WAF score (behavioural bot score scales payload score) | ⬜ | open-appsec `D2Main.cc` |
 | 2b.13 | Quantitative false-positive gate in CI (100k English sentences) | ⬜ | CRS `quantitative.yaml` |
-| 2b.14 | Response inspection (SQL/PHP/Java errors, web shells) | ⬜ | CRS 95x, open-appsec `resp_body_*` |
-| 2b.15 | Exclusions per indicator × target, packaged per app (WordPress, Drupal…) | ⬜ | CRS exclusion plugins, open-appsec `WaapOverride.h` |
+| 2b.14 | Response inspection (SQL/PHP/Java errors, web shells) | ✅ errors, stack traces, listings, keys · ⬜ web-shell signatures | CRS 95x, open-appsec `resp_body_*` |
+| 2b.15 | Exclusions per indicator × target, packaged per app (WordPress, Drupal…) | 🧪 `skip_waf` rules, `exclude_params`, `exclude_paths` · ⬜ per-indicator exclusions, app packages | CRS exclusion plugins, open-appsec `WaapOverride.h` |
+
+## 2c. Gatekeeper parity with other open-source tools
+
+| # | Behaviour | Found in | Pattern-Guard |
+|---|---|---|---|
+| 2c.1 | Custom rules, virtual patching | Coraza / ModSecurity, Cloudflare, BunkerWeb | ✅ `[[rules]]` |
+| 2c.2 | Rate limiting per route / key | nginx `limit_req`, BunkerWeb, open-appsec | ✅ `[[rate_limits]]` |
+| 2c.3 | Escalating automatic bans | fail2ban, CrowdSec | ✅ `[bans]` |
+| 2c.4 | Honeypot / bad-behaviour bans | BunkerWeb | ✅ `[traps]` |
+| 2c.5 | Proof-of-work / JS challenge | Anubis, BunkerWeb antibot, CrowdSec AppSec | ✅ PoW · ⬜ CAPTCHA providers (Turnstile, hCaptcha) |
+| 2c.6 | Country blocking | BunkerWeb, SafeLine, Cloudflare | ✅ `[geo]` |
+| 2c.7 | Security headers | BunkerWeb | ✅ `[response_headers]` |
+| 2c.8 | Error-disclosure / data-leak blocking | open-appsec, CRS 95x | ✅ `[response_inspection]` |
+| 2c.9 | Protocol enforcement | CRS 911/920 | 🧪 `[protocol]` (partial, see 2b.11) |
+| 2c.10 | Consume shared IP reputation | CrowdSec bouncers | ✅ CrowdSec bouncer |
+| 2c.11 | Push decisions to CrowdSec / host firewall (nftables) | CrowdSec, fail2ban | ⬜ |
+| 2c.12 | Verified good bots (reverse DNS) | Cloudflare, BunkerWeb | ⬜ |
+| 2c.13 | Tor / anonymiser / DNSBL blocking | open-appsec Enterprise, BunkerWeb | ⬜ |
+| 2c.14 | Path-level authentication (basic auth / OIDC) | BunkerWeb, SafeLine | ⬜ |
+| 2c.15 | Per-path body limits, upload filtering | SafeLine, open-appsec | 🧪 global `max_body_bytes` · ⬜ per path, file-type checks |
+| 2c.16 | WebSocket, HTTP/2, TLS termination, caching, compression | BunkerWeb, SafeLine (nginx-based) | ⬜ (TLS via a front proxy today) |
+| 2c.17 | Hot reload of config without dropping connections | all of the above | ⬜ |
+| 2c.18 | Web UI for decisions, bans and tuning | BunkerWeb, SafeLine, open-appsec | ⬜ |
 
 ## 3. Proof
 
@@ -110,4 +133,4 @@ re-verified line by line.
 | 3.2e | Zero-day-style PHP code execution (PHP tags + OS command in a multipart field such as `PHP_SESSION_UPLOAD_PROGRESS`) | ⬜ only logged (score 4), not blocked |
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
 | 3.4 | Performance under load | 🧪 ~32 000 req/s, p99 ≈ 3 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`) · ⬜ shard the engine lock |
-| 3.5 | End-to-end gateway tests | ✅ 9 tests over real TCP: WAF, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints |
+| 3.5 | End-to-end gateway tests | ✅ 16 tests over real TCP: WAF, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |

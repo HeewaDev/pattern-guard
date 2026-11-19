@@ -5,11 +5,13 @@ A reverse proxy that sits in front of any HTTP application and enforces its deci
 ```
 client ─► [TLS terminator / CDN] ─► pattern-guard-gateway ─► your app
                                         │
-   every request:  allow/deny/challenge lists
-                   → IP reputation (CrowdSec community blocklist, Suricata & Wazuh alerts)
+   every request:  allow / deny / challenge lists · custom rules · country policy
+                   → protocol enforcement · honeypot traps · rate limits
+                   → IP reputation (automatic bans, CrowdSec community blocklist, Suricata & Wazuh alerts)
                    → WAF payload inspection (SQLi, XSS, traversal, RCE, SSRF, Log4Shell, XXE, SSTI, NoSQL)
                    → behavioural ML (bots, scraping, credential stuffing, L7 floods)
-                   → one decision: allow · delay · proof-of-work challenge · block
+                   → one decision: allow · delay · proof-of-work challenge · block (403 / 429 / 4xx)
+   every response: security headers · data-leak blocking
 ```
 
 ## Quick start
@@ -40,9 +42,116 @@ Caddy, HAProxy, a cloud load balancer or a CDN — and list that hop in
 
 A valid clearance cookie lifts Challenge and Delay, never Block.
 
-Precedence: the most severe layer wins. `deny` list → Block; reputation `ban` → Block;
-reputation `captcha` or `challenge` list → Challenge; WAF score ≥ `block_score` → Block;
-behavioural ML → its own decision.
+Precedence: an `allow` list entry or `allow` rule skips everything; otherwise the most
+severe layer wins (Block > Challenge > Delay > Allow). The deciding layer appears as
+`layer` in the decision log and in `pattern_guard_blocked_total{layer=...}`:
+`deny_list`, `rule`, `geo`, `protocol`, `trap`, `rate_limit`, `reputation`, `waf`,
+`behaviour`, `data_leak`. Enforced blocks from any layer except `reputation` and `trap`
+count towards automatic bans.
+
+## Custom rules
+
+`[[rules]]`, evaluated in file order. Every condition you set must match. The first
+terminal action wins; `log` and `skip_waf` keep evaluating.
+
+| Condition | Meaning |
+|---|---|
+| `path` / `path_regex` | Path prefix / regex (query string excluded) |
+| `methods` | e.g. `["POST", "PUT"]` |
+| `hosts` | Exact host, or `*.example.com` for subdomains |
+| `ips` / `not_ips` | Client IP in / not in these CIDRs |
+| `countries` | Client country (needs `[geo] database`) |
+| `user_agent_regex`, `query_regex` | Regex on User-Agent / raw query string |
+| `headers` | `[{ name, regex }]` present and matching, or `[{ name, absent = true }]` |
+
+| Action | Effect |
+|---|---|
+| `allow` | Forward with no further inspection (terminal) |
+| `block` / `challenge` / `delay` | As the decisions above (terminal) |
+| `log` | Note the match in the decision log, continue |
+| `skip_waf` | Skip payload inspection for this request, continue |
+
+Typical uses:
+- **Virtual patching:** block a vulnerable endpoint until the app is fixed.
+- **Admin areas:** allow them only from the office network.
+- **Known attack tools:** challenge them.
+- **Signed webhooks:** turn off WAF inspection for them.
+
+## Rate limits
+
+`[[rate_limits]]` is a token bucket per route and key. Each rule sets `requests` per
+`per_secs`, and bursts up to `requests` are allowed.
+
+- **Route:** `path`, `path_regex`, `methods`.
+- **Key:**
+  - `ip` (the default);
+  - `ip_route`: per IP and per route template (`/api/items/{n}`);
+  - `header:<name>`: per header value, e.g. an API key; falls back to the IP if the header
+    is missing.
+- **Action:**
+  - `block`: **429 Too Many Requests** with `Retry-After` (HTML or JSON);
+  - `challenge`;
+  - `delay`.
+
+Every matching limit consumes a token. The most severe exceeded limit decides.
+
+## Bans and honeypot traps
+
+- `[bans]` (on by default): `threshold` enforced blocks within `window_secs` ban the IP for
+  `ban_secs`. Each repeat ban lasts `escalation`× longer, up to `max_ban_secs`.
+- `[traps]`: path prefixes your site never serves, e.g. `/wp-login.php` on a
+  non-WordPress site. One request to a trap bans the client for `traps.ban_secs`.
+- Bans live in the reputation store as source `gateway:ban`, so they are enforced, expire
+  on their own, and are logged like CrowdSec decisions.
+- On the admin port: `GET /bans` lists bans and `POST /bans/unban?ip=…` lifts one.
+
+## Protocol enforcement
+
+`[protocol]` (on by default) applies the ideas of OWASP CRS 911/920. Each refusal uses
+its proper status:
+
+| Check | Status |
+|---|---|
+| Method not in `allowed_methods` | 405 |
+| Request target over `max_url_bytes` | 414 |
+| More than `max_headers` fields, or over `max_header_bytes` | 431 |
+| More than `max_query_args` | 400 |
+| NUL byte (raw or `%00`) in the target | 400 |
+| Missing Host | 400 |
+| Path ending in a `restricted_extensions` entry (e.g. `.bak`, `.sql`) | 403 |
+
+## Security headers
+
+`[response_headers]` (on by default). Added only where your app hasn't set them:
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN` and `Referrer-Policy`.
+HSTS, CSP, Permissions-Policy and COOP are opt-in. Fingerprinting headers (`Server`,
+`X-Powered-By`, `X-AspNet-Version`, …) are removed. Set a value to `""` to disable it.
+
+## Data-leak blocking
+
+`[response_inspection]` (opt-in) scans uncompressed text responses for things that
+should never reach a visitor:
+- SQL errors (MySQL, PostgreSQL, Oracle, SQL Server, SQLite);
+- PHP, Java, Python, .NET and Node error pages and stack traces;
+- directory listings;
+- private keys and AWS access keys.
+
+In prevent mode with `action = "block"`, the response is replaced by a generic 500 page;
+otherwise it is passed through and logged (layer `data_leak`). Responses larger than
+`max_bytes` are inspected at the start and the rest is streamed unchanged.
+
+## Country access control
+
+`[geo]` loads an IP-to-country CSV in the format `start_ip,end_ip,country_code`, IPv4
+and IPv6. The free DB-IP "IP to Country Lite" database uses this format (CC BY 4.0,
+attribution required).
+
+- `deny_countries`: blocked.
+- `challenge_countries`: challenged.
+- `allow_countries`: if set, every other known country is blocked. Private and unknown
+  addresses are never blocked.
+- Custom rules accept `countries = [...]`.
+- The decision log records each request's `country`.
 
 ## Threat intelligence
 
@@ -118,6 +227,8 @@ software on your server can absorb more traffic than its uplink carries.
 | `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries, CrowdSec status, decision time |
 | `/healthz` | `ok` |
 | `/inventory` | API discovery: every route template seen (`GET /api/items/{n}`), with volume, block count, status codes, first/last seen |
+| `/bans` | Active automatic and trap bans: IP, reason, seconds left |
+| `POST /bans/unban?ip=…` | Lift a ban |
 
 ## Performance
 

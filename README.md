@@ -9,10 +9,12 @@ The detection engine is also a Rust library you can embed directly.
 ```
 client ─► [TLS / CDN] ─► pattern-guard-gateway ─► your app
                            │
-  allow/deny/challenge lists → IP reputation (CrowdSec · Suricata · Wazuh)
+  allow/deny/challenge lists · custom rules · country policy · protocol checks
+  → honeypot traps · rate limits → IP reputation (bans · CrowdSec · Suricata · Wazuh)
   → WAF (SQLi, XSS, traversal, RCE, SSRF, Log4Shell, XXE, SSTI, NoSQL)
   → behavioural ML (bots, scraping, credential stuffing, L7 floods)
   → allow · delay · proof-of-work challenge · block      (or log only: detect mode)
+  responses: security headers · data-leak blocking
 ```
 
 - **Repository:** `pattern-guard`
@@ -32,6 +34,12 @@ client ─► [TLS / CDN] ─► pattern-guard-gateway ─► your app
 | Network-layer detections (packets) | ✅ via Suricata: its alerts are enforced at the gateway |
 | Host-layer detections | ✅ via Wazuh: its alerts are enforced at the gateway; our events export to Wazuh |
 | API discovery | ✅ `/inventory` of every route template seen |
+| Custom firewall rules (virtual patching, admin-only areas, tool blocking) | ✅ `[[rules]]` |
+| Rate limiting per route / IP / API key | ✅ `[[rate_limits]]`, 429 + Retry-After |
+| Automatic escalating bans, honeypot traps | ✅ `[bans]`, `[traps]`, `/bans` admin API |
+| HTTP protocol enforcement | ✅ methods, sizes, NUL bytes, restricted extensions |
+| Security headers, data-leak blocking on responses | ✅ `[response_headers]`, `[response_inspection]` |
+| Country access control | ✅ `[geo]` with an IP-to-country CSV |
 | Proven on real production traffic | ⬜ **not yet.** Every number below comes from synthetic traffic or public payload lists |
 
 The full feature list, compared against open-appsec and Imperva, is in
@@ -137,6 +145,9 @@ crates/
   cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
   gateway/   pattern-guard-gateway  reverse proxy
              src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
+             src/policy/              custom rules, rate limits, bans + traps, protocol enforcement
+             src/hardening/           security headers, data-leak blocking
+             src/geo.rs               IP → country lookup and country policy
              src/challenge/           proof-of-work challenge (+ page.html)
              src/intel/               reputation store, CrowdSec bouncer, Suricata/Wazuh feeds
              src/observability/       metrics, JSON decision log, API inventory
