@@ -224,3 +224,33 @@ fn waf_corpus_accuracy() {
         "detection below 90%: {misses:#?}"
     );
 }
+
+/// ROADMAP M2 acceptance: PHP code plus an OS command in a multipart form field (the shape
+/// of PHP2Shell-style exploits targeting PHP_SESSION_UPLOAD_PROGRESS) is blocked with no
+/// CVE-specific rule.
+#[test]
+fn php_code_execution_in_multipart_field_is_blocked() {
+    use pattern_guard_waf::{AttackClass, HttpRequest};
+    let w = Inspector::new();
+    let part =
+        "--X\r\nContent-Disposition: form-data; name=\"PHP_SESSION_UPLOAD_PROGRESS\"\r\n\r\n";
+    for payload in [
+        "<?php system('id'); ?>",
+        "<?=`id`?>",
+        "<?php passthru($_GET['c']); ?>",
+        "<?php eval(base64_decode('aWQ=')); ?>",
+    ] {
+        let body = format!(
+            "{part}{payload}\r\n--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhello\r\n--X--\r\n"
+        );
+        let r = w.inspect(&HttpRequest {
+            path_and_query: "/index.php",
+            headers: &[],
+            content_type: Some("multipart/form-data; boundary=X"),
+            body: body.as_bytes(),
+        });
+        let top = r.top().expect("a finding");
+        assert!(top.score >= BLOCK, "{payload}: score {}", top.score);
+        assert_eq!(top.class, AttackClass::PhpInjection, "{payload}");
+    }
+}

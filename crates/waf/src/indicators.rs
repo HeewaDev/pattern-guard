@@ -381,6 +381,62 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             8.0,
             r"(\{\{|\{%|\$\{|<%)[^}%>]{0,200}(__class__|__globals__|__builtins__|__mro__|__subclasses__|config\.items|request\.application|self\._|lipsum|cycler|joiner|getruntime|processbuilder|freemarker\.template|\bexec\s*\()",
         ),
+        // ---- PHP code injection ----
+        i(PhpInjection, "php_open_tag", 5.0, r"<\?(php\b|=)"),
+        i(
+            PhpInjection,
+            "php_tag_with_code",
+            7.0,
+            r"<\?(php\b|=|\s)\s*(echo\b|print\b|\$\w|[a-z_]\w*\s*\()",
+        ),
+        i(
+            PhpInjection,
+            "php_tag_with_execution",
+            8.0,
+            r"<\?(php\b|=|\s)[\s\S]{0,300}?(`|\b(system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec|eval|assert|include|require|include_once|require_once|base64_decode|file_put_contents|fwrite|fputs)\s*\()",
+        ),
+        i(
+            PhpInjection,
+            "php_superglobal",
+            3.0,
+            r"\$_(get|post|request|cookie|server|files|env|session)\b",
+        ),
+        i(
+            PhpInjection,
+            "php_stream_wrapper",
+            7.0,
+            r"\bphp://(filter|input|fd|memory|temp|stdin)|\bdata://text/plain|\b(compress\.zlib|compress\.bzip2|glob)://",
+        ),
+        i(
+            PhpInjection,
+            "php_serialized_object",
+            7.0,
+            r#"\bo:\d+:"[a-z0-9_\\]+":\d+:\{"#,
+        ),
+        i(
+            PhpInjection,
+            "php_obfuscated_call",
+            7.0,
+            r#"["'](system|exec|passthru|shell_exec|assert|eval|popen|proc_open|pcntl_exec)["']\s*\(|\(\s*["']?(system|exec|passthru|shell_exec|assert|popen|proc_open)["']?\s*\)\s*\(|\[\s*["']?(system|exec|passthru|shell_exec|assert|popen|proc_open)["']?\s*\](\s*\[[^\]]*\])*\s*\("#,
+        ),
+        i(
+            PhpInjection,
+            "php_variable_function",
+            4.0,
+            r#"\$\{?[\w$]+\}?(\s*(\[[^\]]{0,40}\]|\{[^}]{0,40}\}))*\s*\(|\$\{\s*[$'"]"#,
+        ),
+        i(
+            PhpInjection,
+            "script_upload",
+            7.0,
+            r#"filename\s*=\s*"?[^"\r\n]*\.(php\d?|phtml|phar|pht|phps|asp|aspx|jsp|jspx|cgi)"?(\s|;|$)"#,
+        ),
+        i(
+            PhpInjection,
+            "php_dangerous_call",
+            4.0,
+            r"\b(eval|assert|system|passthru|shell_exec|popen|proc_open|pcntl_exec|create_function|call_user_func(_array)?)\s*\(",
+        ),
         // ---- NoSQL injection ----
         i(NoSqlInjection, "mongo_operator", 7.0, mongo_bracket),
         i(NoSqlInjection, "mongo_where", 8.0, r#"\$where\b"#),

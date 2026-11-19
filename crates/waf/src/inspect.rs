@@ -136,8 +136,10 @@ impl Inspector {
             }
         }
         if !jndi_only {
-            for (class, name, w) in self.lexicons.scan(location, &decoded) {
-                add(class, name, w);
+            for v in [&decoded, &variants[0]] {
+                for (class, name, w) in self.lexicons.scan(location, v) {
+                    add(class, name, w);
+                }
             }
             // Binary upload bodies legitimately contain NUL bytes; parameters never should.
             if location != "body"
