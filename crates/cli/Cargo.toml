@@ -1,0 +1,17 @@
+[package]
+name = "pattern-guard-cli"
+description = "pattern-guard command line: replay access logs, train models, wrap commands"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pattern-guard"
+path = "src/main.rs"
+
+[dependencies]
+pattern-guard.workspace = true
+log.workspace = true

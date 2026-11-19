@@ -532,13 +532,20 @@ name = "pattern-guard"
 version = "0.3.0"
 dependencies = [
  "criterion",
- "log",
  "lru",
  "pattern-guard-waf",
  "serde",
  "serde_json",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "pattern-guard-cli"
+version = "0.3.0"
+dependencies = [
+ "log",
+ "pattern-guard",
 ]
 
 [[package]]
