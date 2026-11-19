@@ -5,6 +5,7 @@
 //! inspection → behavioural ML → one decision → block / proof-of-work challenge / delay /
 //! forward. `mode = "detect"` logs the same decisions without enforcing them.
 
+pub mod challenge;
 pub mod config;
 pub mod intel;
 pub mod ipnet;
