@@ -74,6 +74,9 @@ pub struct GatewayConfig {
     /// Honeypot paths: requesting one bans the client immediately.
     #[serde(default)]
     pub traps: TrapConfig,
+    /// HTTP protocol enforcement (methods, sizes, null bytes, restricted extensions).
+    #[serde(default)]
+    pub protocol: ProtocolConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -329,6 +332,63 @@ impl Default for TrapConfig {
     fn default() -> Self {
         toml::from_str("").unwrap()
     }
+}
+
+/// Requests violating these limits are refused with the matching HTTP status.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolConfig {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    /// Allowed methods (405 otherwise).
+    #[serde(default = "d_methods")]
+    pub allowed_methods: Vec<String>,
+    /// Longest request target, path + query (414 otherwise).
+    #[serde(default = "d_max_url")]
+    pub max_url_bytes: usize,
+    /// Most header fields (431 otherwise).
+    #[serde(default = "d_max_headers")]
+    pub max_headers: usize,
+    /// Largest total of header names + values (431 otherwise).
+    #[serde(default = "d_max_header_bytes")]
+    pub max_header_bytes: usize,
+    /// Most query-string arguments (400 otherwise).
+    #[serde(default = "d_max_args")]
+    pub max_query_args: usize,
+    /// Refuse NUL bytes (raw or `%00`) in the request target (400).
+    #[serde(default = "d_true")]
+    pub block_null_bytes: bool,
+    /// Refuse requests without a Host header (400).
+    #[serde(default = "d_true")]
+    pub require_host: bool,
+    /// Refuse paths ending in these extensions, e.g. `.bak`, `.sql` (403).
+    #[serde(default)]
+    pub restricted_extensions: Vec<String>,
+}
+
+impl Default for ProtocolConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+fn d_methods() -> Vec<String> {
+    ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+fn d_max_url() -> usize {
+    8192
+}
+fn d_max_headers() -> usize {
+    100
+}
+fn d_max_header_bytes() -> usize {
+    32 * 1024
+}
+fn d_max_args() -> usize {
+    512
 }
 
 fn d_ban_threshold() -> u32 {

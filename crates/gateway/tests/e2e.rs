@@ -650,3 +650,40 @@ async fn repeat_offenders_and_trap_visitors_get_banned() {
         StatusCode::METHOD_NOT_ALLOWED
     );
 }
+
+#[tokio::test]
+async fn protocol_enforcement_uses_the_right_status_codes() {
+    let gw = start_gateway(
+        "[protocol]\nmax_url_bytes = 200\nrestricted_extensions = [\".bak\", \".sql\"]\n",
+    )
+    .await;
+    assert_eq!(
+        send(gw.addr, "TRACE", "/", &[], "").await.status,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    let long = format!("/search?q={}", "a".repeat(300));
+    assert_eq!(
+        send(gw.addr, "GET", &long, &[], "").await.status,
+        StatusCode::URI_TOO_LONG
+    );
+    assert_eq!(
+        send(gw.addr, "GET", "/backup/site.bak", &[], "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = send(gw.addr, "GET", "/download?file=a.php%00.png", &[], "").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body.contains("NUL byte"), "{}", r.body);
+    assert_eq!(
+        send(gw.addr, "GET", "/fine", &[], "").await.status,
+        StatusCode::OK
+    );
+    let m = send(gw.admin, "GET", "/metrics", &[], "").await;
+    assert!(
+        m.body
+            .contains("pattern_guard_blocked_total{layer=\"protocol\"} 4"),
+        "{}",
+        m.body
+    );
+}

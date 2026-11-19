@@ -83,3 +83,29 @@ pub(super) fn too_many_requests(h: &HeaderMap, id: &str, retry_after: u64) -> Re
         .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
     r
 }
+
+/// A refusal with a specific status (protocol violations).
+pub(super) fn error_response(
+    h: &HeaderMap,
+    id: &str,
+    status: StatusCode,
+    message: &str,
+) -> Response<Body> {
+    if wants_html(h) {
+        let title = status.canonical_reason().unwrap_or("Error");
+        respond(
+            status,
+            "text/html; charset=utf-8",
+            format!(
+                "<!doctype html><html lang=en><head><meta charset=utf-8><title>{title}</title></head>\
+                 <body style=\"font:16px/1.5 system-ui,sans-serif;max-width:30rem;margin:4rem auto;padding:0 1rem\"><h1>{title}</h1><p><code>{id}</code></p></body></html>"
+            ),
+        )
+    } else {
+        respond(
+            status,
+            "application/json",
+            serde_json::json!({ "error": message, "request_id": id }).to_string(),
+        )
+    }
+}

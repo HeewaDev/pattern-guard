@@ -40,6 +40,7 @@ pub struct State {
     pub rules: crate::policy::rules::RuleSet,
     pub rate_limiter: crate::policy::rate_limit::RateLimiter,
     pub bans: crate::policy::bans::Bans,
+    pub protocol: crate::policy::protocol::Protocol,
     pub conns: Mutex<HashMap<IpAddr, u32>>,
     pub req_counter: AtomicU64,
     pub console_second: AtomicU64,

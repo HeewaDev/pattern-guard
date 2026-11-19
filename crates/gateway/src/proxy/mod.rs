@@ -26,7 +26,7 @@ pub use responses::full;
 
 use decision_log::{LogCtx, log_decision};
 use forward::{CloneHead, forward};
-use responses::{block_page, header_str, respond, too_many_requests, wants_html};
+use responses::{block_page, error_response, header_str, respond, too_many_requests, wants_html};
 use verify::verify;
 
 use crate::challenge::VERIFY_PATH;
@@ -118,6 +118,7 @@ pub async fn handle(
         return Ok(forward(&state, parts, body, ip, &id, None).await.0);
     }
     let limit = state.rate_limiter.check(ip, &parts);
+    let violation = state.protocol.check(&parts);
     let trap = state.bans.trap(parts.uri.path()).map(str::to_string);
     if let Some(t) = &trap {
         state
@@ -217,6 +218,15 @@ pub async fn handle(
             Action::Block,
             "deny_list",
             "deny_list".into(),
+            &mut action,
+            &mut layer,
+        );
+    }
+    if let Some(v) = &violation {
+        raise(
+            Action::Block,
+            "protocol",
+            format!("protocol:{}", v.reason),
             &mut action,
             &mut layer,
         );
@@ -372,14 +382,20 @@ pub async fn handle(
         match action {
             Action::Block => {
                 let rate_limited = layer == "rate_limit";
-                let status = if rate_limited { 429 } else { 403 };
+                let protocol = violation.as_ref().filter(|_| layer == "protocol");
+                let status = match (rate_limited, protocol) {
+                    (true, _) => 429,
+                    (_, Some(v)) => v.status.as_u16(),
+                    _ => 403,
+                };
                 state.guard.observe_response(&event, status);
                 state
                     .inventory
                     .record(parts.method.as_str(), &template, status, true);
                 log_decision(&state, &parts, &ctx, status);
-                return Ok(match (&limit, rate_limited) {
-                    (Some(hit), true) => too_many_requests(&parts.headers, &id, hit.retry_after),
+                return Ok(match (&limit, rate_limited, protocol) {
+                    (Some(hit), true, _) => too_many_requests(&parts.headers, &id, hit.retry_after),
+                    (_, _, Some(v)) => error_response(&parts.headers, &id, v.status, &v.reason),
                     _ => block_page(&parts.headers, &id),
                 });
             }

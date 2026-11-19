@@ -2,5 +2,6 @@
 //! rate limits, bans, honeypot traps and protocol enforcement).
 
 pub mod bans;
+pub mod protocol;
 pub mod rate_limit;
 pub mod rules;

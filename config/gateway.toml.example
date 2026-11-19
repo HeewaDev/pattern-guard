@@ -123,3 +123,15 @@ max_ban_secs = 86400
 [traps]
 paths = []                # e.g. ["/wp-login.php", "/xmlrpc.php", "/.env", "/phpmyadmin"]
 ban_secs = 3600
+
+# ---- HTTP protocol enforcement (OWASP CRS 911/920 ideas). Defaults shown.
+[protocol]
+enabled = true
+allowed_methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]   # else 405
+max_url_bytes = 8192          # else 414
+max_headers = 100             # else 431
+max_header_bytes = 32768      # else 431
+max_query_args = 512          # else 400
+block_null_bytes = true       # %00 in the target → 400
+require_host = true
+restricted_extensions = []    # e.g. [".bak", ".old", ".sql", ".swp", ".env", ".git"] → 403

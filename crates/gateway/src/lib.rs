@@ -73,6 +73,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         rules: policy::rules::RuleSet::compile(&cfg.rules)?,
         rate_limiter: policy::rate_limit::RateLimiter::compile(&cfg.rate_limits)?,
         bans: policy::bans::Bans::new(cfg.bans.clone(), cfg.traps.clone()),
+        protocol: policy::protocol::Protocol::new(cfg.protocol.clone()),
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),
