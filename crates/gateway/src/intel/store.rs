@@ -100,6 +100,31 @@ impl IntelStore {
         g.ips.values().map(Vec::len).sum::<usize>() + g.ranges.len()
     }
 
+    /// Live entries whose source starts with `source_prefix`, as (ip or cidr, entry).
+    pub fn list(&self, source_prefix: &str) -> Vec<(String, IntelEntry)> {
+        let now = Instant::now();
+        let live = |e: &IntelEntry| {
+            e.source.starts_with(source_prefix) && e.expires.is_none_or(|x| x > now)
+        };
+        let g = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<(String, IntelEntry)> = g
+            .ips
+            .iter()
+            .flat_map(|(ip, list)| {
+                list.iter()
+                    .filter(|e| live(e))
+                    .map(move |e| (ip.to_string(), e.clone()))
+            })
+            .collect();
+        out.extend(
+            g.ranges
+                .iter()
+                .filter(|(_, e)| live(e))
+                .map(|(c, e)| (c.to_string(), e.clone())),
+        );
+        out
+    }
+
     /// Drops expired entries (call periodically).
     pub fn sweep(&self) {
         let now = Instant::now();

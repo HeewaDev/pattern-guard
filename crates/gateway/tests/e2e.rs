@@ -594,3 +594,59 @@ per_secs = 60
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn repeat_offenders_and_trap_visitors_get_banned() {
+    let gw = start_gateway(
+        "[bans]\nthreshold = 3\nwindow_secs = 60\nban_secs = 300\n[traps]\npaths = [\"/wp-login.php\"]\n",
+    )
+    .await;
+    // three WAF blocks → banned; then even a clean request is refused
+    let attacker = ("x-forwarded-for", "203.0.113.50");
+    for _ in 0..3 {
+        let r = send(
+            gw.addr,
+            "GET",
+            "/s?q=%3Cscript%3Ealert(1)%3C/script%3E",
+            &[attacker],
+            "",
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(
+        send(gw.addr, "GET", "/shop", &[attacker], "").await.status,
+        StatusCode::FORBIDDEN
+    );
+    // one visit to a trap → banned at once
+    let prober = ("x-forwarded-for", "203.0.113.51");
+    assert_eq!(
+        send(gw.addr, "GET", "/wp-login.php", &[prober], "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(gw.addr, "GET", "/shop", &[prober], "").await.status,
+        StatusCode::FORBIDDEN
+    );
+    // admin: list and unban
+    let list = send(gw.admin, "GET", "/bans", &[], "").await;
+    assert!(
+        list.body.contains("203.0.113.50") && list.body.contains("honeypot trap /wp-login.php"),
+        "{}",
+        list.body
+    );
+    let r = send(gw.admin, "POST", "/bans/unban?ip=203.0.113.51", &[], "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        send(gw.addr, "GET", "/shop", &[prober], "").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(gw.admin, "GET", "/bans/unban?ip=1.2.3.4", &[], "")
+            .await
+            .status,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+}

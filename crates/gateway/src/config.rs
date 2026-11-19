@@ -68,6 +68,12 @@ pub struct GatewayConfig {
     /// Rate limits per route and key (see docs/GATEWAY.md#rate-limits).
     #[serde(default)]
     pub rate_limits: Vec<RateLimitConfig>,
+    /// Automatic bans for repeat offenders (fail2ban-style).
+    #[serde(default)]
+    pub bans: BanConfig,
+    /// Honeypot paths: requesting one bans the client immediately.
+    #[serde(default)]
+    pub traps: TrapConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -284,6 +290,66 @@ pub struct RuleConfig {
     pub action: RuleAction,
 }
 
+/// Escalating bans: `threshold` blocks within `window_secs` ban the IP for `ban_secs`,
+/// multiplied by `escalation` for every previous ban (capped at `max_ban_secs`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BanConfig {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    #[serde(default = "d_ban_threshold")]
+    pub threshold: u32,
+    #[serde(default = "d_ban_window")]
+    pub window_secs: u64,
+    #[serde(default = "d_ban_secs")]
+    pub ban_secs: u64,
+    #[serde(default = "d_ban_escalation")]
+    pub escalation: f64,
+    #[serde(default = "d_ban_max")]
+    pub max_ban_secs: u64,
+}
+
+impl Default for BanConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+/// Honeypot paths (prefixes) that legitimate visitors never request on this site.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrapConfig {
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default = "d_trap_ban")]
+    pub ban_secs: u64,
+}
+
+impl Default for TrapConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+fn d_ban_threshold() -> u32 {
+    10
+}
+fn d_ban_window() -> u64 {
+    60
+}
+fn d_ban_secs() -> u64 {
+    600
+}
+fn d_ban_escalation() -> f64 {
+    2.0
+}
+fn d_ban_max() -> u64 {
+    86_400
+}
+fn d_trap_ban() -> u64 {
+    3_600
+}
+
 /// What happens when a rate limit is exceeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -424,6 +490,12 @@ impl GatewayConfig {
             || self.waf.log_score > self.waf.block_score
         {
             return Err("waf: need 0 ≤ log_score ≤ block_score ≤ 10".into());
+        }
+        if self.bans.threshold == 0
+            || self.bans.escalation < 1.0
+            || !self.bans.escalation.is_finite()
+        {
+            return Err("bans: need threshold ≥ 1 and escalation ≥ 1".into());
         }
         if self.challenge.difficulty > 28 {
             return Err(

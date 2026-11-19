@@ -106,3 +106,20 @@ include_allowed = false
 # key = "header:x-api-key"
 # requests = 600
 # per_secs = 60
+
+# ---- Automatic bans for repeat offenders (fail2ban-style). Banned IPs are refused
+# outright; each repeat ban lasts `escalation` times longer. List / lift bans on the
+# admin port: GET /bans, POST /bans/unban?ip=<address>.
+[bans]
+enabled = true
+threshold = 10            # blocks ...
+window_secs = 60          # ... within this many seconds
+ban_secs = 600
+escalation = 2.0
+max_ban_secs = 86400
+
+# ---- Honeypot traps: paths real visitors never request on *this* site.
+# Requesting one bans the client immediately. Only list paths your app doesn't serve.
+[traps]
+paths = []                # e.g. ["/wp-login.php", "/xmlrpc.php", "/.env", "/phpmyadmin"]
+ban_secs = 3600

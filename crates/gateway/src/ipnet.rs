@@ -56,6 +56,16 @@ impl Cidr {
     }
 }
 
+impl std::fmt::Display for Cidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_single() {
+            write!(f, "{}", self.addr)
+        } else {
+            write!(f, "{}/{}", self.addr, self.prefix)
+        }
+    }
+}
+
 /// Maps IPv4-mapped IPv6 (`::ffff:1.2.3.4`) to IPv4.
 pub fn normalize(ip: IpAddr) -> IpAddr {
     match ip {

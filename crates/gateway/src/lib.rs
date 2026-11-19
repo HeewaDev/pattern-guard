@@ -72,6 +72,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         challenge_list: cidrs(&cfg.access.challenge),
         rules: policy::rules::RuleSet::compile(&cfg.rules)?,
         rate_limiter: policy::rate_limit::RateLimiter::compile(&cfg.rate_limits)?,
+        bans: policy::bans::Bans::new(cfg.bans.clone(), cfg.traps.clone()),
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),
@@ -171,6 +172,45 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
     }
 }
 
+fn bans_json(state: &State) -> String {
+    let now = std::time::Instant::now();
+    let items: Vec<_> = state
+        .intel
+        .list(policy::bans::SOURCE)
+        .into_iter()
+        .map(|(ip, e)| {
+            serde_json::json!({
+                "ip": ip,
+                "reason": e.reason,
+                "expires_in_secs": e.expires.map(|x| x.saturating_duration_since(now).as_secs()),
+            })
+        })
+        .collect();
+    serde_json::json!({ "bans": items }).to_string()
+}
+
+fn unban(state: &State, query: &str) -> (&'static str, String, StatusCode) {
+    let ip = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("ip="))
+        .and_then(Cidr::parse);
+    match ip {
+        Some(c) => {
+            state.intel.remove(c, policy::bans::SOURCE);
+            (
+                "application/json",
+                serde_json::json!({ "unbanned": c.to_string() }).to_string(),
+                StatusCode::OK,
+            )
+        }
+        None => (
+            "text/plain",
+            "missing or invalid ?ip=".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+    }
+}
+
 async fn serve_admin(state: Arc<State>, listener: TcpListener) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
@@ -182,6 +222,15 @@ async fn serve_admin(state: Arc<State>, listener: TcpListener) {
                 let st = st.clone();
                 async move {
                     let (ct, body, status) = match req.uri().path() {
+                        "/bans" => ("application/json", bans_json(&st), StatusCode::OK),
+                        "/bans/unban" if req.method() == hyper::Method::POST => {
+                            unban(&st, req.uri().query().unwrap_or(""))
+                        }
+                        "/bans/unban" => (
+                            "text/plain",
+                            "use POST /bans/unban?ip=<address>".to_string(),
+                            StatusCode::METHOD_NOT_ALLOWED,
+                        ),
                         "/metrics" => (
                             "text/plain; version=0.0.4",
                             st.metrics.render(st.intel.len()),

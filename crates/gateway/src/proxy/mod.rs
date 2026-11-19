@@ -118,6 +118,12 @@ pub async fn handle(
         return Ok(forward(&state, parts, body, ip, &id, None).await.0);
     }
     let limit = state.rate_limiter.check(ip, &parts);
+    let trap = state.bans.trap(parts.uri.path()).map(str::to_string);
+    if let Some(t) = &trap {
+        state
+            .bans
+            .ban_now(ip, &state.intel, format!("honeypot trap {t}"));
+    }
 
     // ---- behavioural ML (always recorded, even if another layer blocks) ----
     let mut event = Event::new(
@@ -211,6 +217,15 @@ pub async fn handle(
             Action::Block,
             "deny_list",
             "deny_list".into(),
+            &mut action,
+            &mut layer,
+        );
+    }
+    if let Some(t) = &trap {
+        raise(
+            Action::Block,
+            "trap",
+            format!("trap:{t}"),
             &mut action,
             &mut layer,
         );
@@ -329,6 +344,13 @@ pub async fn handle(
     }
     if !enforce && action > Action::Allow {
         state.metrics.would_mitigate.fetch_add(1, Relaxed);
+    }
+
+    // Repeat offenders get banned (bans and traps don't count, they already are one).
+    if enforce && action == Action::Block && !matches!(layer, "reputation" | "trap") {
+        if let Some(d) = state.bans.record_block(ip, &state.intel) {
+            reasons.push(format!("banned for {}s", d.as_secs()));
+        }
     }
 
     let template = pattern_guard::normalize::normalize_path(&path_q).template;
