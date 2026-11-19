@@ -134,3 +134,23 @@ re-verified line by line.
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
 | 3.4 | Performance under load | 🧪 ~32 000 req/s, p99 ≈ 3 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`) · ⬜ shard the engine lock |
 | 3.5 | End-to-end gateway tests | ✅ 16 tests over real TCP: WAF, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |
+
+## 4. Enterprise protection target: what "protect them at best" requires
+
+An enterprise application needs protection across several attack surfaces. This table
+is the bar each row must reach; the *Next step* column links it to the work above and
+to [ROADMAP.md](ROADMAP.md).
+
+| # | Threat | Pattern-Guard today | Target | Next step |
+|---|---|---|---|---|
+| 4.1 | SQL injection | WAF indicators | OWASP CRS-grade coverage | libinjection (2b.1), SQL tokenizer / keyword pairs (2b.6), CRS 942 regression tests in CI |
+| 4.2 | XSS | WAF indicators | Context-aware detection and evasion testing | HTML/attribute/JS context parsing, libinjection XSS, evasion corpus |
+| 4.3 | LFI / RFI | WAF indicators, CRS file lists, URL analysis | Extensive regression corpus | CRS 930/931 + SecLists/fuzzdb hold-out as a CI gate |
+| 4.4 | Command injection | WAF indicators, shell-command analyser | Multiple encoding and evasion tests | Evasion re-scan loop (2b.2), commix hold-out as a CI gate |
+| 4.5 | Credential stuffing | Behavioural ML | Account-level correlation | Per-username / per-account failure tracking, breached-password check (2.5) |
+| 4.6 | Distributed bot attacks | Actor / subnet / client features | Cross-instance detection | Shared state between gateway instances (e.g. Redis or gossip), push decisions to CrowdSec (2c.11) |
+| 4.7 | API abuse | Rate limits + ML | Endpoint and business-operation awareness | OpenAPI enforcement (1.9), per-operation limits and baselines (login, checkout, search) |
+| 4.8 | L7 DDoS | Connection caps, rate limits, bans | Adaptive distributed mitigation | Load-adaptive thresholds, cluster-wide rate limits and bans |
+| 4.9 | Slowloris | Header timeout + connection cap | Resource-aware connection management | Body-read timeouts, global connection budget, shedding under memory / FD pressure |
+| 4.10 | Data exfiltration | Response inspection | Sensitive-data policies and response controls | Card numbers / PII rules, masking, per-route response size and rate policies (2.10) |
+| 4.11 | Zero-day attacks | Behavioural ML + WAF | Anomaly detection and application context | Per-parameter learned profiles (1.3, 2b.8), reputation-weighted scoring (2b.12) |
