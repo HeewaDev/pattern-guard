@@ -55,6 +55,7 @@ pub struct Inspector {
     jndi_only: Vec<bool>,
     comments: Regex,
     lookups: Regex,
+    session_names: Regex,
     lexicons: Lexicons,
     shell: Shell,
     ssrf: Ssrf,
@@ -86,6 +87,11 @@ impl Inspector {
             shell: Shell::new(),
             ssrf: Ssrf::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
+            // session-id parameter names of common frameworks (CRS 943110 / 943120)
+            session_names: Regex::new(
+                r"^(jsessionid|jservsession|jwsession|aspsessionid|asp\.net_sessionid|zend_session_id|phpsessid|phpsession|play_session|weblogicsession|wlsession|rack\.session|laravel_session|next-auth\.session-token|meteor_login_token|session[-_]?id|sails\.sid|shiny-token|_session_id|_flask_session|_rails_session|cfid|cfsid|cftoken|connect\.sid|cakephp|ci_session|koa[.:]sess)$",
+            )
+            .unwrap(),
             // Log4j lookup obfuscation: ${lower:j} ${upper:j} ${::-j} ${env:X:-j} → j
             lookups: Regex::new(r"\$\{\s*(?:lower|upper|::-|[a-z]*:[^:}$]*:-)\s*:?([^}$]*)\}")
                 .unwrap(),
@@ -230,8 +236,10 @@ impl Inspector {
             None => (req.path_and_query, None),
         };
         push(self.inspect_value("path", path, false));
+        let mut names: Vec<String> = Vec::new();
         if let Some(q) = query {
             for (k, v) in form_pairs(q) {
+                names.push(decode_name(k).to_ascii_lowercase());
                 push(self.inspect_value("query-name", k, true));
                 push(self.inspect_value(&format!("query:{}", decode_name(k)), v, true));
             }
@@ -255,12 +263,18 @@ impl Inspector {
             let text = String::from_utf8_lossy(req.body);
             if ct.starts_with("application/x-www-form-urlencoded") {
                 for (k, v) in form_pairs(&text) {
+                    names.push(decode_name(k).to_ascii_lowercase());
                     push(self.inspect_value("body-name", k, true));
                     push(self.inspect_value(&format!("body:{}", decode_name(k)), v, true));
                 }
             } else if ct.contains("json") {
                 match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(v) => self.walk_json(&v, "json", &mut out.findings, 0),
+                    Ok(v) => {
+                        if let Some(m) = v.as_object() {
+                            names.extend(m.keys().take(1000).map(|k| k.to_ascii_lowercase()));
+                        }
+                        self.walk_json(&v, "json", &mut out.findings, 0)
+                    }
                     Err(_) => push(self.inspect_value("body", &text, false)),
                 }
             } else if ct.contains("xml")
@@ -271,7 +285,49 @@ impl Inspector {
                 push(self.inspect_value("body", &text, false));
             }
         }
+        if let Some(f) = self.session_fixation(&names, req.headers) {
+            out.findings.push(f);
+        }
         out
+    }
+
+    /// A session-id parameter is how an attacker plants a known session on a victim
+    /// (session fixation). Legitimate URL-rewritten sessions come from links on the
+    /// same site, so the request is flagged only without a Referer or with one from
+    /// another site.
+    fn session_fixation(&self, names: &[String], headers: &[(String, String)]) -> Option<Finding> {
+        let name = names.iter().find(|n| self.session_names.is_match(n))?;
+        let header = |h: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(h))
+                .map(|(_, v)| v.as_str())
+        };
+        let host = header("host").unwrap_or("").to_ascii_lowercase();
+        let host = host.split(':').next().unwrap_or("");
+        let indicator = match header("referer") {
+            None => "session_id_parameter_without_referer",
+            Some(r) => {
+                let r = r.to_ascii_lowercase();
+                let referer_host = r
+                    .split_once("://")
+                    .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+                    .unwrap_or("");
+                let referer_host = referer_host.rsplit('@').next().unwrap_or("");
+                let referer_host = referer_host.split(':').next().unwrap_or("");
+                if host.is_empty() || referer_host.ends_with(host) {
+                    return None;
+                }
+                "session_id_parameter_foreign_referer"
+            }
+        };
+        Some(Finding {
+            class: SessionFixation,
+            score: 8.0,
+            location: format!("param-name:{name}"),
+            indicators: vec![indicator],
+            sample: name.clone(),
+        })
     }
 
     fn walk_json(&self, v: &serde_json::Value, path: &str, out: &mut Vec<Finding>, depth: usize) {
@@ -402,6 +458,29 @@ mod tests {
             assert!(f.score >= 7.0, "{v}: {f:?}");
             assert_eq!(f.class.as_str(), class, "{v}: {f:?}");
         }
+    }
+
+    #[test]
+    fn session_fixation_needs_missing_or_foreign_referer() {
+        let w = Inspector::new();
+        let run = |referer: Option<&str>| {
+            let mut headers = vec![("Host".to_string(), "shop.example.com".to_string())];
+            if let Some(r) = referer {
+                headers.push(("Referer".to_string(), r.to_string()));
+            }
+            w.inspect(&HttpRequest {
+                path_and_query: "/login.php?JSESSIONID=74B0CB414BD77D17",
+                headers: &headers,
+                content_type: None,
+                body: b"",
+            })
+            .findings
+            .iter()
+            .any(|f| f.class == SessionFixation && f.score >= 7.0)
+        };
+        assert!(run(None));
+        assert!(run(Some("http://attacker.example.net/x")));
+        assert!(!run(Some("https://shop.example.com/cart")));
     }
 
     #[test]

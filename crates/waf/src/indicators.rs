@@ -16,6 +16,7 @@ pub enum AttackClass {
     RemoteFileInclusion,
     CodeInjection,
     PrototypePollution,
+    SessionFixation,
 }
 
 impl AttackClass {
@@ -35,6 +36,7 @@ impl AttackClass {
             AttackClass::RemoteFileInclusion => "remote_file_inclusion",
             AttackClass::CodeInjection => "code_injection",
             AttackClass::PrototypePollution => "prototype_pollution",
+            AttackClass::SessionFixation => "session_fixation",
         }
     }
 }
@@ -555,6 +557,13 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             "template_control_block",
             5.0,
             r"\{%-?\s*(if|for|set|import|include|macro|raw|debug)\b[^%]{0,200}%\}[\s\S]{0,300}\{%-?\s*end|<%=?\s*(if|for|each|unless)\b[^%]{0,200}%>[\s\S]{0,300}<%\s*end",
+        ),
+        // ---- session fixation: setting the victim's cookie (CRS 943100) ----
+        i(
+            SessionFixation,
+            "cookie_setting",
+            7.0,
+            r"\.cookie\b.*?;\W*?(expires|domain)\W*?=|\bhttp-equiv\W+set-cookie\b",
         ),
         // ---- NoSQL injection ----
         i(NoSqlInjection, "mongo_operator", 7.0, mongo_bracket),
