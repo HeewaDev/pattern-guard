@@ -9,6 +9,7 @@ pub mod challenge;
 pub mod config;
 pub mod crowdsec;
 pub mod eventlog;
+pub mod feeds;
 pub mod intel;
 pub mod inventory;
 pub mod ipnet;
@@ -88,6 +89,13 @@ pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Resul
         tokio::spawn(crowdsec::run(
             state.cfg.crowdsec.clone(),
             key,
+            state.intel.clone(),
+            state.metrics.clone(),
+        ));
+    }
+    for f in &state.cfg.feeds {
+        tokio::spawn(feeds::run(
+            f.clone(),
             state.intel.clone(),
             state.metrics.clone(),
         ));

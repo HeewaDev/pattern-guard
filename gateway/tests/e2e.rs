@@ -1,6 +1,7 @@
 //! End-to-end: real upstream app + gateway + HTTP client over TCP.
 
 use std::convert::Infallible;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -392,6 +393,47 @@ async fn crowdsec_decisions_are_enforced() {
         m.body
     );
     assert!(m.body.contains("pattern_guard_crowdsec_up 1"));
+}
+
+#[tokio::test]
+async fn suricata_alerts_become_blocks() {
+    let dir = std::env::temp_dir().join(format!("pg_gw_eve_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let eve = dir.join("eve.json");
+    std::fs::write(&eve, "").unwrap();
+    let gw = start_gateway(&format!(
+        "[[feeds]]\nkind = \"suricata\"\npath = \"{}\"\nblock_secs = 60",
+        eve.display()
+    ))
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut f = std::fs::OpenOptions::new().append(true).open(&eve).unwrap();
+    writeln!(
+        f,
+        r#"{{"event_type":"alert","src_ip":"192.0.2.80","dest_ip":"10.0.0.1","alert":{{"signature":"ET EXPLOIT test","severity":1}}}}"#
+    )
+    .unwrap();
+    drop(f);
+    for _ in 0..40 {
+        if gw
+            .state
+            .intel
+            .lookup("192.0.2.80".parse().unwrap())
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let r = send(
+        gw.addr,
+        "GET",
+        "/",
+        &[("x-forwarded-for", "192.0.2.80")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
