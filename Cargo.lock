@@ -534,7 +534,7 @@ dependencies = [
  "criterion",
  "log",
  "lru",
- "regex",
+ "pattern-guard-waf",
  "serde",
  "serde_json",
  "thiserror",
@@ -556,6 +556,14 @@ dependencies = [
  "sha2",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "pattern-guard-waf"
+version = "0.3.0"
+dependencies = [
+ "regex",
+ "serde_json",
 ]
 
 [[package]]

@@ -17,13 +17,13 @@ name = "pattern-guard"
 path = "src/main.rs"
 
 [dependencies]
+pattern-guard-waf.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 log.workspace = true
 lru.workspace = true
-regex.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

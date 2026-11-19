@@ -1,0 +1,13 @@
+[package]
+name = "pattern-guard-waf"
+description = "Web application firewall engine: server-like decoding and weighted attack indicators (SQLi, XSS, traversal, RCE, SSRF, JNDI, XXE, SSTI, NoSQL)"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+regex.workspace = true
+serde_json.workspace = true
