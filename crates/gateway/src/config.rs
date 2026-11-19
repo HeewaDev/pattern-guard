@@ -80,6 +80,9 @@ pub struct GatewayConfig {
     /// Security headers added to (and fingerprinting headers removed from) responses.
     #[serde(default)]
     pub response_headers: ResponseHeadersConfig,
+    /// Block responses that leak errors, stack traces, directory listings or keys.
+    #[serde(default)]
+    pub response_inspection: ResponseInspectionConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -406,6 +409,55 @@ impl Default for ResponseHeadersConfig {
     fn default() -> Self {
         toml::from_str("").unwrap()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LeakAction {
+    /// Replace the response with a generic 500 page.
+    #[default]
+    Block,
+    /// Pass it through and record it in the decision log.
+    Log,
+}
+
+/// Data-leak inspection of upstream responses (opt-in: it buffers text responses).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseInspectionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bytes of each response inspected; longer bodies are inspected at the start and
+    /// the rest is streamed unchanged.
+    #[serde(default = "d_leak_bytes")]
+    pub max_bytes: usize,
+    /// Content-type prefixes to inspect.
+    #[serde(default = "d_leak_types")]
+    pub content_types: Vec<String>,
+    #[serde(default)]
+    pub action: LeakAction,
+}
+
+impl Default for ResponseInspectionConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+fn d_leak_bytes() -> usize {
+    256 * 1024
+}
+fn d_leak_types() -> Vec<String> {
+    [
+        "text/html",
+        "text/plain",
+        "application/json",
+        "application/xml",
+        "text/xml",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 fn d_nosniff() -> String {

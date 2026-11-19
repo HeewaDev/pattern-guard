@@ -76,6 +76,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         bans: policy::bans::Bans::new(cfg.bans.clone(), cfg.traps.clone()),
         protocol: policy::protocol::Protocol::new(cfg.protocol.clone()),
         security_headers: hardening::headers::SecurityHeaders::new(&cfg.response_headers)?,
+        leaks: hardening::leaks::LeakInspector::new(&cfg.response_inspection),
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),

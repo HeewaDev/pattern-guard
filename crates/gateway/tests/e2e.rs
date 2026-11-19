@@ -36,6 +36,23 @@ async fn start_upstream() -> SocketAddr {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("none")
                         .to_string();
+                    if req.uri().path().starts_with("/leak") {
+                        // an app that leaks a database error, padded to `?pad=N` bytes
+                        let pad: usize = req
+                            .uri()
+                            .query()
+                            .and_then(|q| q.strip_prefix("pad="))
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                        let body = format!(
+                            "<html><body>You have an error in your SQL syntax; check the manual{}</body></html>",
+                            "x".repeat(pad)
+                        );
+                        let mut r = Response::new(Full::new(Bytes::from(body)));
+                        r.headers_mut()
+                            .insert("content-type", "text/html".parse().unwrap());
+                        return Ok::<_, Infallible>(r);
+                    }
                     let body = format!("upstream {} {} bot_score={score}", req.method(), req.uri());
                     Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
                 });
@@ -698,4 +715,46 @@ async fn responses_get_security_headers() {
     assert_eq!(r.headers["x-content-type-options"], "nosniff");
     assert_eq!(r.headers["x-frame-options"], "SAMEORIGIN");
     assert_eq!(r.headers["content-security-policy"], "default-src 'self'");
+}
+
+#[tokio::test]
+async fn data_leaks_are_blocked_or_logged() {
+    let gw = start_gateway("[response_inspection]\nenabled = true\nmax_bytes = 4096\n").await;
+    let r = send(gw.addr, "GET", "/leak", &[("accept", "text/html")], "").await;
+    assert_eq!(r.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        !r.body.contains("SQL syntax"),
+        "leak must not reach the client"
+    );
+    assert!(r.body.contains("Something went wrong"));
+    // a long response: the start is inspected, the leak is still caught
+    let r = send(gw.addr, "GET", "/leak?pad=50000", &[], "").await;
+    assert_eq!(r.status, StatusCode::INTERNAL_SERVER_ERROR);
+    // non-leaking responses pass through intact
+    let r = send(gw.addr, "GET", "/fine", &[], "").await;
+    assert!(r.body.starts_with("upstream GET /fine"));
+    let m = send(gw.admin, "GET", "/metrics", &[], "").await;
+    assert!(
+        m.body
+            .contains("pattern_guard_blocked_total{layer=\"data_leak\"} 2"),
+        "{}",
+        m.body
+    );
+
+    let logging = start_gateway(
+        "[response_inspection]\nenabled = true\naction = \"log\"\nmax_bytes = 4096\n",
+    )
+    .await;
+    let r = send(logging.addr, "GET", "/leak?pad=20000", &[], "").await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "log mode passes the response through"
+    );
+    assert_eq!(
+        r.body.len(),
+        "<html><body>You have an error in your SQL syntax; check the manual</body></html>".len()
+            + 20000,
+        "body intact across the inspection window"
+    );
 }

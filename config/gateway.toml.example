@@ -148,3 +148,12 @@ content_security_policy = ""       # e.g. "default-src 'self'"
 permissions_policy = ""
 cross_origin_opener_policy = ""
 remove = ["server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version"]
+
+# ---- Data-leak blocking on responses (opt-in: buffers text responses up to max_bytes).
+# Catches SQL errors, PHP/Java/Python/.NET/Node stack traces, directory listings,
+# private keys and AWS access keys. action = "block" (generic 500 page) | "log".
+[response_inspection]
+enabled = false
+max_bytes = 262144
+content_types = ["text/html", "text/plain", "application/json", "application/xml", "text/xml"]
+action = "block"

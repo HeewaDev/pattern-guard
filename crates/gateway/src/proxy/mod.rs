@@ -435,13 +435,23 @@ pub async fn handle(
         }
     }
 
-    let (resp, status) =
+    let (resp, status, leak) =
         forward(&state, parts.clone_head(), body, ip, &id, Some(&assessment)).await;
     state.guard.observe_response(&event, status);
     state
         .inventory
         .record(parts.method.as_str(), &template, status, false);
-    if action > Action::Allow
+    if let Some((signature, blocked)) = leak {
+        let mut leak_reasons = reasons.clone();
+        leak_reasons.push(format!("data_leak:{signature}"));
+        let ctx = LogCtx {
+            reasons: &leak_reasons,
+            action: if blocked { Action::Block } else { action },
+            layer: if blocked { "data_leak" } else { layer },
+            ..ctx
+        };
+        log_decision(&state, &parts, &ctx, status);
+    } else if action > Action::Allow
         || !findings.is_empty()
         || !rule.logged.is_empty()
         || state.cfg.log.include_allowed
