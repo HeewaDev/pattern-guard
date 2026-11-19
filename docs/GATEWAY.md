@@ -8,7 +8,8 @@ client ─► [TLS terminator / CDN] ─► pattern-guard-gateway ─► your ap
    every request:  allow / deny / challenge lists · custom rules · country policy
                    → protocol enforcement · honeypot traps · rate limits
                    → IP reputation (automatic bans, CrowdSec community blocklist, Suricata & Wazuh alerts)
-                   → WAF payload inspection (SQLi, XSS, traversal, RCE, SSRF, Log4Shell, XXE, SSTI, NoSQL)
+                   → WAF payload inspection (SQLi, XSS, traversal, RFI, RCE, SSRF, PHP/Java/Node code,
+                     Log4Shell, XXE, SSTI, NoSQL, prototype pollution, session fixation)
                    → behavioural ML (bots, scraping, credential stuffing, L7 floods)
                    → one decision: allow · delay · proof-of-work challenge · block (403 / 429 / 4xx)
    every response: security headers · data-leak blocking
@@ -234,7 +235,9 @@ software on your server can absorb more traffic than its uplink carries.
 
 `cargo run --release -p pattern-guard-gateway --example loadtest` (`crates/gateway/examples/loadtest.rs`) (4 vCPU shared by load
 generator, gateway and upstream; every request fully inspected and proxied in detect mode):
-**~32 000 req/s, p50 ≈ 2 ms, p99 ≈ 3 ms**, against ~200 000 req/s for the bare upstream.
+**~26 000 req/s, p50 ≈ 2.4 ms, p99 ≈ 3.9 ms**, against ~200 000 req/s for the bare upstream.
+WAF inspection alone costs ~20 µs for a typical request and 0.35–0.5 ms for an 8 KiB
+value (`cargo bench -p pattern-guard-waf`).
 The behavioural engine runs behind a single lock today; sharding it is the next
 performance step.
 

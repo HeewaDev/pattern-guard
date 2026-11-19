@@ -15,9 +15,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/gateway` (`proxy/`, `challenge/`, `intel/`, `observability/`), `tools/eval`
   (simulator and benchmarks), `config/` (example and demo configs). Public Rust paths
   are unchanged; commands now take `-p <crate>` (see README).
+- **WAF cost**: the extra analysis makes inspection ~20 µs per typical request (was
+  ~9 µs); the gateway load test went from ~30 000 to ~26 000 req/s on the same 4 shared
+  vCPUs. The indicator RegexSet now uses a 16 MiB lazy-DFA cache, without which it fell
+  back to the regex crate's slow engine.
 
 ### Added
 
+- **WAF 2.0** (`crates/waf`), measured on the OWASP CRS regression tests (attack
+  categories 930–944: 11.8 % → 46.2 % blocked) with 0 of 19 215 benign values blocked
+  throughout:
+  - OWASP CRS word lists (OS files, restricted files, Unix shell, PHP functions, Java
+    classes) matched with Aho-Corasick (`lexicon.rs`, lists vendored under Apache-2.0);
+  - PHP code injection, including PHP2Shell-style code in multipart fields;
+  - Java attacks: serialized objects, gadget classes, Spring4Shell; base64-hidden
+    payloads; Java payloads in any request header;
+  - shell-command analyser for Unix and Windows command injection (`shell.rs`);
+  - URL analyser for SSRF and remote file inclusion (`ssrf.rs`);
+  - server-side JavaScript, Perl and expression-language injection, prototype
+    pollution;
+  - session fixation;
+  - new attack classes: `remote_file_inclusion`, `code_injection`,
+    `prototype_pollution`, `session_fixation` (15 in total);
+  - `cargo bench -p pattern-guard-waf` inspection benchmark;
+  - `crs_eval`: `SHOW_NEG=<category>` lists blocked negative tests.
+- **Feature tracker**: enterprise protection target per threat (docs/FEATURES.md §4).
 - **Gatekeeper features** in the gateway (new `policy/` and `hardening/` modules):
   - custom firewall rules (`[[rules]]`);
   - per-route rate limits with 429 and Retry-After (`[[rate_limits]]`);

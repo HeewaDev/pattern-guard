@@ -30,9 +30,9 @@ Rust binary.
 | Area | State |
 |---|---|
 | Behavioural ML | ~0.3 % legit stopped / ~98.5 % attacks stopped on synthetic traffic incl. unseen attacks |
-| WAF | 85 % on PayloadsAllTheThings, 0 / 19 215 benign blocked; hold-out: XSS 83–94 %, SQLi 50 %, LFI 29 %, command injection 24 %; **OWASP CRS regression tests: 11.8 % blocked** |
+| WAF | 86.6 % on PayloadsAllTheThings, 0 / 19 215 benign blocked; hold-out: command injection 100 %, XSS 84–94 %, SQLi 50 %, LFI 35 %; **OWASP CRS regression tests: 46.2 % blocked** (11.8 % before WAF 2.0) |
 | Gateway | proxy, detect/prevent, PoW challenge (real browser verified), CrowdSec, Suricata/Wazuh feeds, metrics, decision log, API inventory |
-| Performance | ~32k req/s, p99 ≈ 3 ms (4 vCPU shared) |
+| Performance | ~26k req/s, p99 ≈ 4 ms (4 vCPU shared) |
 | Real-world proof | **none yet** |
 
 ## 3. KPIs (tracked every release)
@@ -41,11 +41,11 @@ Rust binary.
 |---|---|---|
 | Legit requests **blocked**, real shadow traffic | unknown | ≤ 0.05 % |
 | Legit requests challenged, real shadow traffic | unknown | ≤ 0.5 % |
-| WAF hold-out detection (SecLists/fuzzdb, never tuned on), per class | 24–94 % | ≥ 85 % every class |
-| WAF on OWASP CRS PL1 attack tests (930–944) | 11.3 % | ≥ 80 % |
+| WAF hold-out detection (SecLists/fuzzdb, never tuned on), per class | 35–100 % | ≥ 85 % every class |
+| WAF on OWASP CRS PL1 attack tests (930–944) | 53.9 % | ≥ 80 % |
 | WAF benign false blocks (19k benign corpus + real logs) | 0 % (corpus) | ≤ 0.01 % |
 | Behaviour ML detection on unseen simulated attacks (avg per type) | ~93 % | ≥ 95 % |
-| Throughput per 8 vCPU, full inspection | ~32k (4 vCPU shared) | ≥ 100k req/s, p99 ≤ 5 ms |
+| Throughput per 8 vCPU, full inspection | ~26k (4 vCPU shared) | ≥ 100k req/s, p99 ≤ 5 ms |
 | Time from `git clone` to protected app | ~30 min | ≤ 10 min (Docker) |
 
 ## 4. Milestones
@@ -77,12 +77,18 @@ open-appsec's engine (Apache-2.0) and OWASP CRS. The full list, with source path
       loop: decode only when a trigger is present, and keep the result only if new
       indicators appear.
 - [ ] **Indicator library.**
-  - libinjection SQLi/XSS (`libinjectionrs`).
-  - CRS word lists via Aho-Corasick: OS files, Unix shell, Windows, SQL and PHP
-    functions, Java classes, SSRF.
-  - PHP code tags, superglobals and stream wrappers; Java deserialization magic bytes,
-    including base64.
-  - Protocol anomalies.
+  - [ ] libinjection SQLi/XSS (`libinjectionrs`): needs a decision on adding the
+        third-party crate.
+  - [x] CRS word lists via Aho-Corasick: OS files, restricted files, Unix shell, PHP
+        functions, Java classes. [ ] Windows, SQL functions.
+  - [x] PHP code tags, superglobals and stream wrappers; Java deserialization magic
+        bytes, including base64.
+  - [x] Shell-command analyser (evasions, command position, Windows FOR/IF).
+  - [x] URL analyser (obfuscated IPs, internal and metadata targets, RFI).
+  - [x] Node.js / Perl / expression-language injection, prototype pollution, session
+        fixation.
+  - [ ] SQL tokenizer (or libinjection) for the remaining SQLi gap; context-aware XSS.
+  - [ ] Protocol anomalies.
 - [ ] **Scoring.** One anomaly score per request, with per-class sub-scores.
       Keyword-pair scores with a saturating combiner, learned from labelled data.
       Paranoia levels 1–4, with separate detection and blocking levels.

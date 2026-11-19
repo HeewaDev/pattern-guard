@@ -5,7 +5,7 @@
 | Component | Crate / path | What it is |
 |---|---|---|
 | Behavioural engine | `pattern-guard` (`crates/engine`) | Library: `ml/` (features, model), `rules/` (optional thresholds), `util/` (route templating, decayed counters), `guard.rs`, `config.rs`, `logs.rs`; re-exports the WAF as `pattern_guard::waf` |
-| WAF | `pattern-guard-waf` (`crates/waf`) | Payload inspection: `decode` (normalisation), `indicators` (attack signatures), `inspect` (request walking, scoring) |
+| WAF | `pattern-guard-waf` (`crates/waf`) | Payload inspection: `decode` (normalisation, base64), `indicators` (attack signatures), `lexicon` (OWASP CRS word lists), `shell` (shell-command analysis), `ssrf` (URL analysis), `inspect` (request walking, scoring) |
 | CLI | `pattern-guard-cli` (`crates/cli`, binary `pattern-guard`) | `replay` logs, `train` models, wrap commands |
 | Gateway | `pattern-guard-gateway` (`crates/gateway`) | Reverse proxy: `proxy/`, `challenge/`, `intel/`, `observability/`; runs the engines on live traffic and enforces decisions |
 | Evaluation | `pattern-guard-eval` (`tools/eval`, unpublished) | Traffic simulator, `realworld_eval`, `gen_traffic`, `waf_eval`, `crs_eval`; plus `crates/gateway/examples/loadtest.rs` |
@@ -22,7 +22,8 @@ crates/
              src/rules/               optional threshold rules
              src/util/                route templating, decayed counters
              src/{guard,config,event,logs}.rs
-  waf/       pattern-guard-waf      payload inspection: decode · indicators · inspect
+  waf/       pattern-guard-waf      payload inspection: decode · indicators · lexicon (CRS lists)
+                                      · shell · ssrf · inspect
   cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
   gateway/   pattern-guard-gateway  reverse proxy
              src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
@@ -115,14 +116,26 @@ Event ─► normalize path (/product/123 → /product/{n}, id=123)
 ```
 value ─► decode ×≤4 (URL, %uXXXX, HTML entities, \uXXXX/\xHH) ─► lowercase, collapse whitespace
       ─► variants: SQL comments removed · comments → space · Log4j lookups resolved
-      ─► RegexSet over ~70 weighted indicators (one pass per variant)
+                   · base64 decodings (whole value and fragments, 4 alignments)
+      ─► RegexSet over ~90 weighted indicators (one pass per variant)
+      ─► Aho-Corasick over OWASP CRS word lists (OS files, restricted files, shell,
+         PHP functions, Java classes)
+      ─► shell analyser: undo quotes / ${IFS} / {a,b} / [x] / empty expansions, split into
+         commands, score command words by position and arguments; Windows FOR / IF
+      ─► URL analyser: normalise hosts (decimal / hex / octal IPv4, IPv4-mapped IPv6,
+         Unicode look-alikes), classify internal / metadata / obfuscated targets, RFI
       ─► per attack class: sum of distinct indicator weights, capped at 10
       ─► strongest class ≥ min_score → Finding {class, score, location, indicators, sample}
+request ─► session-id parameter names without a same-site Referer → session_fixation
+
+The indicator RegexSet is built with a 16 MiB lazy-DFA cache per thread. With the regex
+crate's default 2 MiB it thrashes and falls back to the PikeVM, about 60× slower;
+`crates/waf/benches/inspect_bench.rs` guards against that.
 ```
 
 Locations: path, query names and values, form fields, JSON keys and values (walked
 recursively), XML/text/multipart bodies, cookies, `User-Agent`, `Referer`,
-`X-Forwarded-Host`, `X-Original-URL`, and every other header for JNDI only.
+`X-Forwarded-Host`, `X-Original-URL`, and every other header for JNDI and Java payloads only.
 
 ## Concurrency and state (gateway)
 
