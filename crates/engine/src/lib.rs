@@ -16,18 +16,18 @@
 //! # }
 //! ```
 
-mod analyzer;
 pub mod config;
 pub mod decision;
 pub mod error;
 pub mod event;
-pub mod features;
 pub mod guard;
 pub mod logs;
-pub mod model;
-pub mod normalize;
-mod stats;
-mod tracker;
+pub mod ml;
+mod rules;
+pub mod util;
+
+pub use ml::{features, model};
+pub use util::normalize;
 
 pub use config::{Config, Mode, RiskCombine, TimeSource};
 pub use decision::Decision;

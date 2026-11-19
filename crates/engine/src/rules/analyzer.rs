@@ -1,7 +1,7 @@
 //! Explicit threshold rules over a window; combined via max or probabilistic OR.
 
 use crate::config::{EffectiveConfig, RiskCombine};
-use crate::tracker::{INTERVAL_MIN_GAPS, WindowStats};
+use crate::rules::tracker::{INTERVAL_MIN_GAPS, WindowStats};
 
 /// 0 at or below `max`, rising linearly to 1 at `2 × max`.
 pub fn threshold_risk(value: f64, max: f64) -> f64 {

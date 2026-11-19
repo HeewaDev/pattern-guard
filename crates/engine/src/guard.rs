@@ -5,16 +5,16 @@ use std::time::Instant;
 
 use lru::LruCache;
 
-use crate::analyzer;
 use crate::config::{Config, Mode, TimeSource};
 use crate::decision::Decision;
 use crate::error::Error;
 use crate::event::Event;
-use crate::features::{FEATURE_NAMES, FeatureEngine, Features, N_FEATURES, Prepared};
-use crate::model::Model;
-use crate::normalize::{hash_str, is_probe_path, normalize_path};
-use crate::stats::Decay;
-use crate::tracker::Tracker;
+use crate::ml::features::{FEATURE_NAMES, FeatureEngine, Features, N_FEATURES, Prepared};
+use crate::ml::model::Model;
+use crate::rules::analyzer;
+use crate::rules::tracker::Tracker;
+use crate::util::normalize::{hash_str, is_probe_path, normalize_path};
+use crate::util::stats::Decay;
 
 /// Why a request scored the way it did.
 #[derive(Debug, Clone, PartialEq)]

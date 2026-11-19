@@ -11,7 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::features::{FEATURE_NAMES, Features, N_FEATURES};
+use crate::ml::features::{FEATURE_NAMES, Features, N_FEATURES};
 
 const BUILTIN: &str = include_str!("default_model.toml");
 

@@ -29,7 +29,7 @@ use lru::LruCache;
 
 use crate::config::AdaptiveConfig;
 use crate::event::Event;
-use crate::stats::{Decay, GapStats, RecentIds, TopCounts, smoothed_ratio};
+use crate::util::stats::{Decay, GapStats, RecentIds, TopCounts, smoothed_ratio};
 
 pub const N_FEATURES: usize = 28;
 pub type Features = [f64; N_FEATURES];
@@ -414,7 +414,7 @@ fn log_ratio(current_rate: f64, baseline_rate: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::normalize::{hash_str, normalize_path};
+    use crate::util::normalize::{hash_str, normalize_path};
     use std::time::{Duration, SystemTime};
 
     fn ev(actor: &str, method: &str, path: &str, t: f64) -> (Event, Prepared) {
