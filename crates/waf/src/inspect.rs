@@ -9,6 +9,7 @@ use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
 use crate::lexicon::Lexicons;
 use crate::shell::Shell;
+use crate::ssrf::Ssrf;
 
 /// One suspicious value.
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ pub struct Inspector {
     lookups: Regex,
     lexicons: Lexicons,
     shell: Shell,
+    ssrf: Ssrf,
     /// Findings below this score are dropped.
     pub min_score: f64,
     /// Longest value inspected (bytes); longer values are truncated.
@@ -82,6 +84,7 @@ impl Inspector {
                 .collect(),
             lexicons: Lexicons::new(),
             shell: Shell::new(),
+            ssrf: Ssrf::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
             // Log4j lookup obfuscation: ${lower:j} ${upper:j} ${::-j} ${env:X:-j} → j
             lookups: Regex::new(r"\$\{\s*(?:lower|upper|::-|[a-z]*:[^:}$]*:-)\s*:?([^}$]*)\}")
@@ -160,6 +163,21 @@ impl Inspector {
             if location != "path" {
                 for (name, w) in self.shell.scan(&kept_case.to_lowercase()) {
                     add(CommandInjection, name, w);
+                }
+            }
+            // URLs and host names: SSRF targets and remote file inclusion.
+            // (the Referer is set by browsers; `http://localhost` there is development)
+            if location != "path" && location != "header:referer" {
+                let param = location
+                    .split_once(':')
+                    .map(|(_, n)| n.rsplit('.').next().unwrap_or(n));
+                for (name, w) in self.ssrf.scan(&decoded, param) {
+                    let class = if name.starts_with("rfi_") {
+                        RemoteFileInclusion
+                    } else {
+                        Ssrf
+                    };
+                    add(class, name, w);
                 }
             }
             // Binary upload bodies legitimately contain NUL bytes; parameters never should.

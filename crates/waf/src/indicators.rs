@@ -13,6 +13,7 @@ pub enum AttackClass {
     NoSqlInjection,
     PhpInjection,
     JavaInjection,
+    RemoteFileInclusion,
 }
 
 impl AttackClass {
@@ -29,6 +30,7 @@ impl AttackClass {
             AttackClass::NoSqlInjection => "nosql_injection",
             AttackClass::PhpInjection => "php_injection",
             AttackClass::JavaInjection => "java_injection",
+            AttackClass::RemoteFileInclusion => "remote_file_inclusion",
         }
     }
 }
@@ -329,7 +331,7 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             Ssrf,
             "dangerous_scheme",
             7.0,
-            r"\b(gopher|dict|ldap|tftp|jar|netdoc|expect|phar)://",
+            r"\b(gopher|dict|ldap|tftp|jar|netdoc|expect|phar|local_file)://",
         ),
         i(Ssrf, "file_scheme", 6.0, r"\bfile://"),
         i(

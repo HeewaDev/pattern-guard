@@ -15,6 +15,7 @@ mod indicators;
 mod inspect;
 mod lexicon;
 mod shell;
+mod ssrf;
 
 pub use decode::decode;
 pub use indicators::AttackClass;
