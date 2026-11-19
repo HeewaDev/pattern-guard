@@ -7,6 +7,7 @@
 
 pub mod challenge;
 pub mod config;
+pub mod geo;
 pub mod hardening;
 pub mod intel;
 pub mod ipnet;
@@ -50,6 +51,20 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         .parse()
         .map_err(|e| format!("bad upstream: {e}"))?;
     let cidrs = |l: &[String]| l.iter().filter_map(|c| Cidr::parse(c)).collect::<Vec<_>>();
+    let geo_db = cfg
+        .geo
+        .database
+        .as_deref()
+        .map(geo::GeoDb::load)
+        .transpose()?;
+    let g = &cfg.geo;
+    let needs_geo = !(g.deny_countries.is_empty()
+        && g.challenge_countries.is_empty()
+        && g.allow_countries.is_empty())
+        || cfg.rules.iter().any(|r| !r.countries.is_empty());
+    if needs_geo && geo_db.is_none() {
+        return Err("country rules are configured but [geo] database is not set".into());
+    }
     let mut client = Client::builder(TokioExecutor::new());
     client.pool_idle_timeout(Duration::from_secs(60));
     let state = State {
@@ -77,6 +92,8 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         protocol: policy::protocol::Protocol::new(cfg.protocol.clone()),
         security_headers: hardening::headers::SecurityHeaders::new(&cfg.response_headers)?,
         leaks: hardening::leaks::LeakInspector::new(&cfg.response_inspection),
+        geo_db,
+        geo_policy: geo::GeoPolicy::new(&cfg.geo),
         conns: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),

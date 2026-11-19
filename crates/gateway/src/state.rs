@@ -43,6 +43,8 @@ pub struct State {
     pub protocol: crate::policy::protocol::Protocol,
     pub security_headers: crate::hardening::headers::SecurityHeaders,
     pub leaks: Option<crate::hardening::leaks::LeakInspector>,
+    pub geo_db: Option<crate::geo::GeoDb>,
+    pub geo_policy: crate::geo::GeoPolicy,
     pub conns: Mutex<HashMap<IpAddr, u32>>,
     pub req_counter: AtomicU64,
     pub console_second: AtomicU64,

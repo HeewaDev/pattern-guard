@@ -113,7 +113,8 @@ pub async fn handle(
     }
 
     // ---- custom rules (an `allow` rule bypasses inspection like the allow list) ----
-    let rule = state.rules.evaluate(ip, &parts);
+    let country = state.geo_db.as_ref().and_then(|g| g.lookup(ip));
+    let rule = state.rules.evaluate(ip, &parts, country);
     if matches!(rule.terminal, Some((RuleAction::Allow, _))) {
         return Ok(forward(&state, parts, body, ip, &id, None).await.0);
     }
@@ -248,6 +249,23 @@ pub async fn handle(
         };
         raise(a, "rule", format!("rule:{name}"), &mut action, &mut layer);
     }
+    match state.geo_policy.verdict(country) {
+        Some(crate::geo::GeoVerdict::Block) => raise(
+            Action::Block,
+            "geo",
+            format!("geo:{}", country.unwrap_or("?")),
+            &mut action,
+            &mut layer,
+        ),
+        Some(crate::geo::GeoVerdict::Challenge) => raise(
+            Action::Challenge,
+            "geo",
+            format!("geo:{}", country.unwrap_or("?")),
+            &mut action,
+            &mut layer,
+        ),
+        None => {}
+    }
     if let Some(hit) = &limit {
         let a = match hit.action {
             LimitAction::Block => Action::Block,
@@ -375,6 +393,7 @@ pub async fn handle(
         action,
         layer,
         enforced: enforce,
+        country,
     };
 
     // ---- enforce ----

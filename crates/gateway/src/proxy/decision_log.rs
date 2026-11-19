@@ -47,6 +47,7 @@ pub(super) struct LogCtx<'a> {
     pub(super) action: Action,
     pub(super) layer: &'static str,
     pub(super) enforced: bool,
+    pub(super) country: Option<&'a str>,
 }
 
 pub(super) fn log_decision(
@@ -88,6 +89,7 @@ pub(super) fn log_decision(
             "bot_score": c.assessment.bot_score,
             "reasons": c.reasons,
             "waf": waf,
+            "country": c.country,
             "reputation": c.intel.map(|e| serde_json::json!({"source": e.source, "reason": e.reason})),
         }
     });

@@ -758,3 +758,57 @@ async fn data_leaks_are_blocked_or_logged() {
         "body intact across the inspection window"
     );
 }
+
+#[tokio::test]
+async fn country_policy_and_country_rules() {
+    let dir = std::env::temp_dir().join(format!("pg_gw_geo_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("countries.csv");
+    std::fs::write(
+        &csv,
+        "1.0.0.0,1.0.0.255,AU\n5.0.0.0,5.255.255.255,DE\n203.0.113.0,203.0.113.255,XX\n",
+    )
+    .unwrap();
+    let gw = start_gateway(&format!(
+        "[geo]\ndatabase = \"{}\"\ndeny_countries = [\"XX\"]\nchallenge_countries = [\"DE\"]\n[[rules]]\nname = \"no admin from AU\"\npath = \"/admin\"\ncountries = [\"au\"]\naction = \"block\"\n",
+        csv.display()
+    ))
+    .await;
+    let xff = |ip: &'static str| ("x-forwarded-for", ip);
+    assert_eq!(
+        send(gw.addr, "GET", "/", &[xff("203.0.113.9")], "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let de = send(gw.addr, "GET", "/", &[xff("5.1.1.1")], "").await;
+    assert!(de.body.contains("challenge_required"), "{}", de.body);
+    assert_eq!(
+        send(gw.addr, "GET", "/admin", &[xff("1.0.0.5")], "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(gw.addr, "GET", "/shop", &[xff("1.0.0.5")], "")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(gw.addr, "GET", "/", &[xff("198.51.100.1")], "")
+            .await
+            .status,
+        StatusCode::OK,
+        "unknown country passes"
+    );
+
+    let cfg = GatewayConfig::from_toml_str(
+        "upstream = \"http://127.0.0.1:1\"\n[geo]\ndeny_countries = [\"XX\"]\n",
+    )
+    .unwrap();
+    let err = pattern_guard_gateway::build_state(cfg)
+        .err()
+        .expect("needs a database");
+    assert!(err.contains("[geo] database"), "{err}");
+}

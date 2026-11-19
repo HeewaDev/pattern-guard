@@ -27,6 +27,7 @@ struct Rule {
     ua_re: Option<Regex>,
     query_re: Option<Regex>,
     headers: Vec<HeaderCond>,
+    countries: Vec<String>,
     action: RuleAction,
 }
 
@@ -85,6 +86,7 @@ impl RuleSet {
                 ua_re: regex("user_agent_regex", n, &c.user_agent_regex)?,
                 query_re: regex("query_regex", n, &c.query_regex)?,
                 headers,
+                countries: c.countries.iter().map(|c| c.to_ascii_uppercase()).collect(),
                 action: c.action,
             });
         }
@@ -95,10 +97,15 @@ impl RuleSet {
         self.rules.is_empty()
     }
 
-    pub fn evaluate(&self, ip: IpAddr, parts: &Parts) -> RuleOutcome {
+    /// True if any rule has a `countries` condition (needs a geo database).
+    pub fn uses_countries(&self) -> bool {
+        self.rules.iter().any(|r| !r.countries.is_empty())
+    }
+
+    pub fn evaluate(&self, ip: IpAddr, parts: &Parts, country: Option<&str>) -> RuleOutcome {
         let mut out = RuleOutcome::default();
         for r in &self.rules {
-            if !r.matches(ip, parts) {
+            if !r.matches(ip, parts, country) {
                 continue;
             }
             match r.action {
@@ -122,7 +129,12 @@ fn host_matches(pattern: &str, host: &str) -> bool {
 }
 
 impl Rule {
-    fn matches(&self, ip: IpAddr, parts: &Parts) -> bool {
+    fn matches(&self, ip: IpAddr, parts: &Parts, country: Option<&str>) -> bool {
+        if !self.countries.is_empty()
+            && !country.is_some_and(|c| self.countries.iter().any(|x| x == c))
+        {
+            return false;
+        }
         let path = parts.uri.path();
         let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
         if let Some(p) = &self.path_prefix {
@@ -225,18 +237,18 @@ action = "block"
         let office: IpAddr = "10.1.2.3".parse().unwrap();
         let other: IpAddr = "203.0.113.9".parse().unwrap();
         let p = parts("GET", "/admin/users", &[]);
-        let o = rs.evaluate(office, &p);
+        let o = rs.evaluate(office, &p, None);
         assert_eq!(
             o.terminal,
             Some((RuleAction::Allow, "office may use admin".into()))
         );
         assert_eq!(o.logged, vec!["audit admin".to_string()]);
         assert_eq!(
-            rs.evaluate(other, &p).terminal.unwrap().0,
+            rs.evaluate(other, &p, None).terminal.unwrap().0,
             RuleAction::Block
         );
         assert_eq!(
-            rs.evaluate(other, &parts("GET", "/shop", &[])),
+            rs.evaluate(other, &parts("GET", "/shop", &[]), None),
             RuleOutcome::default()
         );
     }
@@ -265,28 +277,34 @@ action = "skip_waf"
         );
         let ip: IpAddr = "198.51.100.1".parse().unwrap();
         let hit = parts("POST", "/api/items", &[("host", "shop.example.com:8443")]);
-        assert_eq!(rs.evaluate(ip, &hit).terminal.unwrap().1, "api needs key");
+        assert_eq!(
+            rs.evaluate(ip, &hit, None).terminal.unwrap().1,
+            "api needs key"
+        );
         let keyed = parts(
             "POST",
             "/api/items",
             &[("host", "shop.example.com"), ("x-api-key", "k")],
         );
-        assert!(rs.evaluate(ip, &keyed).terminal.is_none());
+        assert!(rs.evaluate(ip, &keyed, None).terminal.is_none());
         let apex = parts("POST", "/api/items", &[("host", "example.com")]);
         assert!(
-            rs.evaluate(ip, &apex).terminal.is_none(),
+            rs.evaluate(ip, &apex, None).terminal.is_none(),
             "*.example.com excludes the apex"
         );
         let get = parts("GET", "/api/items", &[("host", "a.example.com")]);
-        assert!(rs.evaluate(ip, &get).terminal.is_none());
+        assert!(rs.evaluate(ip, &get, None).terminal.is_none());
         let ua = parts("GET", "/", &[("user-agent", "sqlmap/1.7")]);
         assert_eq!(
-            rs.evaluate(ip, &ua).terminal.unwrap().0,
+            rs.evaluate(ip, &ua, None).terminal.unwrap().0,
             RuleAction::Challenge
         );
         let hook = parts("POST", "/hook?sig=abc", &[]);
-        assert!(rs.evaluate(ip, &hook).skip_waf);
-        assert!(!rs.evaluate("192.0.2.5".parse().unwrap(), &hook).skip_waf);
+        assert!(rs.evaluate(ip, &hook, None).skip_waf);
+        assert!(
+            !rs.evaluate("192.0.2.5".parse().unwrap(), &hook, None)
+                .skip_waf
+        );
     }
 
     #[test]

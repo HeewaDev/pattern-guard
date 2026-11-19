@@ -157,3 +157,12 @@ enabled = false
 max_bytes = 262144
 content_types = ["text/html", "text/plain", "application/json", "application/xml", "text/xml"]
 action = "block"
+
+# ---- Country access control. database = CSV of start_ip,end_ip,country_code, e.g.
+# DB-IP "IP to Country Lite" (CC BY 4.0, attribution required): https://db-ip.com/db/lite.php
+# Custom rules can also use `countries = ["..."]` once a database is set.
+[geo]
+# database = "dbip-country-lite.csv"
+deny_countries = []
+challenge_countries = []
+allow_countries = []          # if set, every other (known) country is blocked

@@ -83,6 +83,9 @@ pub struct GatewayConfig {
     /// Block responses that leak errors, stack traces, directory listings or keys.
     #[serde(default)]
     pub response_inspection: ResponseInspectionConfig,
+    /// Country-based access control from an IP-to-country CSV.
+    #[serde(default)]
+    pub geo: GeoConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -296,6 +299,9 @@ pub struct RuleConfig {
     pub query_regex: Option<String>,
     #[serde(default)]
     pub headers: Vec<HeaderMatch>,
+    /// Client country (needs `[geo] database`); empty = any.
+    #[serde(default)]
+    pub countries: Vec<String>,
     pub action: RuleAction,
 }
 
@@ -409,6 +415,24 @@ impl Default for ResponseHeadersConfig {
     fn default() -> Self {
         toml::from_str("").unwrap()
     }
+}
+
+/// Country access control. `database` is a CSV of `start_ip,end_ip,country_code`
+/// (e.g. DB-IP "IP to Country Lite", CC BY 4.0). Relative to this config file.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GeoConfig {
+    #[serde(default)]
+    pub database: Option<PathBuf>,
+    /// ISO 3166-1 alpha-2 codes that are blocked.
+    #[serde(default)]
+    pub deny_countries: Vec<String>,
+    /// Codes that are challenged.
+    #[serde(default)]
+    pub challenge_countries: Vec<String>,
+    /// If non-empty, only these countries are allowed (unknown/private IPs are not blocked).
+    #[serde(default)]
+    pub allow_countries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -627,6 +651,11 @@ impl GatewayConfig {
         if let (Some(g), Some(dir)) = (&c.guard_config, path.parent()) {
             if g.is_relative() {
                 c.guard_config = Some(dir.join(g));
+            }
+        }
+        if let (Some(g), Some(dir)) = (&c.geo.database, path.parent()) {
+            if g.is_relative() {
+                c.geo.database = Some(dir.join(g));
             }
         }
         Ok(c)
