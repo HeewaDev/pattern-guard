@@ -580,6 +580,7 @@ name = "pattern-guard-waf"
 version = "0.3.0"
 dependencies = [
  "aho-corasick",
+ "criterion",
  "regex",
  "serde_json",
 ]

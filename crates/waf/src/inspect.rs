@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use regex::{Regex, RegexSet};
+use regex::{Regex, RegexSet, RegexSetBuilder};
 
 use crate::decode::{base64_variants, decode, decode_keep_case, percent_decode};
 use crate::indicators::AttackClass::{self, *};
@@ -74,7 +74,13 @@ impl Default for Inspector {
 impl Inspector {
     pub fn new() -> Self {
         let ind = indicators();
-        let set = RegexSet::new(ind.iter().map(|i| format!("(?s){}", i.pattern)))
+        // The set holds every indicator. With the default 2 MiB lazy-DFA cache it
+        // thrashes and the regex crate falls back to its PikeVM, ~60x slower
+        // (1.4 ms instead of ~20 µs per request). 16 MiB per thread leaves headroom
+        // for the extra states that varied attack traffic creates.
+        let set = RegexSetBuilder::new(ind.iter().map(|i| format!("(?s){}", i.pattern)))
+            .dfa_size_limit(16 << 20)
+            .build()
             .expect("WAF patterns compile");
         Self {
             set,

@@ -462,7 +462,7 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             JavaInjection,
             "java_dotted_exec",
             7.0,
-            r"\bjava\.[\w.]{0,60}\b(runtime|processbuilder)\b",
+            r"\bjava\.[a-z0-9_.]{0,60}\b(runtime|processbuilder)\b",
         ),
         // ---- server-side JavaScript (Node.js) and Perl code injection ----
         i(

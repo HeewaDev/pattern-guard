@@ -62,9 +62,9 @@ impl Ssrf {
     pub(crate) fn new() -> Self {
         Self {
             // scheme, optional slashes, authority (bracketed IPv6 or up to / ? # space)
-            url: Regex::new(r"(?:^|[^a-z0-9+.\-])([a-z][a-z0-9+.\-_]{1,20}):(/{0,3})(\[[^\]\s]{1,80}\][^/?#\s]*|[^/?#\s\[]{1,255})([^\s]*)").unwrap(),
+            url: Regex::new(r"(?:^|[^a-z0-9+.\-])([a-z][a-z0-9+.\-_]+):(/{0,3})(\[[^\]\s]+\][^/?#\s]*|[^/?#\s\[]+)([^\s]*)").unwrap(),
             // a value that is only a host (optionally :port and path): `localhost/`
-            bare_host: Regex::new(r"^([a-z0-9][a-z0-9.\-]{0,252})(:\d{1,5})?(/\S*)?$").unwrap(),
+            bare_host: Regex::new(r"^([a-z0-9][a-z0-9.\-]*)(:\d+)?(/\S*)?$").unwrap(),
             script: Regex::new(r"\.(php\d?|phtml|txt|sh|pl|py|asp|aspx|jsp|cgi|inc)(\?.*)?$").unwrap(),
         }
     }
