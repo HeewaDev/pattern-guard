@@ -13,6 +13,27 @@ fn bench_check_with_risk(c: &mut Criterion) {
     });
 }
 
+fn bench_assess_adaptive(c: &mut Criterion) {
+    let guard = Guard::from_toml_str("").unwrap();
+    let t0 = SystemTime::now();
+    let mut i: u64 = 0;
+    c.bench_function("adaptive_assess_10k_actors", |b| {
+        b.iter(|| {
+            i += 1;
+            let event = Event::new(
+                format!("ip:198.51.{}.{}", (i / 250) % 40, i % 250),
+                "GET",
+                format!("/product/{}", i % 5000),
+                t0 + Duration::from_millis(i),
+            )
+            .with_user_agent("Mozilla/5.0");
+            let a = guard.assess(black_box(&event));
+            guard.observe_response(&event, 200);
+            a.risk
+        });
+    });
+}
+
 fn bench_flood_single_actor(c: &mut Criterion) {
     // 0.2 slowed down linearly with the flood size; this must stay flat.
     let guard = Guard::from_toml_str("[guard]\nburst_max_events = 100\n").unwrap();
@@ -35,6 +56,7 @@ fn bench_flood_single_actor(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_check_with_risk,
+    bench_assess_adaptive,
     bench_flood_single_actor
 );
 criterion_main!(benches);

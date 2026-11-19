@@ -6,22 +6,25 @@ use std::time::Instant;
 use lru::LruCache;
 
 use crate::analyzer;
-use crate::config::{Config, TimeSource};
+use crate::config::{Config, Mode, TimeSource};
 use crate::decision::Decision;
 use crate::error::Error;
 use crate::event::Event;
-use crate::normalize::{hash_str, normalize_path};
+use crate::features::{FEATURE_NAMES, FeatureEngine, Features, N_FEATURES, Prepared};
+use crate::model::Model;
+use crate::normalize::{hash_str, is_probe_path, normalize_path};
 use crate::stats::Decay;
 use crate::tracker::Tracker;
 
 /// Why a request scored the way it did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reason {
-    /// `rule:<name>`, `cooldown` or `trusted`.
+    /// Feature name (see [`FEATURE_NAMES`]), `rule:<name>`, `cooldown` or `trusted`.
     pub signal: &'static str,
-    /// The rule's risk.
+    /// Contribution in log-odds for model signals; the rule's risk for rules.
     pub weight: f64,
-    /// Whether an unusually high (`true`) or low (`false`) value raised the risk.
+    /// For model signals: whether the feature was unusually high (`true`) or unusually
+    /// low (`false`, e.g. low route diversity) to push the risk up.
     pub high: bool,
 }
 
@@ -43,10 +46,14 @@ pub struct Assessment {
     pub risk: f64,
     /// Cloudflare-style bot score: 1 = almost certainly automated/abusive, 99 = almost certainly fine.
     pub bot_score: u8,
+    /// Adaptive model's probability of abuse (0 when the model is not running).
+    pub model_risk: f64,
     /// Explicit rules' risk (0 when no rules are configured).
     pub rules_risk: f64,
     /// Strongest contributors, most important first.
     pub reasons: Vec<Reason>,
+    /// The raw feature vector (in [`FEATURE_NAMES`] order); used for training and debugging.
+    pub features: Features,
 }
 
 enum Clock {
@@ -77,18 +84,25 @@ struct Strikes {
 
 struct State {
     clock: Clock,
+    engine: FeatureEngine,
     rules: Tracker,
     cooldowns: LruCache<String, Strikes>,
 }
 
 pub struct Guard {
     config: Config,
+    model: Model,
     state: Mutex<State>,
 }
 
 impl Guard {
+    /// Builds a guard; loads `config.guard.model` if set, else the built-in model.
     pub fn new(config: Config) -> Result<Self, Error> {
         config.validate()?;
+        let model = match &config.guard.model {
+            Some(p) => Model::load(p)?,
+            None => Model::builtin(),
+        };
         let g = &config.guard;
         let clock = match g.time_source {
             TimeSource::Event => Clock::Event {
@@ -100,11 +114,13 @@ impl Guard {
         };
         let state = State {
             clock,
+            engine: FeatureEngine::new(g.adaptive.clone(), g.max_actors),
             rules: Tracker::new(g.max_actors),
             cooldowns: LruCache::new(g.max_actors.unwrap_or(NonZeroUsize::new(100_000).unwrap())),
         };
         Ok(Self {
             config,
+            model,
             state: Mutex::new(state),
         })
     }
@@ -117,8 +133,18 @@ impl Guard {
         Self::new(Config::from_toml_str(s)?)
     }
 
+    /// Replaces the scoring model (e.g. one you trained with `pattern-guard train`).
+    pub fn with_model(mut self, model: Model) -> Self {
+        self.model = model;
+        self
+    }
+
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn model(&self) -> &Model {
+        &self.model
     }
 
     pub fn check(&self, event: &Event) -> Decision {
@@ -131,13 +157,20 @@ impl Guard {
         (a.decision, a.risk)
     }
 
-    fn rule_keys(&self, ev: &Event) -> (u64, u64) {
-        if self.config.guard.normalize_targets {
-            let n = normalize_path(&ev.target);
-            (hash_str(&[&ev.action, &n.template]), hash_str(&[&n.template]))
+    fn prepare(&self, ev: &Event, probe_extra: &[String]) -> (Prepared, u64, u64) {
+        let n = normalize_path(&ev.target);
+        let route = hash_str(&[&ev.action, &n.template]);
+        let (rep_key, target_key) = if self.config.guard.normalize_targets {
+            (route, hash_str(&[&n.template]))
         } else {
             (hash_str(&[&ev.action, &ev.target]), hash_str(&[&ev.target]))
-        }
+        };
+        let p = Prepared {
+            route,
+            id: n.id,
+            probe: is_probe_path(&ev.target, probe_extra),
+        };
+        (p, rep_key, target_key)
     }
 
     /// Scores one request and records it. Call once per request, before handling it.
@@ -147,9 +180,17 @@ impl Guard {
         let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let st = &mut *st;
         let now = st.clock.now(event);
-        let (rep_key, target_key) = self.rule_keys(event);
+        let (p, rep_key, target_key) = self.prepare(event, st.engine.probe_paths());
 
-        let (rules_risk, rule_name) = if eff.rules_enabled() {
+        let (features, model_risk, contrib) = if g.mode != Mode::Rules {
+            let f = st.engine.observe_request(event, &p, now);
+            let (risk, contrib) = self.model.predict(&f);
+            (f, risk, contrib)
+        } else {
+            ([0.0; N_FEATURES], 0.0, [0.0; N_FEATURES])
+        };
+
+        let (rules_risk, rule_name) = if g.mode != Mode::Adaptive && eff.rules_enabled() {
             let s = st.rules.record(
                 &event.actor,
                 rep_key,
@@ -164,11 +205,12 @@ impl Guard {
         };
 
         let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
+        let own_risk = model_risk.max(rules_risk);
         let in_cooldown = st
             .cooldowns
             .get(&event.actor)
             .is_some_and(|s| now < s.until);
-        let mut risk = rules_risk;
+        let mut risk = own_risk;
         let mut reasons: Vec<Reason> = Vec::new();
 
         if eff.trusted {
@@ -187,17 +229,24 @@ impl Guard {
                     high: true,
                 });
             }
-            if rules_risk > 0.0 {
+            if rules_risk > 0.0 && rules_risk >= model_risk {
                 reasons.push(Reason {
                     signal: rule_name,
                     weight: rules_risk,
                     high: true,
                 });
             }
+            let mut order: Vec<usize> = (0..N_FEATURES).filter(|&i| contrib[i] > 0.25).collect();
+            order.sort_by(|&a, &b| contrib[b].total_cmp(&contrib[a]));
+            reasons.extend(order.into_iter().take(3).map(|i| Reason {
+                signal: FEATURE_NAMES[i],
+                weight: contrib[i],
+                high: self.model.weight(i) >= 0.0,
+            }));
         }
 
         let decision = eff.risk_to_decision(risk);
-        if !eff.trusted && eff.cooldown_secs > 0.0 && rules_risk >= block_at {
+        if !eff.trusted && eff.cooldown_secs > 0.0 && own_risk >= block_at {
             let s = st
                 .cooldowns
                 .get_or_insert_mut(event.actor.clone(), Strikes::default);
@@ -211,9 +260,25 @@ impl Guard {
             decision,
             risk,
             bot_score: (1.0 + ((1.0 - risk) * 98.0).round()) as u8,
+            model_risk,
             rules_risk,
             reasons,
+            features,
         }
+    }
+
+    /// Reports the HTTP status your handler returned for `event` (the same event passed
+    /// to [`assess`](Self::assess)). Failure ratios (401/403/404/429…) are among the
+    /// strongest signals for credential stuffing, scanning and scraping.
+    pub fn observe_response(&self, event: &Event, status: u16) {
+        if self.config.guard.mode == Mode::Rules {
+            return;
+        }
+        let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let st = &mut *st;
+        let now = st.clock.now(event);
+        let (p, _, _) = self.prepare(event, st.engine.probe_paths());
+        st.engine.observe_response(event, &p, status, now);
     }
 }
 
@@ -305,6 +370,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rules_mode_skips_model() {
+        let g = Guard::from_toml_str("[guard]\nmode = \"rules\"\n").unwrap();
+        let a = g.assess(&Event::new("a", "GET", "/", at(0.0)));
+        assert_eq!(a.model_risk, 0.0);
+        assert_eq!(a.features, [0.0; N_FEATURES]);
+    }
 
     #[test]
     fn system_clock_mode() {

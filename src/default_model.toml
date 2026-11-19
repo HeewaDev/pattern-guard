@@ -1,0 +1,172 @@
+format = 1
+description = "placeholder (untrained); replaced by a trained model once the traffic simulator exists"
+bias = -6.0
+
+[[features]]
+name = "actor_burst"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_volume"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_new"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_fail_ratio"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_fail_count"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_route_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_route_diversity"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_novel_objects"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_sequential"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_regularity"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "cold_write"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "probe_path"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "subnet_new_actors"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "subnet_fail_ratio"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "client_known"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "client_fail_ratio"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "client_new_actor_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "client_route_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "client_sequential"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "surge_x_actor_route_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "surge_x_client_route_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "new_actor_surge_x_client_route_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "new_actor_surge_x_client_new_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "fail_surge_x_actor_fail_ratio"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "fail_surge_x_client_fail_ratio"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "client_route_share_x_new_share"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_route_fail_ratio"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
+[[features]]
+name = "actor_burst_excess"
+weight = 0.0
+mean = 0.0
+scale = 1.0
+
