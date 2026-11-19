@@ -3,7 +3,7 @@ use pattern_guard::{Event, Guard};
 use std::time::{Duration, SystemTime};
 
 fn bench_check_with_risk(c: &mut Criterion) {
-    let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../guard.toml.demo");
+    let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/demo/burst.toml");
     let guard = Guard::from_config_path(config).unwrap();
     c.bench_function("rules_only_demo_config", |b| {
         b.iter(|| {

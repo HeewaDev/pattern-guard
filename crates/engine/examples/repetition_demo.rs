@@ -1,7 +1,10 @@
-//! `cargo run --example repetition_demo` — uses guard.toml.repetition_demo
+//! `cargo run -p pattern-guard --example repetition_demo` — uses config/demo/repetition.toml
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let guard = pattern_guard::Guard::from_config_path("guard.toml.repetition_demo")?;
+    let guard = pattern_guard::Guard::from_config_path(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/demo/repetition.toml"
+    ))?;
 
     let action = "GET";
     let target = "/api/foo";

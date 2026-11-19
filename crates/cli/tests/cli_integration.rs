@@ -21,7 +21,7 @@ fn cli_accepts_command_after_flags_without_double_dash() {
     let status = Command::new(pattern_guard_exe())
         .args([
             "--config",
-            repo_file("guard.toml.demo").to_str().unwrap(),
+            repo_file("config/demo/burst.toml").to_str().unwrap(),
             "true",
         ])
         .status()
@@ -34,7 +34,7 @@ fn cli_rejects_unknown_flag() {
     let output = Command::new(pattern_guard_exe())
         .args([
             "--config",
-            repo_file("guard.toml.demo").to_str().unwrap(),
+            repo_file("config/demo/burst.toml").to_str().unwrap(),
             "--not-a-real-flag",
             "true",
         ])

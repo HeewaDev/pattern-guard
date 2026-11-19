@@ -1,5 +1,5 @@
 # Repetition demo: same (action, target) repeated.
-# Run: cargo run --example repetition_demo
+# Run: cargo run -p pattern-guard --example repetition_demo
 # 1–3 same events = Allow; 4+ = Warn then Delay then Block.
 
 [guard]

@@ -1,7 +1,10 @@
-//! `cargo run --example burst_demo` — uses guard.toml.demo
+//! `cargo run -p pattern-guard --example burst_demo` — uses config/demo/burst.toml
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let guard = pattern_guard::Guard::from_config_path("guard.toml.demo")?;
+    let guard = pattern_guard::Guard::from_config_path(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/demo/burst.toml"
+    ))?;
 
     for i in 1..=8 {
         let event = pattern_guard::Event::new(

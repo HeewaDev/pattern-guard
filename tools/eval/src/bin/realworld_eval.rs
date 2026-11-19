@@ -5,7 +5,7 @@
 //! `cargo run --release -p pattern-guard-eval --bin realworld_eval [-- --model path/to/model.toml] [--seed N]`
 //!
 //! Runs the same traffic through:
-//!  1. the 0.2-style rules (thresholds from the old guard.toml.example), and
+//!  1. the 0.2-style rules (thresholds from the 0.2 guard.toml.example), and
 //!  2. the adaptive engine with the built-in (or given) model.
 
 use pattern_guard_eval::sim;
@@ -118,7 +118,7 @@ fn main() {
 
     let legacy = Guard::from_toml_str(LEGACY_RULES).unwrap();
     run(
-        "0.2-style fixed rules (old guard.toml.example thresholds)",
+        "0.2-style fixed rules (0.2 guard.toml.example thresholds)",
         &legacy,
         &recs,
     );
