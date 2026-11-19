@@ -1,172 +1,171 @@
 format = 1
-description = "placeholder (untrained); replaced by a trained model once the traffic simulator exists"
-bias = -6.0
+description = "built-in v0.3: trained on 3h of synthetic traffic (gen_traffic --seed 101 --hours 3), mimicry augmentation 0.3"
+bias = 0.20108123326975375
 
 [[features]]
 name = "actor_burst"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -1.861513
+mean = 1.980895
+scale = 1.422284
 
 [[features]]
 name = "actor_volume"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.678547
+mean = 3.412456
+scale = 1.764497
 
 [[features]]
 name = "actor_new"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -0.239342
+mean = 0.143083
+scale = 0.271159
 
 [[features]]
 name = "actor_fail_ratio"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 3.258498
+mean = 0.14237
+scale = 0.286512
 
 [[features]]
 name = "actor_fail_count"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 1.430751
+mean = 0.641643
+scale = 1.125618
 
 [[features]]
 name = "actor_route_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 1.357639
+mean = 0.641448
+scale = 0.389662
 
 [[features]]
 name = "actor_route_diversity"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -1.652888
+mean = 1.346097
+scale = 0.755972
 
 [[features]]
 name = "actor_novel_objects"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.828005
+mean = 1.093869
+scale = 1.755141
 
 [[features]]
 name = "actor_sequential"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 2.5222
+mean = 0.053744
+scale = 0.199666
 
 [[features]]
 name = "actor_regularity"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.058668
+mean = 0.338899
+scale = 0.400935
 
 [[features]]
 name = "cold_write"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.948006
+mean = 0.06734
+scale = 0.25061
 
 [[features]]
 name = "probe_path"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.681635
+mean = 0.027235
+scale = 0.162768
 
 [[features]]
 name = "subnet_new_actors"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.213798
+mean = 0.512598
+scale = 0.611818
 
 [[features]]
 name = "subnet_fail_ratio"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.334348
+mean = 0.112621
+scale = 0.257349
 
 [[features]]
 name = "client_known"
 weight = 0.0
-mean = 0.0
+mean = 1.0
 scale = 1.0
 
 [[features]]
 name = "client_fail_ratio"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 1.204793
+mean = 0.118085
+scale = 0.252867
 
 [[features]]
 name = "client_new_actor_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.771766
+mean = 0.035819
+scale = 0.075756
 
 [[features]]
 name = "client_route_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -0.250126
+mean = 0.38953
+scale = 0.360701
 
 [[features]]
 name = "client_sequential"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.069647
+mean = 0.163335
+scale = 0.341461
 
 [[features]]
 name = "surge_x_actor_route_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 1.292254
+mean = 1.2321
+scale = 1.550755
 
 [[features]]
 name = "surge_x_client_route_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.908289
+mean = 0.717173
+scale = 1.213148
 
 [[features]]
 name = "new_actor_surge_x_client_route_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.227117
+mean = 0.297619
+scale = 0.602709
 
 [[features]]
 name = "new_actor_surge_x_client_new_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -0.168364
+mean = 0.057038
+scale = 0.224079
 
 [[features]]
 name = "fail_surge_x_actor_fail_ratio"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = 0.416404
+mean = 0.037208
+scale = 0.125904
 
 [[features]]
 name = "fail_surge_x_client_fail_ratio"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -0.004736
+mean = 0.021179
+scale = 0.110158
 
 [[features]]
 name = "client_route_share_x_new_share"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -0.518934
+mean = 0.015448
+scale = 0.068887
 
 [[features]]
 name = "actor_route_fail_ratio"
-weight = 0.0
-mean = 0.0
-scale = 1.0
+weight = -0.519516
+mean = 0.084224
+scale = 0.161437
 
 [[features]]
 name = "actor_burst_excess"
-weight = 0.0
-mean = 0.0
-scale = 1.0
-
+weight = 3.408705
+mean = 0.208483
+scale = 0.684368
