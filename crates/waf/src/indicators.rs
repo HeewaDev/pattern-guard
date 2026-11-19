@@ -14,6 +14,8 @@ pub enum AttackClass {
     PhpInjection,
     JavaInjection,
     RemoteFileInclusion,
+    CodeInjection,
+    PrototypePollution,
 }
 
 impl AttackClass {
@@ -31,6 +33,8 @@ impl AttackClass {
             AttackClass::PhpInjection => "php_injection",
             AttackClass::JavaInjection => "java_injection",
             AttackClass::RemoteFileInclusion => "remote_file_inclusion",
+            AttackClass::CodeInjection => "code_injection",
+            AttackClass::PrototypePollution => "prototype_pollution",
         }
     }
 }
@@ -457,6 +461,100 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             "java_dotted_exec",
             7.0,
             r"\bjava\.[\w.]{0,60}\b(runtime|processbuilder)\b",
+        ),
+        // ---- server-side JavaScript (Node.js) and Perl code injection ----
+        i(
+            CodeInjection,
+            "node_deserialization",
+            8.0,
+            r"_\$\$nd_func\$\$_|\b__js_function\b",
+        ),
+        i(
+            CodeInjection,
+            "node_function_constructor",
+            7.0,
+            r"\bnew\s+function\s*\(|\bconstructor\s*\.\s*constructor\b|\bconstructor\s*\[\s*['\x22]constructor",
+        ),
+        i(
+            CodeInjection,
+            "node_module_loading",
+            7.0,
+            r#"\brequire\s*\(\s*['"`]?(child_process|fs|net|vm|os|http|https|dgram|cluster|worker_threads)\b|\brequire\s*\[|\brequire\.main\b|\bconstructor\s*\.\s*_load\s*\(|\bprocess\s*\.\s*(mainmodule|binding|dlopen)\b|\bprocess\s*\[|\bglobal\s*\.\s*process\b"#,
+        ),
+        i(
+            CodeInjection,
+            "node_child_process",
+            6.0,
+            r"\bchild_process\b|\.\s*(execsync|spawnsync|execfilesync)\s*\(",
+        ),
+        i(
+            CodeInjection,
+            "node_process_env",
+            5.0,
+            r"\bprocess\s*\.\s*env\b",
+        ),
+        i(
+            CodeInjection,
+            "node_module_exports",
+            5.0,
+            r"\bmodule\s*\.\s*exports\s*=",
+        ),
+        i(
+            CodeInjection,
+            "node_console_call",
+            4.0,
+            r#"\bconsole\s*(\.\s*|\[\s*['"])(log|info|warn|error|debug|trace|dir)\b"#,
+        ),
+        i(
+            CodeInjection,
+            "eval_decoded_string",
+            7.0,
+            r"\b(eval|function|settimeout|setinterval)\s*\(\s*(string\s*\.\s*fromcharcode|atob|buffer\s*\.\s*from|unescape|decodeuricomponent)\s*\(",
+        ),
+        i(
+            CodeInjection,
+            "react_flight_gadget",
+            8.0,
+            r#""\$[0-9a-f@]*:(__proto__|constructor|prototype)\b|"\$[0-9a-f]*:[a-z_]*:(__proto__|constructor|prototype)\b|\bresolved_model\b[\s\S]{0,200}\b_response\b"#,
+        ),
+        i(
+            CodeInjection,
+            "node_event_loop_block",
+            7.0,
+            r"\bwhile\s*\(\s*!\s*[-+]?\s*(0|false|\[\s*\]|''|\x22\x22)\s*\)|\bfor\s*\(\s*;\s*;\s*\)\s*[{;]?\s*[};]",
+        ),
+        i(CodeInjection, "perl_interpolation", 7.0, r"@\{\s*\["),
+        // ---- prototype pollution ----
+        i(
+            PrototypePollution,
+            "proto_property",
+            7.0,
+            r#"\b__proto__\b|\bconstructor\s*(\.|\[\s*['"]?)\s*prototype\b"#,
+        ),
+        // ---- expression language / Velocity ----
+        i(
+            TemplateInjection,
+            "velocity_directive",
+            4.0,
+            r"#\s*(set|foreach|if|elseif|macro|evaluate|define|parse|include)\s*\(\s*[$\[]",
+        ),
+        i(
+            TemplateInjection,
+            "reflection_call",
+            4.0,
+            r"\.\s*(getmethod|getdeclaredmethod|getdeclaredfield|invoke|forname|getclass|newinstance|getconstructor|getruntime)\s*\(",
+        ),
+        i(
+            TemplateInjection,
+            "expression_language_exec",
+            7.0,
+            r"[#$]\{[^}]{0,200}\b(runtime|processbuilder|\.exec\s*\(|invoke\s*\(|getclass\s*\(|forname\s*\()",
+        ),
+        i(
+            TemplateInjection,
+            "template_control_block",
+            5.0,
+            r"\{%-?\s*(if|for|set|import|include|macro|raw|debug)\b[^%]{0,200}%\}[\s\S]{0,300}\{%-?\s*end|<%=?\s*(if|for|each|unless)\b[^%]{0,200}%>[\s\S]{0,300}<%\s*end",
         ),
         // ---- NoSQL injection ----
         i(NoSqlInjection, "mongo_operator", 7.0, mongo_bracket),

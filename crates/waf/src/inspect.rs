@@ -370,6 +370,41 @@ mod tests {
     }
 
     #[test]
+    fn server_side_code_injection_classes() {
+        let w = Inspector::new();
+        for (v, class) in [
+            (
+                "_$$ND_FUNC$$_function(){require('child_process').exec('id')}()",
+                "code_injection",
+            ),
+            (
+                "#{require.main.constructor._load('child_process').spawn('id')}",
+                "code_injection",
+            ),
+            (
+                "this.constructor.constructor('return process')()",
+                "code_injection",
+            ),
+            ("while(!false){}", "code_injection"),
+            ("@{[system 'whoami']}", "code_injection"),
+            (
+                "{\"then\":\"$1:__proto__:then\",\"status\":\"resolved_model\"}",
+                "code_injection",
+            ),
+            ("__proto__[isAdmin]", "prototype_pollution"),
+            ("x.constructor.prototype.polluted", "prototype_pollution"),
+            (
+                "#set($c=$x.class.forName('a'+'b'))#set($m=$c.getMethod('ex'+'ec'))",
+                "template_injection",
+            ),
+        ] {
+            let f = w.inspect_value("query:x", v, false).expect(v);
+            assert!(f.score >= 7.0, "{v}: {f:?}");
+            assert_eq!(f.class.as_str(), class, "{v}: {f:?}");
+        }
+    }
+
+    #[test]
     fn other_headers_only_checked_for_jndi() {
         let w = Inspector::new();
         let headers = vec![(
