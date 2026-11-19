@@ -55,7 +55,12 @@ fn random_bytes() -> [u8; 32] {
 }
 
 pub fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    use std::fmt::Write;
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
