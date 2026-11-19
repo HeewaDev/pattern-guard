@@ -57,7 +57,9 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
+    // SHOW=<category> prints missed attacks; SHOW_NEG=<category> prints blocked negatives.
     let show_misses = std::env::var("SHOW").ok();
+    let show_blocked_negatives = std::env::var("SHOW_NEG").ok();
     let waf = Inspector::new();
     let text = std::fs::read_to_string(path).expect("read JSONL");
     let mut by_cat: BTreeMap<u64, Row> = BTreeMap::new();
@@ -119,6 +121,18 @@ fn main() {
                 row.neg += 1;
                 row.neg_blocked += (score >= BLOCK) as usize;
             }
+        }
+        if !expect && score >= BLOCK && show_blocked_negatives.as_deref() == Some(&cat.to_string())
+        {
+            let top = r
+                .top()
+                .map(|f| format!("{} {:?}", f.location, f.indicators))
+                .unwrap_or_default();
+            println!(
+                "blocked-negative {score:4.1} {} {:.60} | {top}",
+                v["id"].as_str().unwrap_or(""),
+                v["desc"].as_str().unwrap_or("")
+            );
         }
         if expect && score < BLOCK && show_misses.as_deref() == Some(&cat.to_string()) {
             println!(
