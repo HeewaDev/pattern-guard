@@ -11,6 +11,8 @@ pub enum AttackClass {
     Xxe,
     TemplateInjection,
     NoSqlInjection,
+    PhpInjection,
+    JavaInjection,
 }
 
 impl AttackClass {
@@ -25,6 +27,8 @@ impl AttackClass {
             AttackClass::Xxe => "xxe",
             AttackClass::TemplateInjection => "template_injection",
             AttackClass::NoSqlInjection => "nosql_injection",
+            AttackClass::PhpInjection => "php_injection",
+            AttackClass::JavaInjection => "java_injection",
         }
     }
 }

@@ -7,6 +7,7 @@ use regex::{Regex, RegexSet};
 use crate::decode::{decode, percent_decode};
 use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
+use crate::lexicon::Lexicons;
 
 /// One suspicious value.
 #[derive(Debug, Clone)]
@@ -52,6 +53,7 @@ pub struct Inspector {
     jndi_only: Vec<bool>,
     comments: Regex,
     lookups: Regex,
+    lexicons: Lexicons,
     /// Findings below this score are dropped.
     pub min_score: f64,
     /// Longest value inspected (bytes); longer values are truncated.
@@ -73,6 +75,7 @@ impl Inspector {
             set,
             meta: ind.iter().map(|i| (i.class, i.name, i.weight)).collect(),
             jndi_only: ind.iter().map(|i| i.class == JndiInjection).collect(),
+            lexicons: Lexicons::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
             // Log4j lookup obfuscation: ${lower:j} ${upper:j} ${::-j} ${env:X:-j} → j
             lookups: Regex::new(r"\$\{\s*(?:lower|upper|::-|[a-z]*:[^:}$]*:-)\s*:?([^}$]*)\}")
@@ -133,6 +136,9 @@ impl Inspector {
             }
         }
         if !jndi_only {
+            for (class, name, w) in self.lexicons.scan(location, &decoded) {
+                add(class, name, w);
+            }
             // Binary upload bodies legitimately contain NUL bytes; parameters never should.
             if location != "body"
                 && (decoded.contains('\0') || raw.to_ascii_lowercase().contains("%00"))

@@ -19,6 +19,7 @@ thiserror = "2"
 log = "0.4"
 lru = "0.12"
 regex = "1"
+aho-corasick = "1"
 criterion = "0.5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs"] }
 hyper = { version = "1", features = ["server", "client", "http1"] }
