@@ -76,6 +76,31 @@ pub(crate) fn base64_variants(s: &str) -> Vec<String> {
     out
 }
 
+/// Characters that browsers, IIS "best fit" mapping or 7-bit stripping turn into HTML
+/// syntax: full-width and angle-quote brackets, `¼`/`¾` (0xBC/0xBE with the high bit
+/// removed are `<`/`>`), `¢` (`"`). Returns `None` when the value has none of them.
+pub(crate) fn fold_html_lookalikes(s: &str) -> Option<String> {
+    let map = |c: char| -> Option<char> {
+        Some(match c {
+            '\u{ff1c}' | '\u{2039}' | '\u{ab}' | '\u{bc}' | '\u{fe64}' | '\u{2329}'
+            | '\u{3008}' => '<',
+            '\u{ff1e}' | '\u{203a}' | '\u{bb}' | '\u{be}' | '\u{fe65}' | '\u{232a}'
+            | '\u{3009}' => '>',
+            '\u{a2}' | '\u{ff02}' => '"',
+            '\u{ff07}' => '\'',
+            '\u{ff0f}' => '/',
+            '\u{ff08}' => '(',
+            '\u{ff09}' => ')',
+            '\u{ff1d}' => '=',
+            _ => return None,
+        })
+    };
+    if s.is_ascii() || !s.chars().any(|c| map(c).is_some()) {
+        return None;
+    }
+    Some(s.chars().map(|c| map(c).unwrap_or(c)).collect())
+}
+
 /// Decodes like a permissive server/browser would, then lowercases and collapses whitespace.
 pub fn decode(raw: &str, form: bool) -> String {
     let s = decode_keep_case(raw, form);
@@ -189,7 +214,36 @@ fn decode_entity(t: &str) -> (Option<char>, usize) {
         ("&lpar", '('),
         ("&rpar", ')'),
     ];
+    // HTML5 names browsers decode inside attributes; these need the `;`
+    const NAMED_STRICT: [(&str, char); 21] = [
+        ("&tab;", '\t'),
+        ("&newline;", '\n'),
+        ("&nbsp;", ' '),
+        ("&grave;", '`'),
+        ("&excl;", '!'),
+        ("&num;", '#'),
+        ("&period;", '.'),
+        ("&comma;", ','),
+        ("&semi;", ';'),
+        ("&equals;", '='),
+        ("&quest;", '?'),
+        ("&bsol;", '\\'),
+        ("&lsqb;", '['),
+        ("&rsqb;", ']'),
+        ("&lcub;", '{'),
+        ("&rcub;", '}'),
+        ("&plus;", '+'),
+        ("&ast;", '*'),
+        ("&dollar;", '$'),
+        ("&vert;", '|'),
+        ("&percnt;", '%'),
+    ];
     let lower: String = t.chars().take(12).collect::<String>().to_ascii_lowercase();
+    for (name, c) in NAMED_STRICT {
+        if lower.starts_with(name) {
+            return (Some(c), name.len());
+        }
+    }
     for (name, c) in NAMED {
         if lower.starts_with(name) {
             let mut used = name.len();

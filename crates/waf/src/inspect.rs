@@ -4,13 +4,18 @@ use std::collections::BTreeMap;
 
 use regex::{Regex, RegexSet, RegexSetBuilder};
 
-use crate::decode::{base64_variants, decode, decode_keep_case, percent_decode};
+use crate::decode::{
+    base64_variants, decode, decode_keep_case, fold_html_lookalikes, percent_decode,
+};
 use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
 use crate::lexicon::Lexicons;
 use crate::shell::Shell;
 use crate::sql::Sql;
 use crate::ssrf::Ssrf;
+
+/// Indicators that are ignored in the URL path.
+const PATH_EXEMPT: &[&str] = &["dom_sink", "js_cookie_domain", "generic_event_handler"];
 
 /// One suspicious value.
 #[derive(Debug, Clone)]
@@ -152,6 +157,23 @@ impl Inspector {
         ];
         // Payloads hidden in base64 (whole values or fragments).
         let kept_case = decode_keep_case(raw, form);
+        // look-alike brackets and quotes folded to HTML syntax (`＜script＞`, `¼script¾`)
+        if let Some(folded) = fold_html_lookalikes(&decoded) {
+            variants.push(folded);
+        }
+        // browsers drop tabs and newlines inside URL schemes (`ja&tab;vascript:`)
+        let squeezed: String = kept_case
+            .chars()
+            .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+            .collect::<String>()
+            .to_lowercase();
+        let split_scheme = ["javascript:", "vbscript:"]
+            .iter()
+            .any(|s| squeezed.contains(s) && !decoded.contains(s));
+        if split_scheme {
+            add(CrossSiteScripting, "js_uri_split", 7.0);
+        }
+        let n_plain = variants.len();
         variants.extend(base64_variants(&kept_case));
         for v in &variants {
             for idx in self.set.matches(v).into_iter() {
@@ -159,12 +181,17 @@ impl Inspector {
                     continue;
                 }
                 let (class, name, w) = self.meta[idx];
+                // JS property names and `onx=` alone in a URL path are page names
+                // (`/javascript-manual/document.cookie`), not code
+                if location == "path" && PATH_EXEMPT.contains(&name) {
+                    continue;
+                }
                 add(class, name, w);
             }
         }
         // Word lists: decoded value, comment-stripped value and base64 decodings.
         let mut lexicon_inputs: Vec<&String> = vec![&decoded, &variants[0]];
-        lexicon_inputs.extend(variants.iter().skip(4));
+        lexicon_inputs.extend(variants.iter().skip(n_plain));
         for v in lexicon_inputs {
             for (class, name, w) in self.lexicons.scan(location, v) {
                 // other headers: only header-safe classes (Log4Shell, Java)
@@ -472,6 +499,29 @@ mod tests {
             assert!(f.score >= 7.0, "{v}: {f:?}");
             assert_eq!(f.class.as_str(), class, "{v}: {f:?}");
         }
+    }
+
+    #[test]
+    fn xss_evasions_are_blocked() {
+        let w = Inspector::new();
+        for v in [
+            "＜script＞alert(1)＜/script＞",
+            "\u{bc}script\u{be}alert(1)\u{bc}/script\u{be}",
+            "ja&tab;vascript:alert(1)",
+            "\"onzoom=alert(1)",
+            "window[\"alert\"](window[\"document\"][\"cookie\"])",
+            "[].sort.call`${alert}1337`",
+            "!![]+[]",
+            "<x:script xmlns:x=\"http://www.w3.org/1999/xhtml\">alert(1)</x:script>",
+            "<p style=\"background:url(javascript:alert(1))\">",
+        ] {
+            let f = w.inspect_value("query:q", v, false).expect(v);
+            assert!(f.score >= 7.0, "{v}: {f:?}");
+        }
+        assert!(
+            w.inspect_value("path", "/javascript-manual/document.cookie", false)
+                .is_none_or(|f| f.score < 7.0)
+        );
     }
 
     #[test]
