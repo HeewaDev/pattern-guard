@@ -245,7 +245,7 @@ filters (they live in other repos).
 
 ---
 
-## 4. What we adopt (feeds ROADMAP milestone M2)
+## 4. What we adopt (feeds ROADMAP phase 4)
 
 Ordered by expected impact on the CRS benchmark and on our own hold-out lists.
 
