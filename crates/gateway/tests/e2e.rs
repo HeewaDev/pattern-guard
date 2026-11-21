@@ -243,6 +243,59 @@ async fn waf_blocks_attacks_in_query_body_and_headers() {
 }
 
 #[tokio::test]
+async fn multipart_uploads_are_inspected_per_part() {
+    let gw = start_gateway("[waf]\nexclude_params = [\"html\"]").await;
+    let ct = [("content-type", "multipart/form-data; boundary=XyZ")];
+    let upload = |name: &str, content: &str| {
+        format!(
+            "--XyZ\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nMy holiday\r\n\
+             --XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n{content}\r\n--XyZ--\r\n"
+        )
+    };
+    let field = |name: &str| {
+        format!(
+            "--XyZ\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n\
+             <script>alert(1)</script>\r\n--XyZ--\r\n"
+        )
+    };
+    // clean requests first: blocked requests raise the client's behavioural risk
+    let r = send(
+        gw.addr,
+        "POST",
+        "/upload",
+        &ct,
+        &upload("beach.jpg", "GIF89a...."),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "ordinary upload: {}", r.body);
+    let r = send(gw.addr, "POST", "/save", &ct, &field("html")).await;
+    assert_eq!(r.status, StatusCode::OK, "excluded field: {}", r.body);
+    // a web shell upload is blocked by its file name, also when disguised
+    let r = send(
+        gw.addr,
+        "POST",
+        "/upload",
+        &ct,
+        &upload("shell.php", "hello"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    let r = send(
+        gw.addr,
+        "POST",
+        "/upload",
+        &ct,
+        &upload("photo. php", "hello"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    // an attack in a multipart field is blocked
+    let r = send(gw.addr, "POST", "/save", &ct, &field("comment")).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+}
+
+#[tokio::test]
 async fn excluded_params_are_not_inspected() {
     let gw = start_gateway("[waf]\nexclude_params = [\"html\"]").await;
     let r = send(
