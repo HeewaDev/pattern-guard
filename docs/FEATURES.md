@@ -1,7 +1,8 @@
 # Feature tracker: Pattern-Guard vs open-appsec and Imperva
 
-This file is the single list of what to build and where the gaps are. Update the status
-column in the same commit that changes a feature.
+This file is the single list of features, their status and the gaps. Update the status
+column in the same commit that changes a feature. The order of work is in
+[ROADMAP.md](ROADMAP.md) (phases 1–12), the reasoning in [STRATEGY.md](STRATEGY.md).
 
 **Status key**
 
@@ -32,7 +33,7 @@ re-verified line by line.
 | 1.2 | Supervised model trained offline on malicious/benign requests | Community (basic) / Production (advanced) | 🧪 behaviour model trained via `pattern-guard train` · ⬜ supervised *payload* model | Train a payload classifier on top of `waf.rs` indicators |
 | 1.3 | Unsupervised model learned in the protected environment | Community | 🧪 per-route learned baselines (rate, failures, new clients) · ⬜ per-parameter value profiles (length, charset, type) | Add per-route/param profiles to `waf.rs` |
 | 1.4 | Two-phase evaluation: attack indicators → contextual scoring | Community | ✅ WAF indicators + behavioural risk + reputation fused into one decision (`crates/gateway/src/proxy/`) | |
-| 1.5 | Request decoding, JSON/XML extraction | Community | ✅ multi-pass URL/`%u`/HTML/JS decoding, SQL comments, base64 (whole values and fragments), shell evasions, JSON walk, form, XML/text (`crates/waf`) | Add multipart part-by-part parsing |
+| 1.5 | Request decoding, JSON/XML extraction | Community | ✅ multi-pass URL/`%u`/HTML/JS decoding, SQL comments, base64 (whole values and fragments), UTF-7, look-alike brackets, shell evasions, JSON walk, form, XML/text, multipart part by part (`crates/waf`) | JSON-in-string, evasion re-scan loop (ROADMAP phase 4) |
 | 1.6 | IPS engine (Snort 3.0 signatures) | Community | 🔌✅ Suricata alongside; gateway tails `eve.json` and blocks alerting IPs (`crates/gateway/src/intel/feeds.rs`, e2e-tested) | |
 | 1.7 | Automatic IPS signature updates | Premium | 🔌 via Suricata-update / ET Open | Document |
 | 1.8 | Behavioural anti-bot | Premium | 🧪 behaviour ML + bot score 1–99 · ✅ proof-of-work challenge with IP-bound HMAC cookie (verified in real headless Chromium: solved in 142 ms; curl stays blocked) | Verified good bots (2.4) |
@@ -120,8 +121,6 @@ re-verified line by line.
 | 2c.9 | Protocol enforcement | CRS 911/920 | 🧪 `[protocol]` (partial, see 2b.11) |
 | 2c.10 | Consume shared IP reputation | CrowdSec bouncers | ✅ CrowdSec bouncer |
 | 2c.11 | Push decisions to CrowdSec / host firewall (nftables) | CrowdSec, fail2ban | ⬜ |
-| 2c.19 | Business-operation protection: per-account budgets, allowed sources, replay / race protection | Imperva (API & business logic), Cloudflare (rate limiting by session) | ✅ `[[operations]]` |
-| 2c.20 | Login protection: per-account lockout across IPs, credential stuffing per IP | Cloudflare, Imperva ATO, fail2ban (per IP only) | ✅ `[[logins]]` |
 | 2c.12 | Verified good bots (reverse DNS) | Cloudflare, BunkerWeb | ⬜ |
 | 2c.13 | Tor / anonymiser / DNSBL blocking | open-appsec Enterprise, BunkerWeb | ⬜ |
 | 2c.14 | Path-level authentication (basic auth / OIDC) | BunkerWeb, SafeLine | ⬜ |
@@ -129,6 +128,8 @@ re-verified line by line.
 | 2c.16 | WebSocket, HTTP/2, TLS termination, caching, compression | BunkerWeb, SafeLine (nginx-based) | ⬜ (TLS via a front proxy today) |
 | 2c.17 | Hot reload of config without dropping connections | all of the above | ⬜ |
 | 2c.18 | Web UI for decisions, bans and tuning | BunkerWeb, SafeLine, open-appsec | ⬜ |
+| 2c.19 | Business-operation protection: per-account budgets, allowed sources, replay / race protection | Imperva (API & business logic), Cloudflare (rate limiting by session) | ✅ `[[operations]]` |
+| 2c.20 | Login protection: per-account lockout across IPs, credential stuffing per IP | Cloudflare, Imperva ATO, fail2ban (per IP only) | ✅ `[[logins]]` |
 
 ## 3. Proof
 
@@ -163,3 +164,45 @@ to [ROADMAP.md](ROADMAP.md).
 | 4.9 | Slowloris | Header timeout + connection cap | Resource-aware connection management | Body-read timeouts, global connection budget, shedding under memory / FD pressure |
 | 4.10 | Data exfiltration | Response inspection | Sensitive-data policies and response controls | Card numbers / PII rules, masking, per-route response size and rate policies (2.10) |
 | 4.11 | Zero-day attacks | Behavioural ML + WAF | Anomaly detection and application context | Per-parameter learned profiles (1.3, 2b.8), reputation-weighted scoring (2b.12) |
+
+## 5. Planned platform features (standalone after the edge)
+
+Features that don't exist yet, grouped by [ROADMAP.md](ROADMAP.md) phase. Rows move into
+the sections above (or stay here with a new status) as they are built.
+
+| # | Feature | Phase | Status |
+|---|---|---|---|
+| 5.1 | Release 0.4.0, aligned crate versions, `SECURITY.md` | 1 | ⬜ |
+| 5.2 | CI running on every PR, with accuracy gates (`crs_eval`, `waf_eval`, `realworld_eval`) | 1 | ⬜ |
+| 5.3 | Fuzzing of decoders, analysers, log parsing and the request path | 1 | ⬜ |
+| 5.4 | CSIC-2010 benchmark; 100k-sentence false-positive corpus (incl. Arabic and Kurdish) | 1 | ⬜ |
+| 5.5 | First real deployment in detect mode with a published false-positive rate | 1 | ⬜ |
+| 5.6 | Reject untrusted peers; origin secret header | 2 | ⬜ |
+| 5.7 | Built-in edge ranges (`trusted_proxies = ["cloudflare"]`), `cf-ipcountry`, `cf-ray` in logs | 2 | ⬜ |
+| 5.8 | Push bans to the edge (Cloudflare IP lists, expiring with the ban) | 2 | ⬜ |
+| 5.9 | "Behind Cloudflare" guide (tunnel, firewall, Transform Rule) | 2 | ⬜ |
+| 5.10 | Persistence of baselines, bans, budgets, replay keys, clearances | 3 | ⬜ |
+| 5.11 | Hot reload of config and model; graceful shutdown; fail-open / fail-closed | 3 | ⬜ |
+| 5.12 | Engine sharding; HTTP/2 upstream; WebSocket; streamed bodies | 3 | ⬜ |
+| 5.13 | Cluster state shared between gateway instances | 3 | ⬜ |
+| 5.14 | Per-parameter learning (zero-day layer) | 4 | ⬜ |
+| 5.15 | Anomaly score per request, paranoia levels 1–4, reputation-weighted scoring | 4 | ⬜ |
+| 5.16 | Exclusions per indicator × location; app packages (WordPress, WooCommerce, Laravel, Django, Magento) | 4 | ⬜ |
+| 5.17 | Protocol attacks: request smuggling, CRLF / header injection, parameter pollution, double encoding | 4 | ⬜ |
+| 5.18 | Failure-counted operations (card testing) | 5 | ⬜ |
+| 5.19 | BOLA / IDOR detection (orders, QR codes, activation codes) | 5 | ⬜ |
+| 5.20 | Custom leak patterns (activation strings, gift-card codes) with bulk thresholds | 5 | ⬜ |
+| 5.21 | Issuance reconciliation alert (goods issued vs payments confirmed) | 5 | ⬜ |
+| 5.22 | Signup / OTP / coupon velocity; CAPTCHA providers (Turnstile, hCaptcha) | 5 | ⬜ |
+| 5.23 | Payment-callback signature verification helper; vertical example configs (eSIM, gift cards, top-ups) | 5 | ⬜ |
+| 5.24 | Agent: log sources (SSH, web, mail, DB, journald) with the behavioural engine | 6 | ⬜ |
+| 5.25 | Agent: nftables / iptables enforcement on every port; public blocklists | 6 | ⬜ |
+| 5.26 | Console: central events, incidents, banned everywhere (gateways, agents, edge) | 7 | ⬜ |
+| 5.27 | Console: web UI, one-click exclusions, config editing, alerts (Telegram, email, Slack, webhook) | 7 | ⬜ |
+| 5.28 | Console: authentication, roles, audit log, multi-tenant mode | 7 | ⬜ |
+| 5.29 | Agent v2: file integrity, web-shell detection, exposed-secret scan, process / port / outbound watch | 10 | ⬜ |
+| 5.30 | Network lite: scans, floods, direct-to-origin attempts, outbound to known-bad IPs | 10 | ⬜ |
+| 5.31 | Signed binaries and images, SBOM, docs site, independent security review | 12 | ⬜ |
+
+API security (phase 8), bot management (phase 9) and ecosystem items (phase 11) are
+tracked in sections 1, 2 and 2c above.
