@@ -162,7 +162,7 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             SqlInjection,
             "schema_probe",
             6.0,
-            r"\b(information_schema|sysobjects|syscolumns|pg_catalog|sqlite_master|mysql\.user|all_tables|sys\.tables)\b",
+            r"\b(information_schema|sysobjects|syscolumns|pg_catalog|pg_shadow|pg_user|sqlite_master|sqlite_schema|mysql\.(user|db)|all_tables|user_tables|sys\.tables|sys\.objects|tempdb|msdb|master\.\.sys\w*)\b",
         ),
         i(
             SqlInjection,
@@ -210,7 +210,19 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             SqlInjection,
             "sql_json_operator",
             4.0,
-            r#"::\s*jsonb?\b|\bjsonb?_(extract\w*|pretty|each\w*|object_keys|array_elements\w*|typeof|path_\w+)\s*\(|['"]\s*(->>?|#>>?|<@|@>|\?\||\?&)\s*['"\[]|\barray\s*\[[^\]]*\]\s*(<@|@>|&&)"#,
+            r#"['"]\s*\?\s*['"]|::\s*jsonb?\b|\bjsonb?_(extract\w*|pretty|each\w*|object_keys|array_elements\w*|typeof|path_\w+)\s*\(|['"]\s*(->>?|#>>?|<@|@>|\?\||\?&)\s*['"\[]|\barray\s*\[[^\]]*\]\s*(<@|@>|&&)"#,
+        ),
+        i(
+            SqlInjection,
+            "sql_type_cast",
+            4.0,
+            r"(\w|\))\s*::\s*(int|int4|int8|integer|bigint|smallint|bool|boolean|text|varchar|char|numeric|float|real|regclass|oid|bytea|date|inet)\b",
+        ),
+        i(
+            SqlInjection,
+            "sql_from_system_table",
+            7.0,
+            r#"\bfrom\s*[`'"\[]?\s*(information_schema|pg_catalog|pg_shadow|sysobjects|syscolumns|sqlite_master|sqlite_schema|mysql\.(user|db)|master\.\.sys\w*|sys\.(tables|objects|columns)|all_tables|user_tables|dba_\w+)\b"#,
         ),
         i(
             SqlInjection,

@@ -65,6 +65,12 @@ const DANGEROUS_FUNCTIONS: &[&str] = &[
     "row_count",
     "found_rows",
     "uuid",
+    "lo_get",
+    "lo_put",
+    "lo_from_bytea",
+    "pg_stat_file",
+    "dblink",
+    "dblink_exec",
 ];
 
 /// Other common SQL functions (MySQL, PostgreSQL, SQL Server, Oracle, SQLite).
@@ -213,6 +219,13 @@ const FUNCTIONS: &[&str] = &[
     "chr",
     "nchar",
     "unicode",
+    "unistr",
+    "json_build_object",
+    "json_build_array",
+    "to_json",
+    "to_jsonb",
+    "array_to_string",
+    "div",
 ];
 
 /// Keywords that start a statement.
@@ -362,7 +375,7 @@ impl Sql {
         if toks.contains(&Tok::DangerousFunc) {
             push("sql_dangerous_function", 5.0);
         } else if toks.contains(&Tok::Func) {
-            push("sql_function", 3.0);
+            push("sql_known_function", 3.0);
         }
 
         // the whole value is a SQL expression
