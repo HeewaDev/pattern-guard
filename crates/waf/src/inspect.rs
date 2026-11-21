@@ -9,6 +9,7 @@ use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
 use crate::lexicon::Lexicons;
 use crate::shell::Shell;
+use crate::sql::Sql;
 use crate::ssrf::Ssrf;
 
 /// One suspicious value.
@@ -58,6 +59,7 @@ pub struct Inspector {
     session_names: Regex,
     lexicons: Lexicons,
     shell: Shell,
+    sql: Sql,
     ssrf: Ssrf,
     /// Findings below this score are dropped.
     pub min_score: f64,
@@ -91,6 +93,7 @@ impl Inspector {
                 .collect(),
             lexicons: Lexicons::new(),
             shell: Shell::new(),
+            sql: Sql::new(),
             ssrf: Ssrf::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
             // session-id parameter names of common frameworks (CRS 943110 / 943120)
@@ -171,6 +174,11 @@ impl Inspector {
             }
         }
         if !jndi_only {
+            // SQL structure: string / numeric breakout, whole-value expressions,
+            // database functions.
+            for (name, w) in self.sql.scan(&decoded) {
+                add(SqlInjection, name, w);
+            }
             // Shell commands: newlines kept, they separate commands.
             if location != "path" {
                 for (name, w) in self.shell.scan(&kept_case.to_lowercase()) {

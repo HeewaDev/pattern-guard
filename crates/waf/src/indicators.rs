@@ -206,6 +206,42 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             6.0,
             r"\bhaving\s+\d+\s*=\s*\d+",
         ),
+        i(
+            SqlInjection,
+            "sql_json_operator",
+            4.0,
+            r#"::\s*jsonb?\b|\bjsonb?_(extract\w*|pretty|each\w*|object_keys|array_elements\w*|typeof|path_\w+)\s*\(|['"]\s*(->>?|#>>?|<@|@>|\?\||\?&)\s*['"\[]|\barray\s*\[[^\]]*\]\s*(<@|@>|&&)"#,
+        ),
+        i(
+            SqlInjection,
+            "sql_logic_json",
+            4.0,
+            r#"\b(or|and)\s+(json\w*\s*\(|'\s*[\[{])"#,
+        ),
+        i(
+            SqlInjection,
+            "sql_stored_procedure",
+            6.0,
+            r"\bprocedure\s+analyse\s*\(|\bdeclare\s+@|\bexec(ute)?\s*\(\s*@|\bexec(ute)?\s+(master\.|xp_|sp_)|\b(sp_executesql|sp_makewebtask|sp_addextendedproc|sp_password)\b",
+        ),
+        i(
+            SqlInjection,
+            "sql_case_when",
+            3.0,
+            r"\bcase\s+when\b[\s\S]{1,200}?\bthen\b",
+        ),
+        i(
+            SqlInjection,
+            "sql_integer_overflow",
+            5.0,
+            r"^\s*(-?0000023456|4294967295|4294967296|2147483648|2147483647|-2147483648|-2147483649|0000012345|2\.2250738585072007e-308|2\.2250738585072011e-308|1e309)\s*$",
+        ),
+        i(
+            SqlInjection,
+            "float_parsing_dos",
+            7.0,
+            r"^\s*(2\.2250738585072011e-308|2\.2250738585072012e-308|1e309)\s*$",
+        ),
         // ---- cross-site scripting ----
         i(CrossSiteScripting, "script_tag", 8.0, r"<\s*/?\s*script\b"),
         i(
