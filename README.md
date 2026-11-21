@@ -10,7 +10,9 @@ The detection engine is also a Rust library you can embed directly.
 client ─► [TLS / CDN] ─► pattern-guard-gateway ─► your app
                            │
   allow/deny/challenge lists · custom rules · country policy · protocol checks
-  → honeypot traps · rate limits → IP reputation (bans · CrowdSec · Suricata · Wazuh)
+  → honeypot traps · rate limits · business operations (per-account budgets, replay
+    protection, allowed sources) · login protection
+  → IP reputation (bans · CrowdSec · Suricata · Wazuh)
   → WAF (SQLi, XSS, traversal, RFI, RCE, SSRF, PHP/Java/Node code, Log4Shell, XXE,
          SSTI, NoSQL, prototype pollution, session fixation, malicious uploads)
   → behavioural ML (bots, scraping, credential stuffing, L7 floods)
@@ -37,6 +39,8 @@ client ─► [TLS / CDN] ─► pattern-guard-gateway ─► your app
 | API discovery | ✅ `/inventory` of every route template seen |
 | Custom firewall rules (virtual patching, admin-only areas, tool blocking) | ✅ `[[rules]]` |
 | Rate limiting per route / IP / API key | ✅ `[[rate_limits]]`, 429 + Retry-After |
+| Business-operation protection (checkout, transfers, payment callbacks) | ✅ `[[operations]]`: budgets per account across IPs, allowed sources, replay and race protection on transaction ids |
+| Account takeover: distributed brute force, credential stuffing | ✅ `[[logins]]`: failures per account from any IP, failing accounts per IP |
 | Automatic escalating bans, honeypot traps | ✅ `[bans]`, `[traps]`, `/bans` admin API |
 | HTTP protocol enforcement | ✅ methods, sizes, NUL bytes, restricted extensions |
 | Security headers, data-leak blocking on responses | ✅ `[response_headers]`, `[response_inspection]` |
@@ -63,6 +67,15 @@ Run detect mode on your own traffic before enforcing.
 ---
 
 ## Quick start: gateway
+
+With Docker (gateway in front of a demo app):
+
+```bash
+docker compose -f deploy/docker/compose.yml up --build
+curl "http://localhost:8080/?id=1%27%20OR%201=1"    # logged as SQL injection (detect mode)
+```
+
+From source:
 
 ```bash
 cargo build --release -p pattern-guard-gateway
@@ -153,7 +166,8 @@ crates/
   cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
   gateway/   pattern-guard-gateway  reverse proxy
              src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
-             src/policy/              custom rules, rate limits, bans + traps, protocol enforcement
+             src/policy/              custom rules, rate limits, business operations + logins,
+                                      bans + traps, protocol enforcement
              src/hardening/           security headers, data-leak blocking
              src/geo.rs               IP → country lookup and country policy
              src/challenge/           proof-of-work challenge (+ page.html)
@@ -162,6 +176,7 @@ crates/
 tools/
   eval/      pattern-guard-eval     simulator + realworld_eval, gen_traffic, waf_eval, crs_eval
 config/      example configs (guard.toml, gateway.toml) and demo/ configs
+deploy/      Dockerfile companions (docker/gateway.toml, docker/compose.yml), systemd unit
 scripts/     extract_crs_tests.py (OWASP CRS regression tests → JSONL)
 docs/        documentation
 ```

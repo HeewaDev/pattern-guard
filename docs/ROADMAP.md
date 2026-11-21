@@ -46,7 +46,7 @@ Rust binary.
 | WAF benign false blocks (19k benign corpus + real logs) | 0 % (corpus) | ≤ 0.01 % |
 | Behaviour ML detection on unseen simulated attacks (avg per type) | ~93 % | ≥ 95 % |
 | Throughput per 8 vCPU, full inspection | ~28k (4 vCPU shared) | ≥ 100k req/s, p99 ≤ 5 ms |
-| Time from `git clone` to protected app | ~30 min | ≤ 10 min (Docker) |
+| Time from `git clone` to protected app | one `docker compose up` (build ~5 min) | ≤ 10 min (Docker) |
 
 ## 4. Milestones
 
@@ -116,7 +116,7 @@ open-appsec's engine (Apache-2.0) and OWASP CRS. The full list, with source path
 - [ ] Persist baselines, reputation and clearances (snapshot + load); hot reload of config and model on SIGHUP.
 - [ ] WebSocket passthrough; HTTP/2 to upstream; stream bodies beyond the inspection window.
 - [ ] Graceful shutdown and connection draining; configurable fail-open/fail-closed.
-- [ ] Dockerfile (distroless), docker-compose demo (gateway + app + CrowdSec), Helm chart, systemd unit in `deploy/`.
+- [x] Dockerfile (Debian slim, non-root), docker-compose demo, hardened systemd unit in `deploy/`. [ ] CrowdSec in the compose demo, Helm chart.
 - [ ] `ext_authz` (Envoy) / `auth_request` (nginx) decision endpoint for users who keep their proxy.
 
 **Done when:** ≥ 100k req/s at p99 ≤ 5 ms on 8 vCPU; restart keeps learned state; config
@@ -128,6 +128,8 @@ reload drops no connections; `docker compose up` protects a demo app in ≤ 10 m
 - [ ] Schema *learning* from the inventory: generate a draft OpenAPI from observed traffic.
 - [ ] Broken-object-level-authorization signals: an authenticated actor touching many other users' object ids.
 - [ ] Response inspection: data leakage (card numbers, API keys, stack traces), with masking in logs.
+- [x] Business operations (`[[operations]]`): per-account budgets, allowed sources, replay and
+      race protection on unique values. [ ] Learned per-operation baselines, spend / volume alerts.
 
 **Done when:** a request violating the schema is detected in tests for each rule type,
 and the generated schema covers ≥ 95 % of observed routes in the simulator.
@@ -138,7 +140,7 @@ and the generated schema covers ≥ 95 % of observed routes in the simulator.
 - [ ] JA4 from the TLS terminator as a first-class signal, and per-fingerprint signals (UA diversity, path diversity, unique IPs, browser ratio).
 - [ ] Challenge page collects passive client signals (`navigator.webdriver`, timing). A passed challenge becomes a strong "human" feature for the ML.
 - [ ] Tor exit, anonymiser and hosting-ASN lists as model features (not hard blocks).
-- [ ] Account-takeover: per-username failure tracking; breached-password check via k-anonymity range queries.
+- [x] Account-takeover: per-account failure tracking across IPs and credential stuffing per IP (`[[logins]]`). [ ] Breached-password check via k-anonymity range queries.
 
 **Done when:** headless-browser and residential-proxy scenarios are added to the
 simulator and detected at ≥ 90 % with no KPI regression; stealth stuffing ≥ 75 %.

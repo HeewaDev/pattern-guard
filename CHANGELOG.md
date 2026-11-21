@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
+  header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
+  (e.g. payment callbacks), and replay / race-condition protection for unique values
+  such as transaction ids (held while in flight, kept only after a 2xx answer). New
+  decision layer `operation`; answers 429 + Retry-After, 409 or 403.
+- **Login protection** (`[[logins]]`): failed logins per account from any IP
+  (distributed brute force) and distinct failing accounts per IP (credential stuffing).
+- **Deployment**: `Dockerfile` (non-root, ~125 MB), `deploy/docker/compose.yml` demo,
+  hardened `deploy/systemd/pattern-guard-gateway.service`.
 - **WAF 2.0** (`crates/waf`), measured on the OWASP CRS regression tests (attack
   categories 930–944: 11.8 % → 53.4 % blocked) with 0 of 19 215 benign values blocked
   throughout:

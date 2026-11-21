@@ -27,7 +27,8 @@ crates/
   cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
   gateway/   pattern-guard-gateway  reverse proxy
              src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
-             src/policy/              custom rules, rate limits, bans + traps, protocol enforcement
+             src/policy/              custom rules, rate limits, business operations + logins,
+                                      bans + traps, protocol enforcement
              src/hardening/           security headers, data-leak blocking
              src/geo.rs               IP → country lookup and country policy
              src/challenge/           proof-of-work challenge (+ page.html)
@@ -36,6 +37,7 @@ crates/
 tools/
   eval/      pattern-guard-eval     simulator + realworld_eval, gen_traffic, waf_eval, crs_eval
 config/      example configs (guard.toml, gateway.toml) and demo/ configs
+deploy/      Dockerfile companions (docker/gateway.toml, docker/compose.yml), systemd unit
 scripts/     extract_crs_tests.py (OWASP CRS regression tests → JSONL)
 docs/        documentation
 ```
@@ -62,7 +64,9 @@ buffer body (≤ max_body_bytes, else 413)
    │
    ▼
 0. gatekeeper policy: custom rules · country policy · protocol enforcement ·
-   honeypot traps (→ immediate ban) · rate limits (→ 429)
+   honeypot traps (→ immediate ban) · rate limits (→ 429) ·
+   business operations: account budget (→ 429), source (→ 403), replay (→ 409) ·
+   logins: account locked / credential stuffing (→ 429)
 1. behavioural ML    guard.assess(event)          → risk, bot score, Allow/Warn/Delay/Challenge/Block
 2. WAF               waf.inspect(request)          → findings per location, score 0–10
 3. reputation        intel.lookup(ip)              → CrowdSec / Suricata / Wazuh entry
@@ -82,6 +86,8 @@ forward to upstream (hop-by-hop headers stripped, X-Forwarded-For / X-Real-IP se
    │
    ▼
 observe_response(status) → ML learns failures (401/403/404/429…)
+operations ticket.complete(status) → unique values kept after 2xx (else released),
+                                     login failures / successes counted
 inventory.record(route template, status) · metrics · decision log
 ```
 

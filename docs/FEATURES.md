@@ -45,13 +45,13 @@ re-verified line by line.
 | 1.15 | File upload security | Enterprise (third-party listings; unverified) | 🧪 multipart parsed per part; server scripts, double extensions, config / session / restricted files, NUL and traversal in names, PHP hidden in binary files (`crates/waf/src/multipart.rs`) · ⬜ magic-byte vs extension check, per-path size limits, ClamAV hook | |
 | 1.16 | Deploy as NGINX / Kong / APISIX / Envoy / Istio attachment | Community | ✅ standalone reverse proxy (`gateway/`) · ⬜ nginx `auth_request` / Envoy `ext_authz` decision endpoint · ⬜ WebSocket passthrough · ⬜ HTTP/2 | |
 | 1.17 | Kubernetes ingress / Helm | Community | ⬜ | Container image + Helm chart |
-| 1.18 | Docker / Linux installer | Community | ⬜ | Dockerfile, systemd unit |
+| 1.18 | Docker / Linux installer | Community | ✅ `Dockerfile` (non-root, ~125 MB), `deploy/docker/compose.yml`, hardened `deploy/systemd/` unit | |
 | 1.19 | Gateway VM for AWS / Azure / VMware | Enterprise | ⬜ | Later: image build scripts |
 | 1.20 | Declarative config files | Community | ✅ `guard.toml`, `gateway.toml` (validated, `--check`) | |
 | 1.21 | Web management UI (SaaS) | Community (3 agents) | ⬜ | Local dashboard on the admin port first |
 | 1.22 | Log storage / event viewer | Community 10K/mo · Premium 1M/mo | ✅ async JSON decision log (EVE/ECS-like, `srcip` for Wazuh) · ⬜ local viewer | |
 | 1.23 | Monitor-only (detect) vs prevent mode | Community | ✅ `mode = "detect" \| "prevent"`, `would_mitigate` metric | |
-| 1.24 | Playgrounds / virtual labs | Community | 🧪 traffic simulator + `realworld_eval` | Publish a demo docker-compose |
+| 1.24 | Playgrounds / virtual labs | Community | 🧪 traffic simulator + `realworld_eval` · ✅ docker-compose demo (`deploy/docker/compose.yml`) | |
 | 1.25 | Independent security audit | Done for open-appsec (2022) | ⬜ | After 1.0 |
 | 1.26 | Enterprise 24×7 support | Enterprise | ❌ (project, not a company) | |
 
@@ -63,7 +63,7 @@ re-verified line by line.
 | 2.2 | Custom security rules | ✅ `[[rules]]`: path, method, host, IP, country, UA, query, header conditions; allow / block / challenge / delay / log / skip_waf | |
 | 2.3 | Virtual patching | ✅ via `[[rules]]` (block a vulnerable route / parameter pattern until patched) | |
 | 2.4 | Advanced bot protection | 🧪 behaviour ML, fingerprints · 🚧 challenge · ⬜ verified good bots (reverse DNS), headless-browser signals | |
-| 2.5 | Account takeover protection | 🧪 credential stuffing detection (failure ratios, route failure surge) · ⬜ breached-password check (k-anonymity), per-username tracking | |
+| 2.5 | Account takeover protection | 🧪 credential stuffing detection (failure ratios, route failure surge) · ✅ `[[logins]]`: failures per account from any IP, failing accounts per IP · ⬜ breached-password check (k-anonymity) |
 | 2.6 | Application-layer DDoS protection | 🧪 surge detection + blocking · ✅ rate limits, escalating bans, per-IP connection cap, header-read timeout (slowloris), body size limit | |
 | 2.7 | Network-layer (L3/L4) volumetric DDoS scrubbing | ❌ | Needs upstream bandwidth/scrubbing centres. Self-hosted: put behind a CDN/ISP scrubbing service |
 | 2.8 | API discovery & inventory | ✅ `/inventory` on the admin port: route templates, volume, blocks, status codes | |
@@ -120,6 +120,8 @@ re-verified line by line.
 | 2c.9 | Protocol enforcement | CRS 911/920 | 🧪 `[protocol]` (partial, see 2b.11) |
 | 2c.10 | Consume shared IP reputation | CrowdSec bouncers | ✅ CrowdSec bouncer |
 | 2c.11 | Push decisions to CrowdSec / host firewall (nftables) | CrowdSec, fail2ban | ⬜ |
+| 2c.19 | Business-operation protection: per-account budgets, allowed sources, replay / race protection | Imperva (API & business logic), Cloudflare (rate limiting by session) | ✅ `[[operations]]` |
+| 2c.20 | Login protection: per-account lockout across IPs, credential stuffing per IP | Cloudflare, Imperva ATO, fail2ban (per IP only) | ✅ `[[logins]]` |
 | 2c.12 | Verified good bots (reverse DNS) | Cloudflare, BunkerWeb | ⬜ |
 | 2c.13 | Tor / anonymiser / DNSBL blocking | open-appsec Enterprise, BunkerWeb | ⬜ |
 | 2c.14 | Path-level authentication (basic auth / OIDC) | BunkerWeb, SafeLine | ⬜ |
@@ -140,7 +142,7 @@ re-verified line by line.
 | 3.2e | Zero-day-style PHP code execution (PHP tags + OS command in a multipart field such as `PHP_SESSION_UPLOAD_PROGRESS`) | ✅ blocked as `php_injection` (acceptance test in `crates/waf/tests/corpus.rs`) |
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
 | 3.4 | Performance under load | 🧪 ~28 000 req/s, p99 ≈ 3.4 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`) · WAF ~17 µs per typical request (`crates/waf/benches/inspect_bench.rs`) · ⬜ shard the engine lock |
-| 3.5 | End-to-end gateway tests | ✅ 17 tests over real TCP: WAF, multipart uploads, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |
+| 3.5 | End-to-end gateway tests | ✅ 18 tests over real TCP: WAF, multipart uploads, business operations + logins, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |
 
 ## 4. Enterprise protection target: what "protect them at best" requires
 
@@ -154,9 +156,9 @@ to [ROADMAP.md](ROADMAP.md).
 | 4.2 | XSS | WAF indicators + evasion handling (CRS 941: 60.8 %) | Context-aware detection and evasion testing | HTML/attribute/JS context parsing, evasion corpus |
 | 4.3 | LFI / RFI | WAF indicators, CRS file lists, URL analysis (CRS 930: 47.8 %, 931: 18.9 %) | Extensive regression corpus | CRS 930/931 + SecLists/fuzzdb hold-out as a CI gate |
 | 4.4 | Command injection | WAF indicators, shell-command analyser (CRS 932: 34.8 %, commix hold-out 100 %) | Multiple encoding and evasion tests | Evasion re-scan loop (2b.2), commix hold-out as a CI gate |
-| 4.5 | Credential stuffing | Behavioural ML | Account-level correlation | Per-username / per-account failure tracking, breached-password check (2.5) |
+| 4.5 | Credential stuffing | Behavioural ML + `[[logins]]` (failures per account across IPs, failing accounts per IP) | Account-level correlation | Breached-password check (2.5); per-account signals into the ML |
 | 4.6 | Distributed bot attacks | Actor / subnet / client features | Cross-instance detection | Shared state between gateway instances (e.g. Redis or gossip), push decisions to CrowdSec (2c.11) |
-| 4.7 | API abuse | Rate limits + ML | Endpoint and business-operation awareness | OpenAPI enforcement (1.9), per-operation limits and baselines (login, checkout, search) |
+| 4.7 | API abuse | Rate limits + ML + `[[operations]]` (per-account budgets, allowed sources, replay protection) | Endpoint and business-operation awareness | OpenAPI enforcement (1.9), learned per-operation baselines, spend / volume alerts |
 | 4.8 | L7 DDoS | Connection caps, rate limits, bans | Adaptive distributed mitigation | Load-adaptive thresholds, cluster-wide rate limits and bans |
 | 4.9 | Slowloris | Header timeout + connection cap | Resource-aware connection management | Body-read timeouts, global connection budget, shedding under memory / FD pressure |
 | 4.10 | Data exfiltration | Response inspection | Sensitive-data policies and response controls | Card numbers / PII rules, masking, per-route response size and rate policies (2.10) |

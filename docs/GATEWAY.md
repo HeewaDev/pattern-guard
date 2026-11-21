@@ -7,6 +7,8 @@ client ─► [TLS terminator / CDN] ─► pattern-guard-gateway ─► your ap
                                         │
    every request:  allow / deny / challenge lists · custom rules · country policy
                    → protocol enforcement · honeypot traps · rate limits
+                   → business operations (per-account budgets, allowed sources, replay protection)
+                     · login protection (distributed brute force, credential stuffing)
                    → IP reputation (automatic bans, CrowdSec community blocklist, Suricata & Wazuh alerts)
                    → WAF payload inspection (SQLi, XSS, traversal, RFI, RCE, SSRF, PHP/Java/Node code,
                      Log4Shell, XXE, SSTI, NoSQL, prototype pollution, session fixation,
