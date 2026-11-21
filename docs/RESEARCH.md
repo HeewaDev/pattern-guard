@@ -18,22 +18,24 @@ requests in categories 930–944).
 
 | CRS category | Attack tests | Blocked before WAF 2.0 | Blocked now (score ≥ 7) |
 |---|---|---|---|
-| 930 local file inclusion | 67 | 23.9 % | 47.8 % |
+| 930 local file inclusion | 67 | 23.9 % | 50.7 % |
 | 931 remote file inclusion | 37 | 10.8 % | 18.9 % |
-| 932 remote code execution | 793 | 9.1 % | 34.8 % |
-| 933 PHP injection | 327 | 1.8 % | 26.6 % |
-| 934 generic (SSRF, SSTI, Node, prototype pollution) | 240 | 7.5 % | 68.8 % |
-| 941 XSS | 209 | 34.9 % | 36.8 % |
-| 942 SQL injection | 871 | 20.0 % | 20.1 % |
+| 932 remote code execution | 793 | 9.1 % | 34.9 % |
+| 933 PHP injection | 327 | 1.8 % | 30.0 % |
+| 934 generic (SSRF, SSTI, Node, prototype pollution) | 240 | 7.5 % | 69.6 % |
+| 941 XSS | 209 | 34.9 % | 60.8 % |
+| 942 SQL injection | 871 | 20.0 % | 42.8 % |
 | 943 session fixation | 43 | 4.7 % | 95.3 % |
-| 944 Java (deserialisation, Log4Shell, class names) | 1 143 | 6.6 % | 75.7 % |
-| **All attack categories** | **3 730** | **11.8 %** | **46.2 %** |
+| 944 Java (deserialisation, Log4Shell, class names) | 1 143 | 6.6 % | 75.8 % |
+| **All attack categories** | **3 730** | **11.8 %** | **53.4 %** |
 
-Rules at paranoia level 1, the CRS default: 53.9 % of 2 082 attack tests blocked.
+Rules at paranoia level 1, the CRS default: 63.5 % of 2 082 attack tests blocked.
+Multipart attacks (922): 100 % of 27; protocol enforcement (920): 16 %.
 
 **Since WAF 2.0 these tests are a development set.** The detectors added in WAF 2.0 (CRS
-word lists, base64 decoding, Java, shell and URL analysis, Node / Perl / expression
-language, prototype pollution, session fixation) were built by studying the missed
+word lists, base64 / UTF-7 decoding, Java, SQL tokenizer, XSS evasions, shell and URL
+analysis, multipart parsing, Node / Perl / expression language, prototype pollution,
+session fixation) were built by studying the missed
 tests, so the numbers above are no longer a blind measurement. The blind checks are the
 SecLists / fuzzdb hold-out lists (FEATURES.md §3.2c) and the 19 215-value benign corpus,
 which stayed at 0 false blocks through every step. Each WAF 2.0 commit message records

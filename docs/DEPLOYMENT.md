@@ -165,7 +165,7 @@ block_secs = 3600
 
 ## 6. Sizing
 
-- One instance did about 26,000 fully inspected req/s on 4 vCPU that it shared with the
+- One instance did about 28,000 fully inspected req/s on 4 vCPU that it shared with the
   load generator and the upstream (`crates/gateway/examples/loadtest.rs`). Measure on your own
   hardware and traffic mix.
 - Memory is bounded by the LRU caps (`max_actors`, `adaptive.max_routes`,

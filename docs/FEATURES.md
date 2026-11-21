@@ -42,7 +42,7 @@ re-verified line by line.
 | 1.12 | IP-level access control on every request | Community | ✅ allow / deny / challenge CIDR lists, custom rules on IP / not-IP, country policy, trusted-proxy client-IP resolution | |
 | 1.13 | CrowdSec integration | Community | ✅ (as bouncer) · ⬜ push our decisions to CrowdSec (`POST /v1/alerts`) | |
 | 1.14 | Rate limiting | (docs; edition unverified) | ✅ per-route token buckets keyed by IP, IP+route or API-key header (`[[rate_limits]]`, 429 + Retry-After) · adaptive surge detection · per-IP connection cap | |
-| 1.15 | File upload security | Enterprise (third-party listings; unverified) | ⬜ | Multipart: type/extension/magic-byte checks, size limits, optional ClamAV hook |
+| 1.15 | File upload security | Enterprise (third-party listings; unverified) | 🧪 multipart parsed per part; server scripts, double extensions, config / session / restricted files, NUL and traversal in names, PHP hidden in binary files (`crates/waf/src/multipart.rs`) · ⬜ magic-byte vs extension check, per-path size limits, ClamAV hook | |
 | 1.16 | Deploy as NGINX / Kong / APISIX / Envoy / Istio attachment | Community | ✅ standalone reverse proxy (`gateway/`) · ⬜ nginx `auth_request` / Envoy `ext_authz` decision endpoint · ⬜ WebSocket passthrough · ⬜ HTTP/2 | |
 | 1.17 | Kubernetes ingress / Helm | Community | ⬜ | Container image + Helm chart |
 | 1.18 | Docker / Linux installer | Community | ⬜ | Dockerfile, systemd unit |
@@ -59,7 +59,7 @@ re-verified line by line.
 
 | # | Capability | Pattern-Guard | Notes |
 |---|---|---|---|
-| 2.1 | WAF with managed signatures | 🧪 `crates/waf` scoring engine, 15 attack classes, ~90 indicators + OWASP CRS word lists · ⬜ optional Coraza + OWASP CRS second opinion | |
+| 2.1 | WAF with managed signatures | 🧪 `crates/waf` scoring engine, 17 attack classes, ~110 indicators + OWASP CRS word lists + SQL / shell / URL / multipart analysers · ⬜ optional Coraza + OWASP CRS second opinion | |
 | 2.2 | Custom security rules | ✅ `[[rules]]`: path, method, host, IP, country, UA, query, header conditions; allow / block / challenge / delay / log / skip_waf | |
 | 2.3 | Virtual patching | ✅ via `[[rules]]` (block a vulnerable route / parameter pattern until patched) | |
 | 2.4 | Advanced bot protection | 🧪 behaviour ML, fingerprints · 🚧 challenge · ⬜ verified good bots (reverse DNS), headless-browser signals | |
@@ -82,13 +82,13 @@ re-verified line by line.
 
 | # | Capability | Pattern-Guard | Source of the technique |
 |---|---|---|---|
-| 2b.1 | libinjection SQLi/XSS detection | ⬜ waiting for a decision on adding the third-party `barbacane-libinjection` crate (pure Rust, BSD-3) | CRS 942100 / 941100 (`libinjectionrs`, BSD-3) |
+| 2b.1 | libinjection SQLi/XSS detection | 🧪 replaced by our own SQL tokenizer (2b.20) and XSS evasion handling (2b.21); adding the `barbacane-libinjection` crate is still open (needs a decision on the dependency) | CRS 942100 / 941100 (`libinjectionrs`, BSD-3) |
 | 2b.2 | Evasion re-scan loop (decode only on trigger, keep if new indicators) | ⬜ | open-appsec `WaapAssetState::apply` |
 | 2b.3 | Large attack word lists (OS files, shell, Windows, SQL/PHP functions, Java classes, SSRF) | 🧪 OS files, restricted files, Unix shell + builtins, PHP functions, Java classes (`crates/waf/src/lexicon.rs`, `shell.rs`) · ⬜ Windows, SQL functions | CRS `rules/*.data` (Apache-2.0) |
 | 2b.4 | One anomaly score per request, per-class sub-scores | ⬜ | CRS 901/949 |
 | 2b.5 | Paranoia levels 1–4, separate detection/blocking level | ⬜ | CRS |
 | 2b.6 | Keyword-pair scores + saturating combiner | ⬜ | open-appsec `WaapScores.cc` |
-| 2b.7 | Recursive parsing: multipart per part, base64, JSON-in-string, delimiters | 🧪 base64 (whole values and fragments) · ⬜ multipart per part, JSON-in-string, delimiters | open-appsec `DeepParser.cc` |
+| 2b.7 | Recursive parsing: multipart per part, base64, JSON-in-string, delimiters | 🧪 multipart per part (2b.22), base64 (whole values and fragments), UTF-7 · ⬜ JSON-in-string, delimiters | open-appsec `DeepParser.cc` |
 | 2b.8 | Per-parameter learned value types and keyword-confidence filtering | ⬜ | open-appsec `TypeIndicatorsFilter.cc`, `KeywordIndicatorFilter.cc` |
 | 2b.9 | PHP code injection (tags, functions, superglobals, wrappers, serialized objects) | 🧪 CRS 933: 1.8 % → 26.6 % blocked (57.5 % logged) | CRS 933, `php-function-names` |
 | 2b.10 | Java attacks (deserialization magic bytes incl. base64, class names) | 🧪 CRS 944: 6.6 % → 75.7 % | CRS 944, `java-classes.data` |
@@ -96,6 +96,9 @@ re-verified line by line.
 | 2b.17 | URL analysis: obfuscated IPs, internal / metadata targets, parser confusion, RFI | 🧪 CRS 934 SSRF rules, CRS 931: 10.8 % → 18.9 % (`crates/waf/src/ssrf.rs`) | CRS 931 / 934 |
 | 2b.18 | Server-side JavaScript, Perl, expression-language injection; prototype pollution | 🧪 CRS 934: 7.5 % → 68.8 % (with 2b.17) | CRS 934 |
 | 2b.19 | Session fixation (session-id parameters without a same-site Referer) | 🧪 CRS 943: 4.7 % → 95.3 % | CRS 943 |
+| 2b.20 | SQL tokenizer: string / numeric breakout, whole-value SQL expressions, database functions, casts, JSON operators | 🧪 CRS 942: 20.1 % → 42.8 % (PL1 27.5 % → 68.8 %); fuzzdb SQLi hold-out 50 % → 59 % (`crates/waf/src/sql.rs`) | libinjection idea, CRS 942 |
+| 2b.21 | XSS evasions: look-alike brackets, HTML5 entities, split schemes, JS globals, JSFuck, namespaced tags | 🧪 CRS 941: 36.8 % → 60.8 % | CRS 941 |
+| 2b.22 | Multipart per part, upload checks, multipart evasions | 🧪 CRS 922: 14.8 % → 100 % (`crates/waf/src/multipart.rs`) | CRS 922 / 920120 / 933110 |
 | 2b.11 | Protocol enforcement (null/non-printable bytes, double encoding, CL+TE, CRLF, parameter pollution, restricted extensions) | 🧪 `[protocol]`: methods, URL / header / argument limits, NUL bytes, Host, restricted extensions · ⬜ double encoding, CRLF, parameter pollution | CRS 920 / 921 |
 | 2b.12 | Reputation-weighted WAF score (behavioural bot score scales payload score) | ⬜ | open-appsec `D2Main.cc` |
 | 2b.13 | Quantitative false-positive gate in CI (100k English sentences) | ⬜ | CRS `quantitative.yaml` |
@@ -131,13 +134,13 @@ re-verified line by line.
 |---|---|---|
 | 3.1 | Behaviour ML on synthetic mixed traffic (incl. unseen attacks) | 🧪 ~0.3% FP / ~98.5% detection (`tools/eval/src/bin/realworld_eval.rs`) |
 | 3.2a | WAF, own corpus (`crates/waf/tests/corpus.rs`, tuned against) | 🧪 76/77 attacks blocked, 0/62 tricky benign blocked |
-| 3.2b | WAF, PayloadsAllTheThings (MIT) + benign: 4.9k names, 10k words, 2.1k doc lines with code, 2.1k user agents (used to fix *categories*) | 🧪 86.6% of 1 380 attacks blocked · **0 of 19 215** benign blocked |
-| 3.2c | WAF hold-out, never tuned on: SecLists / fuzzdb (`waf_eval` tool) | 🧪 commix command injection 100% (24% before the shell analyser; the list is many variants of a few templates), XSS 84–94%, SQLi 50%, LFI 35% — **SQLi and LFI are the gap** |
-| 3.2d | **WAF on the OWASP CRS regression tests** (3 730 attack requests; `tools/eval/src/bin/crs_eval.rs`) | 🧪 **46.2 % blocked overall** (11.8 % before WAF 2.0), 53.9 % for rules at paranoia level 1: session fixation 95 %, Java 76 %, generic/SSRF/Node 69 %, LFI 48 %, XSS 37 %, RCE 35 %, PHP 27 %, SQLi 20 %, RFI 19 %. Since WAF 2.0 these tests are used for development, so they are no longer a hold-out. See [RESEARCH.md](RESEARCH.md) |
+| 3.2b | WAF, PayloadsAllTheThings (MIT) + benign: 4.9k names, 10k words, 2.1k doc lines with code, 2.1k user agents (used to fix *categories*) | 🧪 92.5% of 1 380 attacks blocked · **0 of 19 215** benign blocked |
+| 3.2c | WAF hold-out, never tuned on: SecLists / fuzzdb (`waf_eval` tool) | 🧪 commix command injection 100% (24% before the shell analyser; the list is many variants of a few templates), XSS 87–97%, SQLi 59%, LFI 35% — **LFI and SQLi are the gap** |
+| 3.2d | **WAF on the OWASP CRS regression tests** (3 730 attack requests; `tools/eval/src/bin/crs_eval.rs`) | 🧪 **53.4 % blocked overall** (11.8 % before WAF 2.0), 63.5 % for rules at paranoia level 1: multipart 100 %, session fixation 95 %, Java 76 %, generic/SSRF/Node 70 %, XSS 61 %, LFI 51 %, SQLi 43 %, RCE 35 %, PHP 30 %, RFI 19 %. Since WAF 2.0 these tests are used for development, so they are no longer a hold-out. See [RESEARCH.md](RESEARCH.md) |
 | 3.2e | Zero-day-style PHP code execution (PHP tags + OS command in a multipart field such as `PHP_SESSION_UPLOAD_PROGRESS`) | ✅ blocked as `php_injection` (acceptance test in `crates/waf/tests/corpus.rs`) |
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
-| 3.4 | Performance under load | 🧪 ~26 000 req/s, p99 ≈ 3.9 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`) · WAF ~20 µs per typical request (`crates/waf/benches/inspect_bench.rs`) · ⬜ shard the engine lock |
-| 3.5 | End-to-end gateway tests | ✅ 16 tests over real TCP: WAF, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |
+| 3.4 | Performance under load | 🧪 ~28 000 req/s, p99 ≈ 3.4 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`) · WAF ~17 µs per typical request (`crates/waf/benches/inspect_bench.rs`) · ⬜ shard the engine lock |
+| 3.5 | End-to-end gateway tests | ✅ 17 tests over real TCP: WAF, multipart uploads, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |
 
 ## 4. Enterprise protection target: what "protect them at best" requires
 
@@ -147,8 +150,8 @@ to [ROADMAP.md](ROADMAP.md).
 
 | # | Threat | Pattern-Guard today | Target | Next step |
 |---|---|---|---|---|
-| 4.1 | SQL injection | WAF indicators (CRS 942: 20.1 %) | OWASP CRS-grade coverage | libinjection (2b.1), SQL tokenizer / keyword pairs (2b.6), CRS 942 regression tests in CI |
-| 4.2 | XSS | WAF indicators (CRS 941: 36.8 %) | Context-aware detection and evasion testing | HTML/attribute/JS context parsing, libinjection XSS, evasion corpus |
+| 4.1 | SQL injection | WAF indicators + SQL tokenizer (CRS 942: 42.8 %, PL1 68.8 %) | OWASP CRS-grade coverage | Keyword-pair scores (2b.6), libinjection if the dependency is approved (2b.1), CRS 942 regression tests in CI |
+| 4.2 | XSS | WAF indicators + evasion handling (CRS 941: 60.8 %) | Context-aware detection and evasion testing | HTML/attribute/JS context parsing, evasion corpus |
 | 4.3 | LFI / RFI | WAF indicators, CRS file lists, URL analysis (CRS 930: 47.8 %, 931: 18.9 %) | Extensive regression corpus | CRS 930/931 + SecLists/fuzzdb hold-out as a CI gate |
 | 4.4 | Command injection | WAF indicators, shell-command analyser (CRS 932: 34.8 %, commix hold-out 100 %) | Multiple encoding and evasion tests | Evasion re-scan loop (2b.2), commix hold-out as a CI gate |
 | 4.5 | Credential stuffing | Behavioural ML | Account-level correlation | Per-username / per-account failure tracking, breached-password check (2.5) |

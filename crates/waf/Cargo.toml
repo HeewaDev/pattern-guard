@@ -1,6 +1,6 @@
 [package]
 name = "pattern-guard-waf"
-description = "Web application firewall engine: server-like decoding, weighted attack indicators, OWASP CRS word lists, shell and URL analysis (SQLi, XSS, traversal, RFI, RCE, SSRF, PHP/Java/Node code, JNDI, XXE, SSTI, NoSQL, prototype pollution, session fixation)"
+description = "Web application firewall engine: server-like decoding, weighted attack indicators, OWASP CRS word lists, SQL / shell / URL / multipart analysis (SQLi, XSS, traversal, RFI, RCE, SSRF, PHP/Java/Node code, JNDI, XXE, SSTI, NoSQL, prototype pollution, session fixation, malicious uploads)"
 readme = "../../README.md"
 version.workspace = true
 edition.workspace = true

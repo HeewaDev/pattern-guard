@@ -12,7 +12,7 @@ client ─► [TLS / CDN] ─► pattern-guard-gateway ─► your app
   allow/deny/challenge lists · custom rules · country policy · protocol checks
   → honeypot traps · rate limits → IP reputation (bans · CrowdSec · Suricata · Wazuh)
   → WAF (SQLi, XSS, traversal, RFI, RCE, SSRF, PHP/Java/Node code, Log4Shell, XXE,
-         SSTI, NoSQL, prototype pollution, session fixation)
+         SSTI, NoSQL, prototype pollution, session fixation, malicious uploads)
   → behavioural ML (bots, scraping, credential stuffing, L7 floods)
   → allow · delay · proof-of-work challenge · block      (or log only: detect mode)
   responses: security headers · data-leak blocking
@@ -28,7 +28,7 @@ client ─► [TLS / CDN] ─► pattern-guard-gateway ─► your app
 |---|---|
 | Runs as a reverse proxy in front of your app | ✅ `pattern-guard-gateway` |
 | Blocks, challenges and delays by itself | ✅ prevent mode, or detect (shadow) mode |
-| Web-attack inspection (WAF) | ✅ 15 attack classes · see accuracy below |
+| Web-attack inspection (WAF) | ✅ 17 attack classes, file-upload checks · see accuracy below |
 | Working bot challenge (proof-of-work) | ✅ verified in a real headless browser |
 | Behavioural bot / abuse detection (ML) | ✅ explainable model, bot score 1–99, trainable on your logs |
 | Shared IP reputation | ✅ via the CrowdSec community blocklist (gateway is a CrowdSec bouncer) |
@@ -51,11 +51,11 @@ The full feature list, compared against open-appsec and Imperva, is in
 | Test | Result |
 |---|---|
 | Behavioural ML, 1 h simulated mixed traffic, including attacks it never trained on | ~0.3 % of legitimate requests stopped, ~98.5 % of attack requests stopped |
-| WAF, PayloadsAllTheThings attack lists vs 19 215 benign values (names, words, docs with code, user agents) | 86.6 % of attacks blocked, **0** benign blocked |
-| WAF hold-out lists never tuned on (SecLists / fuzzdb) | command injection (commix) 100 %, XSS 84–94 %, SQLi 50 %, file inclusion 35 %. SQLi and file inclusion are the gaps to close |
-| WAF on the OWASP CRS regression tests (3 730 attack requests) | **46.2 % blocked** (rules at paranoia level 1: 53.9 %), up from 11.8 %. SQLi (20 %) and XSS (37 %) are the weakest classes; see [RESEARCH.md](docs/RESEARCH.md). These tests are now used for development, so they are no longer a hold-out |
+| WAF, PayloadsAllTheThings attack lists vs 19 215 benign values (names, words, docs with code, user agents) | 92.5 % of attacks blocked, **0** benign blocked |
+| WAF hold-out lists never tuned on (SecLists / fuzzdb) | command injection (commix) 100 %, XSS 87–97 %, SQLi 59 %, file inclusion 35 %. File inclusion and SQLi are the gaps to close |
+| WAF on the OWASP CRS regression tests (3 730 attack requests) | **53.4 % blocked** (rules at paranoia level 1: 63.5 %), up from 11.8 %. RFI (19 %), PHP (30 %) and RCE (35 %) are the weakest classes; see [RESEARCH.md](docs/RESEARCH.md). These tests are now used for development, so they are no longer a hold-out |
 | Proof-of-work challenge in real Chromium | solved in 142 ms, clearance cookie set; curl without JS stays blocked |
-| Gateway throughput, full inspection | ~26 000 req/s, p99 ≈ 4 ms (4 vCPU shared with client and upstream) |
+| Gateway throughput, full inspection | ~28 000 req/s, p99 ≈ 3.4 ms (4 vCPU shared with client and upstream) |
 
 Treat these as evidence that the mechanisms work, not as real-world accuracy guarantees.
 Run detect mode on your own traffic before enforcing.
@@ -105,10 +105,13 @@ cargo build --release
 **WAF** ([crates/waf](crates/waf/src)). Each value (path, query, form, JSON keys and values, XML,
 cookies, user agent, referer, and every header for Log4Shell and Java payloads) is decoded the way servers
 and browsers would decode it: repeated URL-decoding, `%uXXXX`, HTML entities, JS escapes,
-SQL comments and Log4j lookups, and base64 is tried too. It is then scored per attack
-class from about 90 weighted indicators, OWASP CRS word lists (OS files, shell commands,
-PHP functions, Java classes), a shell-command analyser that undoes shell evasions, and a
-URL analyser that sees through obfuscated IP addresses. One weak signal (the apostrophe
+SQL comments and Log4j lookups; base64, UTF-7 and look-alike brackets are tried too.
+It is then scored per attack class from about 110 weighted indicators, OWASP CRS word
+lists (OS files, shell commands, PHP functions, Java classes), a SQL tokenizer, a
+shell-command analyser that undoes shell evasions, and a URL analyser that sees through
+obfuscated IP addresses. Multipart bodies are parsed part by part: each field is
+inspected under its name and uploads are checked for web shells and disguised file
+names. One weak signal (the apostrophe
 in "O'Brien", a sentence starting with "rm -rf") stays low; attack-only combinations
 score high.
 
@@ -146,7 +149,7 @@ crates/
              src/util/                route templating, decayed counters
              src/{guard,config,event,logs}.rs
   waf/       pattern-guard-waf      payload inspection: decode · indicators · lexicon (CRS lists)
-                                      · shell · ssrf · inspect
+                                      · sql · shell · ssrf · multipart · inspect
   cli/       pattern-guard-cli      `pattern-guard` binary: replay · train · wrap
   gateway/   pattern-guard-gateway  reverse proxy
              src/proxy/               pipeline, client IP, forwarding, responses, verify, decision log
