@@ -14,6 +14,7 @@ mod decode;
 mod indicators;
 mod inspect;
 mod lexicon;
+mod multipart;
 mod shell;
 mod sql;
 mod ssrf;

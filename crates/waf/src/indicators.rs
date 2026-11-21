@@ -17,6 +17,8 @@ pub enum AttackClass {
     CodeInjection,
     PrototypePollution,
     SessionFixation,
+    MaliciousUpload,
+    ProtocolViolation,
 }
 
 impl AttackClass {
@@ -37,6 +39,8 @@ impl AttackClass {
             AttackClass::CodeInjection => "code_injection",
             AttackClass::PrototypePollution => "prototype_pollution",
             AttackClass::SessionFixation => "session_fixation",
+            AttackClass::MaliciousUpload => "malicious_upload",
+            AttackClass::ProtocolViolation => "protocol_violation",
         }
     }
 }

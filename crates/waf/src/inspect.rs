@@ -5,11 +5,12 @@ use std::collections::BTreeMap;
 use regex::{Regex, RegexSet, RegexSetBuilder};
 
 use crate::decode::{
-    base64_variants, decode, decode_keep_case, fold_html_lookalikes, percent_decode,
+    base64_variants, decode, decode_keep_case, fold_html_lookalikes, percent_decode, utf7_decode,
 };
 use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
 use crate::lexicon::Lexicons;
+use crate::multipart;
 use crate::shell::Shell;
 use crate::sql::Sql;
 use crate::ssrf::Ssrf;
@@ -157,6 +158,10 @@ impl Inspector {
         ];
         // Payloads hidden in base64 (whole values or fragments).
         let kept_case = decode_keep_case(raw, form);
+        // UTF-7 (`+ADw-script+AD4-`)
+        if let Some(u7) = utf7_decode(&kept_case) {
+            variants.push(decode(&u7, false));
+        }
         // look-alike brackets and quotes folded to HTML syntax (`＜script＞`, `¼script¾`)
         if let Some(folded) = fold_html_lookalikes(&decoded) {
             variants.push(folded);
@@ -318,6 +323,15 @@ impl Inspector {
                     }
                     Err(_) => push(self.inspect_value("body", &text, false)),
                 }
+            } else if let Some(found) = ct
+                .starts_with("multipart/")
+                .then(|| req.content_type.and_then(multipart::boundary))
+                .flatten()
+                .and_then(|b| self.inspect_multipart(req.body, &b, &mut names))
+            {
+                for f in found {
+                    push(Some(f));
+                }
             } else if ct.contains("xml")
                 || ct.starts_with("text/")
                 || ct.starts_with("multipart/")
@@ -330,6 +344,82 @@ impl Inspector {
             out.findings.push(f);
         }
         out
+    }
+
+    /// Inspects a multipart body part by part: field names, file names (upload checks),
+    /// text content per field (JSON parts walked), binary files only for embedded
+    /// server code, plus structural evasions. `None` if the body doesn't parse.
+    fn inspect_multipart(
+        &self,
+        body: &[u8],
+        boundary: &str,
+        names: &mut Vec<String>,
+    ) -> Option<Vec<Finding>> {
+        let m = multipart::parse(body, boundary)?;
+        let mut out = Vec::new();
+        let finding = |class, location: String, inds: Vec<(&'static str, f64)>, sample: &str| {
+            let score: f64 = inds.iter().map(|(_, w)| w).sum::<f64>().min(10.0);
+            (score >= self.min_score).then(|| Finding {
+                class,
+                score,
+                location,
+                indicators: inds.into_iter().map(|(n, _)| n).collect(),
+                sample: truncate(sample, 160).to_string(),
+            })
+        };
+        out.extend(finding(
+            ProtocolViolation,
+            "multipart".to_string(),
+            m.anomalies.clone(),
+            "",
+        ));
+        for p in &m.parts {
+            let field = truncate(&p.name, 64);
+            names.push(field.to_ascii_lowercase());
+            out.extend(self.inspect_value("body-name", &p.name, false));
+            let text = || String::from_utf8_lossy(p.body).into_owned();
+            if let Some(file) = &p.filename {
+                out.extend(self.inspect_value(&format!("filename:{field}"), file, false));
+                let mut inds = multipart::filename_indicators(file);
+                // files a site never accepts by upload (wp-config.php, .bashrc, config.yml)
+                let stored = format!("/{}", multipart::normalize_filename(file));
+                if self
+                    .lexicons
+                    .scan("path", &stored)
+                    .iter()
+                    .any(|(_, n, _)| *n == "restricted_file")
+                {
+                    inds.push(("upload_restricted_file", 7.0));
+                }
+                if multipart::is_binary(p.body) {
+                    if let Some(n) = multipart::embedded_code(p.body) {
+                        inds.push((n, 8.0));
+                    }
+                } else {
+                    out.extend(self.inspect_value(&format!("body:{field}"), &text(), false));
+                }
+                out.extend(finding(
+                    MaliciousUpload,
+                    format!("filename:{field}"),
+                    inds,
+                    file,
+                ));
+            } else if p
+                .content_type
+                .as_deref()
+                .is_some_and(|c| c.contains("json"))
+            {
+                match serde_json::from_slice::<serde_json::Value>(p.body) {
+                    Ok(v) => self.walk_json(&v, &format!("json.{field}"), &mut out, 0),
+                    Err(_) => {
+                        out.extend(self.inspect_value(&format!("body:{field}"), &text(), false))
+                    }
+                }
+            } else {
+                out.extend(self.inspect_value(&format!("body:{field}"), &text(), false));
+            }
+        }
+        Some(out)
     }
 
     /// A session-id parameter is how an attacker plants a known session on a victim

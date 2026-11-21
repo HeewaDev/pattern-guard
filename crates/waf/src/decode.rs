@@ -101,6 +101,56 @@ pub(crate) fn fold_html_lookalikes(s: &str) -> Option<String> {
     Some(s.chars().map(|c| map(c).unwrap_or(c)).collect())
 }
 
+/// UTF-7 (`+ADw-script+AD4-` is `<script>`), which some browsers and parsers honour
+/// when a charset says so. Returns `None` unless decoding produced HTML or quote syntax.
+pub(crate) fn utf7_decode(s: &str) -> Option<String> {
+    if !s.contains('+') {
+        return None;
+    }
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a' + 26) as u32,
+            b'0'..=b'9' => (c - b'0' + 52) as u32,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    };
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'+' && i + 1 < b.len() && val(b[i + 1]).is_some() {
+            let mut j = i + 1;
+            let (mut bits, mut nbits) = (0u32, 0u32);
+            let mut units: Vec<u16> = Vec::new();
+            while j < b.len() {
+                let Some(v) = val(b[j]) else { break };
+                bits = (bits << 6) | v;
+                nbits += 6;
+                if nbits >= 16 {
+                    nbits -= 16;
+                    units.push((bits >> nbits) as u16);
+                    bits &= (1 << nbits) - 1;
+                }
+                j += 1;
+            }
+            if !units.is_empty() {
+                out.extend(char::decode_utf16(units).map(|r| r.unwrap_or('\u{fffd}')));
+                changed = true;
+                i = if b.get(j) == Some(&b'-') { j + 1 } else { j };
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap_or('\u{fffd}');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    (changed && out.contains(['<', '>', '"', '\''])).then_some(out)
+}
+
 /// Decodes like a permissive server/browser would, then lowercases and collapses whitespace.
 pub fn decode(raw: &str, form: bool) -> String {
     let s = decode_keep_case(raw, form);
@@ -319,6 +369,20 @@ fn js_escapes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf7_payloads_are_revealed() {
+        assert_eq!(
+            utf7_decode("+ADw-script+AD4-alert(1)+ADw-/script+AD4-").as_deref(),
+            Some("<script>alert(1)</script>")
+        );
+        assert_eq!(utf7_decode("c++ and 1+1=2"), None);
+        assert_eq!(
+            utf7_decode("price +ADA-"),
+            None,
+            "decodes to a digit, no HTML"
+        );
+    }
 
     #[test]
     fn base64_payloads_are_revealed() {
