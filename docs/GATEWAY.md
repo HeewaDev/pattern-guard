@@ -47,8 +47,8 @@ A valid clearance cookie lifts Challenge and Delay, never Block.
 Precedence: an `allow` list entry or `allow` rule skips everything; otherwise the most
 severe layer wins (Block > Challenge > Delay > Allow). The deciding layer appears as
 `layer` in the decision log and in `pattern_guard_blocked_total{layer=...}`:
-`deny_list`, `rule`, `geo`, `protocol`, `trap`, `rate_limit`, `reputation`, `waf`,
-`behaviour`, `data_leak`. Enforced blocks from any layer except `reputation` and `trap`
+`deny_list`, `rule`, `geo`, `protocol`, `trap`, `rate_limit`, `operation`, `reputation`,
+`waf`, `behaviour`, `data_leak`. Enforced blocks from any layer except `reputation` and `trap`
 count towards automatic bans.
 
 ## Custom rules
@@ -96,6 +96,66 @@ Typical uses:
   - `delay`.
 
 Every matching limit consumes a token. The most severe exceeded limit decides.
+
+## Business operations
+
+Rate limits per IP don't stop an attacker who spreads requests over many IPs, or who
+replays one valid payment confirmation many times. `[[operations]]` protects the routes
+that move money or data: checkout, transfers, payment callbacks.
+
+```toml
+[[operations]]
+name = "checkout"
+path = "/checkout"
+methods = ["POST"]
+account = "header:authorization"            # who performs the operation
+limit = { requests = 5, per_secs = 3600 }   # budget per account, from any IP
+
+[[operations]]
+name = "payment callback"
+path = "/payment/callback"
+allowed_ips = ["203.0.113.0/24"]            # only the payment provider may call it
+unique = "json:transaction_id"              # each transaction accepted once
+```
+
+| Setting | Effect | Answer when enforced |
+|---|---|---|
+| `account` | Identifies the account: `header:<name>`, `cookie:<name>`, `query:<name>`, `form:<name>` or `json:<dotted.path>`. Values are hashed (SHA-256); tokens and user names are never stored or logged | |
+| `require_account` | Refuse requests without the identifier | 403 `account_missing` |
+| `limit` | Token bucket per account (per IP if there is no account) | 429 + Retry-After `account_limit` |
+| `allowed_ips` | Only these sources may call the route | 403 `source_not_allowed` |
+| `unique` + `unique_ttl_secs` | A value that may be used once. It is held while its request is in flight, so concurrent duplicates (race-condition double spends) are refused, and kept as used only if your app answered 2xx, so a provider retrying after a failure still gets through | 409 `replay` |
+| `action` | `block` (default), `challenge`, `delay` or `log` (record only) | |
+
+The deciding layer is `operation`; the decision log reason names the operation, the
+check and a short account hash, e.g. `operation:checkout:account_limit account=fa8c06dd`.
+
+These checks are a safety net, not a replacement for verifying payments in your
+application: confirm every payment server-to-server with your provider (amount,
+currency, order) and store each transaction id once.
+
+## Login protection
+
+`[[logins]]` counts **failed** logins (your app's `failure_statuses`, default 401/403):
+
+- **Per account, from any IP.** After `max_failures` within `window_secs` the account is
+  protected with `action` (challenge by default, answer 429), however many IPs the
+  attacker uses. A successful login resets the count.
+- **Per IP, across accounts.** An IP that fails on more than `max_accounts_per_ip`
+  different accounts is stuffing credentials and is refused for new accounts.
+
+Only failures count, so an office behind one NAT where people log in normally is never
+flagged.
+
+```toml
+[[logins]]
+name = "login"
+path = "/login"
+account = "json:email"        # or "form:username"
+max_failures = 5
+max_accounts_per_ip = 10
+window_secs = 900
+```
 
 ## Bans and honeypot traps
 

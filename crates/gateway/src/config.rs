@@ -68,6 +68,13 @@ pub struct GatewayConfig {
     /// Rate limits per route and key (see docs/GATEWAY.md#rate-limits).
     #[serde(default)]
     pub rate_limits: Vec<RateLimitConfig>,
+    /// Business operations: per-account limits, allowed sources, replay protection
+    /// (see docs/GATEWAY.md#business-operations).
+    #[serde(default)]
+    pub operations: Vec<OperationConfig>,
+    /// Login protection: failures per account across IPs, accounts tried per IP.
+    #[serde(default)]
+    pub logins: Vec<LoginConfig>,
     /// Automatic bans for repeat offenders (fail2ban-style).
     #[serde(default)]
     pub bans: BanConfig,
@@ -577,6 +584,113 @@ pub struct RateLimitConfig {
 
 fn d_limit_key() -> String {
     "ip".into()
+}
+
+/// What an operation does when one of its checks fails.
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationAction {
+    #[default]
+    Block,
+    Challenge,
+    Delay,
+    /// Only record the hit in the decision log.
+    Log,
+}
+
+/// A per-account budget: `requests` per `per_secs`, bursts up to `requests`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountLimit {
+    pub requests: u32,
+    pub per_secs: f64,
+}
+
+/// A business operation such as checkout, a transfer or a payment callback.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationConfig {
+    pub name: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub path_regex: Option<String>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// Who performs it: `header:<name>`, `cookie:<name>`, `query:<name>`,
+    /// `form:<name>` or `json:<dotted.path>`. Values are hashed, never stored.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Refuse requests that don't carry the account identifier.
+    #[serde(default)]
+    pub require_account: bool,
+    /// Budget per account (falls back to the client IP when there is no account).
+    #[serde(default)]
+    pub limit: Option<AccountLimit>,
+    /// If set, only these sources may call the operation (e.g. a payment provider).
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    /// A value that must be unique (e.g. `json:transaction_id`): a second request with
+    /// the same value is refused while the first is in flight or after it succeeded.
+    #[serde(default)]
+    pub unique: Option<String>,
+    #[serde(default = "d_unique_ttl")]
+    pub unique_ttl_secs: u64,
+    #[serde(default)]
+    pub action: OperationAction,
+}
+
+fn d_unique_ttl() -> u64 {
+    86_400
+}
+
+/// A login endpoint to protect against brute force and credential stuffing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginConfig {
+    pub name: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub path_regex: Option<String>,
+    #[serde(default = "d_login_methods")]
+    pub methods: Vec<String>,
+    /// Where the user name is: `form:<name>`, `json:<dotted.path>`, `header:<name>`, …
+    pub account: String,
+    /// Upstream statuses that mean a failed login.
+    #[serde(default = "d_failure_statuses")]
+    pub failure_statuses: Vec<u16>,
+    /// Failed logins per account (from any IP) within `window_secs` before the account
+    /// is protected with `action`. 0 disables.
+    #[serde(default = "d_max_failures")]
+    pub max_failures: u32,
+    /// Distinct accounts one IP may try within `window_secs` (credential stuffing).
+    /// 0 disables.
+    #[serde(default = "d_max_accounts_per_ip")]
+    pub max_accounts_per_ip: u32,
+    #[serde(default = "d_login_window")]
+    pub window_secs: u64,
+    #[serde(default = "d_login_action")]
+    pub action: OperationAction,
+}
+
+fn d_login_methods() -> Vec<String> {
+    vec!["POST".into()]
+}
+fn d_failure_statuses() -> Vec<u16> {
+    vec![401, 403]
+}
+fn d_max_failures() -> u32 {
+    5
+}
+fn d_max_accounts_per_ip() -> u32 {
+    10
+}
+fn d_login_window() -> u64 {
+    900
+}
+fn d_login_action() -> OperationAction {
+    OperationAction::Challenge
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -30,7 +30,7 @@ use responses::{block_page, error_response, header_str, respond, too_many_reques
 use verify::verify;
 
 use crate::challenge::VERIFY_PATH;
-use crate::config::{LimitAction, Mode, RuleAction};
+use crate::config::{LimitAction, Mode, OperationAction, RuleAction};
 use crate::intel::IntelAction;
 use crate::ipnet::any_contains;
 use crate::state::State;
@@ -119,6 +119,8 @@ pub async fn handle(
         return Ok(forward(&state, parts, body, ip, &id, None).await.0);
     }
     let limit = state.rate_limiter.check(ip, &parts);
+    // business operations and logins (settled with the upstream status below)
+    let (op_hit, op_ticket) = state.operations.check(ip, &parts, &body);
     let violation = state.protocol.check(&parts);
     let trap = state.bans.trap(parts.uri.path()).map(str::to_string);
     if let Some(t) = &trap {
@@ -280,6 +282,26 @@ pub async fn handle(
             &mut layer,
         );
     }
+    if let Some(hit) = &op_hit {
+        let a = match hit.action {
+            OperationAction::Block => Action::Block,
+            OperationAction::Challenge => Action::Challenge,
+            OperationAction::Delay => Action::Delay,
+            OperationAction::Log => Action::Allow,
+        };
+        let account = hit
+            .account
+            .as_deref()
+            .map(|a| format!(" account={a}"))
+            .unwrap_or_default();
+        raise(
+            a,
+            "operation",
+            format!("operation:{}:{}{account}", hit.name, hit.kind),
+            &mut action,
+            &mut layer,
+        );
+    }
     for name in &rule.logged {
         raise(
             Action::Allow,
@@ -402,9 +424,11 @@ pub async fn handle(
             Action::Block => {
                 let rate_limited = layer == "rate_limit";
                 let protocol = violation.as_ref().filter(|_| layer == "protocol");
-                let status = match (rate_limited, protocol) {
-                    (true, _) => 429,
-                    (_, Some(v)) => v.status.as_u16(),
+                let operation = op_hit.as_ref().filter(|_| layer == "operation");
+                let status = match (rate_limited, protocol, operation) {
+                    (true, _, _) => 429,
+                    (_, Some(v), _) => v.status.as_u16(),
+                    (_, _, Some(h)) => h.status,
                     _ => 403,
                 };
                 state.guard.observe_response(&event, status);
@@ -412,6 +436,18 @@ pub async fn handle(
                     .inventory
                     .record(parts.method.as_str(), &template, status, true);
                 log_decision(&state, &parts, &ctx, status);
+                if let Some(h) = operation {
+                    return Ok(if h.status == 429 {
+                        too_many_requests(&parts.headers, &id, h.retry_after.unwrap_or(1))
+                    } else {
+                        error_response(
+                            &parts.headers,
+                            &id,
+                            StatusCode::from_u16(h.status).unwrap_or(StatusCode::FORBIDDEN),
+                            h.kind,
+                        )
+                    });
+                }
                 return Ok(match (&limit, rate_limited, protocol) {
                     (Some(hit), true, _) => too_many_requests(&parts.headers, &id, hit.retry_after),
                     (_, _, Some(v)) => error_response(&parts.headers, &id, v.status, &v.reason),
@@ -456,6 +492,7 @@ pub async fn handle(
 
     let (resp, status, leak) =
         forward(&state, parts.clone_head(), body, ip, &id, Some(&assessment)).await;
+    op_ticket.complete(status);
     state.guard.observe_response(&event, status);
     state
         .inventory

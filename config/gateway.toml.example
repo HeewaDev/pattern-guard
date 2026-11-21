@@ -107,6 +107,41 @@ include_allowed = false
 # requests = 600
 # per_secs = 60
 
+# ---- Business operations: routes that move money or data. Identify the account with
+# account = "header:<name>" | "cookie:<name>" | "query:<name>" | "form:<name>" |
+# "json:<dotted.path>" (values are hashed, never stored). Checks: a budget per account
+# (`limit`), allowed sources (`allowed_ips`), replay protection (`unique`: a value
+# such as a transaction id is accepted once; held while in flight, kept only after a
+# 2xx answer). action = "block" | "challenge" | "delay" | "log".
+# Answers: 429 + Retry-After (budget), 409 (replay), 403 (source / missing account).
+# [[operations]]
+# name = "checkout"
+# path = "/checkout"
+# methods = ["POST"]
+# account = "header:authorization"
+# limit = { requests = 5, per_secs = 3600 }
+#
+# [[operations]]
+# name = "payment callback"
+# path = "/payment/callback"
+# allowed_ips = ["203.0.113.0/24"]      # your payment provider's published ranges
+# unique = "json:transaction_id"
+# unique_ttl_secs = 86400
+
+# ---- Login protection: failed logins per account from any IP (distributed brute
+# force) and distinct accounts failing from one IP (credential stuffing). Only
+# failures (failure_statuses from your app) count. Defaults shown.
+# [[logins]]
+# name = "login"
+# path = "/login"
+# methods = ["POST"]
+# account = "form:username"             # or "json:email"
+# failure_statuses = [401, 403]
+# max_failures = 5
+# max_accounts_per_ip = 10
+# window_secs = 900
+# action = "challenge"
+
 # ---- Automatic bans for repeat offenders (fail2ban-style). Banned IPs are refused
 # outright; each repeat ban lasts `escalation` times longer. List / lift bans on the
 # admin port: GET /bans, POST /bans/unban?ip=<address>.

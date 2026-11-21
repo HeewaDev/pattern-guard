@@ -36,6 +36,14 @@ async fn start_upstream() -> SocketAddr {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("none")
                         .to_string();
+                    if req.uri().path().starts_with("/signin")
+                        && !req.uri().query().unwrap_or("").contains("ok")
+                    {
+                        // a login endpoint that rejects the credentials
+                        let mut r = Response::new(Full::new(Bytes::from("bad credentials")));
+                        *r.status_mut() = StatusCode::UNAUTHORIZED;
+                        return Ok::<_, Infallible>(r);
+                    }
                     if req.uri().path().starts_with("/leak") {
                         // an app that leaks a database error, padded to `?pad=N` bytes
                         let pad: usize = req
@@ -293,6 +301,102 @@ async fn multipart_uploads_are_inspected_per_part() {
     // an attack in a multipart field is blocked
     let r = send(gw.addr, "POST", "/save", &ct, &field("comment")).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+}
+
+#[tokio::test]
+async fn business_operations_and_logins_are_protected() {
+    let gw = start_gateway(
+        r#"
+[[operations]]
+name = "checkout"
+path = "/checkout"
+methods = ["POST"]
+account = "header:authorization"
+limit = { requests = 2, per_secs = 3600 }
+
+[[operations]]
+name = "payment callback"
+path = "/payment/callback"
+allowed_ips = ["203.0.113.0/24"]
+unique = "json:transaction_id"
+
+[[logins]]
+name = "login"
+path = "/signin"
+account = "json:email"
+max_failures = 3
+action = "block"
+"#,
+    )
+    .await;
+    // per-account budget, whatever IP the account uses
+    for ip in ["198.51.100.1", "198.51.100.2"] {
+        let h = [("authorization", "Bearer alice"), ("x-forwarded-for", ip)];
+        let r = send(gw.addr, "POST", "/checkout", &h, "").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    }
+    let h = [
+        ("authorization", "Bearer alice"),
+        ("x-forwarded-for", "198.51.100.3"),
+    ];
+    let r = send(gw.addr, "POST", "/checkout", &h, "").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{}", r.body);
+    assert!(r.headers.contains_key("retry-after"));
+    // (from a fresh IP: the one just refused now looks risky to the behavioural ML)
+    let h = [
+        ("authorization", "Bearer bob"),
+        ("x-forwarded-for", "198.51.100.4"),
+    ];
+    let r = send(gw.addr, "POST", "/checkout", &h, "").await;
+    assert_eq!(r.status, StatusCode::OK, "other accounts unaffected");
+
+    // payment callback: accepted once from the provider, replay refused, others refused
+    let cb = r#"{"transaction_id": "TX-77", "status": "paid"}"#;
+    let provider = [
+        ("content-type", "application/json"),
+        ("x-forwarded-for", "203.0.113.5"),
+    ];
+    let r = send(gw.addr, "POST", "/payment/callback", &provider, cb).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = send(gw.addr, "POST", "/payment/callback", &provider, cb).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "replay: {}", r.body);
+    assert!(r.body.contains("replay"));
+    let stranger = [
+        ("content-type", "application/json"),
+        ("x-forwarded-for", "192.0.2.99"),
+    ];
+    let r = send(
+        gw.addr,
+        "POST",
+        "/payment/callback",
+        &stranger,
+        r#"{"transaction_id": "TX-78"}"#,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+
+    // distributed brute force on one account: locked from any IP
+    let login = r#"{"email": "alice@example.com", "password": "guess"}"#;
+    for k in 1..=3 {
+        let ip = format!("198.51.100.{}", 10 + k);
+        let h = [
+            ("content-type", "application/json"),
+            ("x-forwarded-for", ip.as_str()),
+        ];
+        let r = send(gw.addr, "POST", "/signin", &h, login).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "upstream answers");
+    }
+    let h = [
+        ("content-type", "application/json"),
+        ("x-forwarded-for", "198.51.100.99"),
+    ];
+    let r = send(gw.addr, "POST", "/signin", &h, login).await;
+    assert_eq!(
+        r.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "account locked: {}",
+        r.body
+    );
 }
 
 #[tokio::test]

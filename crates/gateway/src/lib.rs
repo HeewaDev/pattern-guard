@@ -88,6 +88,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         challenge_list: cidrs(&cfg.access.challenge),
         rules: policy::rules::RuleSet::compile(&cfg.rules)?,
         rate_limiter: policy::rate_limit::RateLimiter::compile(&cfg.rate_limits)?,
+        operations: policy::operations::Operations::compile(&cfg.operations, &cfg.logins)?,
         bans: policy::bans::Bans::new(cfg.bans.clone(), cfg.traps.clone()),
         protocol: policy::protocol::Protocol::new(cfg.protocol.clone()),
         security_headers: hardening::headers::SecurityHeaders::new(&cfg.response_headers)?,

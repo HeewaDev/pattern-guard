@@ -39,6 +39,7 @@ pub struct State {
     pub challenge_list: Vec<Cidr>,
     pub rules: crate::policy::rules::RuleSet,
     pub rate_limiter: crate::policy::rate_limit::RateLimiter,
+    pub operations: crate::policy::operations::Operations,
     pub bans: crate::policy::bans::Bans,
     pub protocol: crate::policy::protocol::Protocol,
     pub security_headers: crate::hardening::headers::SecurityHeaders,
