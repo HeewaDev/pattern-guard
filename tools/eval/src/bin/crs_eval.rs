@@ -57,9 +57,11 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
-    // SHOW=<category> prints missed attacks; SHOW_NEG=<category> prints blocked negatives.
+    // SHOW=<category> prints missed attacks; SHOW_NEG=<category> prints blocked negatives;
     let show_misses = std::env::var("SHOW").ok();
     let show_blocked_negatives = std::env::var("SHOW_NEG").ok();
+    // DUMP=1 prints `score id` for every test, to diff two builds.
+    let dump = std::env::var("DUMP").is_ok();
     let waf = Inspector::new();
     let text = std::fs::read_to_string(path).expect("read JSONL");
     let mut by_cat: BTreeMap<u64, Row> = BTreeMap::new();
@@ -112,6 +114,9 @@ fn main() {
             body: body.as_bytes(),
         });
         let score = r.max_score();
+        if dump {
+            println!("dump {score:4.1} {}", v["id"].as_str().unwrap_or(""));
+        }
         for row in [by_cat.entry(cat).or_default(), by_pl.entry(pl).or_default()] {
             if expect {
                 row.pos += 1;
