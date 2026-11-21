@@ -17,7 +17,30 @@ of it, and list that hop in `client_ip.trusted_proxies`. Your app should only ac
 traffic from the gateway (bind it to localhost, or firewall it), otherwise attackers can
 go around the gateway.
 
-## 1. Build
+## 0. Docker (quickest)
+
+```bash
+docker build -t pattern-guard .
+docker run -d --name pattern-guard -p 8080:8080 -p 127.0.0.1:9901:9901 \
+  -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" \
+  -v pattern-guard-logs:/var/log/pattern-guard \
+  pattern-guard
+docker run --rm -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" pattern-guard \
+  --config /etc/pattern-guard/gateway.toml --check
+```
+
+- The image (~125 MB, Debian slim) runs as an unprivileged user (uid 10001). It contains
+  `pattern-guard-gateway`, the `pattern-guard` CLI and the example configs in
+  `/etc/pattern-guard/`.
+- Its default config is [deploy/docker/gateway.toml](../deploy/docker/gateway.toml):
+  detect mode, upstream `http://app:80`, decision log in the
+  `/var/log/pattern-guard` volume. Mount your own over it.
+- Publish the admin port (9901) on a private address only.
+- [deploy/docker/compose.yml](../deploy/docker/compose.yml) runs the gateway in front of a
+  demo app: `docker compose -f deploy/docker/compose.yml up --build`, then replace `app`
+  with your application.
+
+## 1. Build from source
 
 ```bash
 cargo build --release -p pattern-guard-gateway -p pattern-guard-cli
@@ -80,6 +103,17 @@ server {
 fingerprint, pass it in a header and set `client_ip.fingerprint_header`.
 
 ## 3. systemd
+
+A hardened unit is in [deploy/systemd/pattern-guard-gateway.service](../deploy/systemd/pattern-guard-gateway.service):
+it validates the config before every start (`ExecStartPre=... --check`), reads secrets
+from `/etc/pattern-guard/env`, and runs with no capabilities, a read-only system, a
+system-call filter and write access to `/var/log/pattern-guard` only.
+
+```bash
+sudo cp deploy/systemd/pattern-guard-gateway.service /etc/systemd/system/
+```
+
+The essential part:
 
 ```ini
 # /etc/systemd/system/pattern-guard-gateway.service

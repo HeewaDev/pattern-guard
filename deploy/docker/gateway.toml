@@ -1,0 +1,18 @@
+# Gateway config for the container image. Mount your own over
+# /etc/pattern-guard/gateway.toml; the full reference is gateway.toml.example next to it.
+
+listen = "0.0.0.0:8080"
+upstream = "http://app:80"             # your application (compose service name)
+mode = "detect"                        # log only; switch to "prevent" after reviewing
+
+# Inside the container; publish 9901 on a private address only.
+admin_listen = "0.0.0.0:9901"
+
+[client_ip]
+# The TLS terminator / load balancer in front of the gateway. Docker's default
+# bridge networks are listed so a terminator in another container is trusted.
+trusted_proxies = ["127.0.0.1", "172.16.0.0/12"]
+header = "x-forwarded-for"
+
+[log]
+decisions = "/var/log/pattern-guard/decisions.jsonl"

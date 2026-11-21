@@ -1,0 +1,48 @@
+# /etc/systemd/system/pattern-guard-gateway.service
+# Setup: docs/DEPLOYMENT.md, section "systemd".
+[Unit]
+Description=Pattern-Guard Gateway
+Documentation=https://github.com/HeewaDev/pattern-guard/blob/main/docs/GATEWAY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pattern-guard
+Group=pattern-guard
+ExecStartPre=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gateway.toml --check
+ExecStart=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gateway.toml
+Restart=always
+RestartSec=1
+# CROWDSEC_BOUNCER_KEY=... and other secrets
+EnvironmentFile=-/etc/pattern-guard/env
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/log/pattern-guard
+# To read Suricata / Wazuh alert files:
+# ReadOnlyPaths=/var/log/suricata /var/ossec/logs/alerts
+
+[Install]
+WantedBy=multi-user.target

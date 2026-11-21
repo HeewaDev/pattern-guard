@@ -1,0 +1,32 @@
+# Pattern-Guard in front of a demo app.
+#   docker compose -f deploy/docker/compose.yml up --build
+#   curl http://localhost:8080/                       # forwarded
+#   curl "http://localhost:8080/?id=1%27%20OR%201=1"  # logged (detect mode)
+#   curl http://127.0.0.1:9901/metrics
+# Replace `app` with your application and mount your own gateway.toml.
+
+services:
+  gateway:
+    build:
+      context: ../..
+    image: pattern-guard
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:9901:9901"          # admin: loopback only
+    volumes:
+      - ./gateway.toml:/etc/pattern-guard/gateway.toml:ro
+      - decisions:/var/log/pattern-guard
+    # environment:
+    #   CROWDSEC_BOUNCER_KEY: ${CROWDSEC_BOUNCER_KEY}
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  app:
+    image: traefik/whoami:v1.10       # echoes the request it receives (shows the x-pattern-guard-* headers)
+    expose:
+      - "80"
+    restart: unless-stopped
+
+volumes:
+  decisions:
