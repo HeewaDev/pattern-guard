@@ -183,7 +183,7 @@ docs/        documentation
 
 | Docs | |
 |---|---|
-| `docs/` | [index](docs/README.md) · [RESEARCH](docs/RESEARCH.md) · [GATEWAY](docs/GATEWAY.md) · [DEPLOYMENT](docs/DEPLOYMENT.md) · [OPERATIONS](docs/OPERATIONS.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [ML](docs/ML.md) · [CONFIG](docs/CONFIG.md) · [USE-CASES](docs/USE-CASES.md) · [FEATURES](docs/FEATURES.md) · [ROADMAP (product plan)](docs/ROADMAP.md) |
+| `docs/` | [index](docs/README.md) · [RESEARCH](docs/RESEARCH.md) · [GATEWAY](docs/GATEWAY.md) · [DEPLOYMENT](docs/DEPLOYMENT.md) · [OPERATIONS](docs/OPERATIONS.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [ML](docs/ML.md) · [CONFIG](docs/CONFIG.md) · [USE-CASES](docs/USE-CASES.md) · [FEATURES](docs/FEATURES.md) · [STRATEGY](docs/STRATEGY.md) · [ROADMAP (product plan)](docs/ROADMAP.md) |
 
 ## Why this project
 
