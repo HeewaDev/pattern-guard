@@ -1,6 +1,10 @@
 //! WAF accuracy on payload/benign files (one value per line).
 //!
 //! `cargo run --release -p pattern-guard-eval --bin waf_eval -- --attack sqli.txt --attack xss.txt --benign words.txt`
+//!
+//! Values are inspected as a query parameter (`eval`) unless `--location <loc>` comes
+//! first, e.g. `--location header:user-agent --benign user-agents.txt`; it applies to the
+//! files after it.
 use pattern_guard::waf::Inspector;
 
 fn main() {
@@ -9,8 +13,13 @@ fn main() {
     let (mut at, mut ab, mut bt, mut bb) = (0usize, 0usize, 0usize, 0usize);
     let mut false_blocks = Vec::new();
     let mut misses = Vec::new();
+    let mut location = "eval".to_string();
     for pair in args.chunks(2) {
         let (kind, path) = (&pair[0], &pair[1]);
+        if kind == "--location" {
+            location = path.clone();
+            continue;
+        }
         let text = std::fs::read_to_string(path).expect("read file");
         let lines: Vec<&str> = text
             .lines()
@@ -20,7 +29,7 @@ fn main() {
         let mut blocked = 0;
         for l in &lines {
             let s = w
-                .inspect_value("eval", l, true)
+                .inspect_value(&location, l, location == "eval")
                 .map(|f| f.score)
                 .unwrap_or(0.0);
             if s >= 7.0 {

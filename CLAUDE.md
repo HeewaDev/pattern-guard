@@ -59,9 +59,11 @@ The local toolchain may be newer than the 1.85 MSRV. Clippy reads `rust-version`
 `Cargo.toml` (`incompatible_msrv`), so `-D warnings` locally catches most uses of newer
 std APIs. CI on 1.85 is the final check.
 
-Evaluation data is not vendored. `crs_tests.jsonl` comes from
-`python3 -I scripts/extract_crs_tests.py <coreruleset checkout> crs_tests.jsonl` (needs
-PyYAML). The payload and benign lists for `waf_eval` are external files.
+Evaluation data is not vendored. `scripts/fetch_eval_data.sh` downloads it at pinned commits
+into the git-ignored `tools/eval/data/`, checks every file against `tools/eval/datasets.sha256`,
+and builds the development, hold-out and benign sets plus `crs_tests.jsonl` (needs curl, git and
+PyYAML). `scripts/eval_waf.sh` runs all WAF evaluations on them. To compare against an older
+commit, run the script from a worktree of that commit with `DATA=<this repo>/tools/eval/data`.
 
 ## Code graph (optional: graphify)
 

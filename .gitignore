@@ -2,3 +2,4 @@
 guard.toml
 .env
 graphify-out/
+tools/eval/data/
