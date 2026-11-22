@@ -141,7 +141,7 @@ Pull-based sources (like CrowdSec) get their own module and task in `start_backg
 
 ## 9. Add an admin endpoint
 
-Add a match arm in `lib.rs::serve_admin`. The admin server has **no authentication**:
+Add a match arm in `admin.rs::serve_admin`. The admin server has **no authentication**:
 - read-only endpoints only, unless state changes need `POST` (like `/bans/unban`);
 - never return secrets (challenge key, CrowdSec key) or raw identifiers;
 - bound the size of what you return (the inventory stops at 10 000 routes).

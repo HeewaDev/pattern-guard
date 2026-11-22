@@ -10,7 +10,10 @@ learning layers.
 | Path | Responsibility |
 |---|---|
 | `main.rs` | Arguments (`--config`, `--check`), loads the config, calls `run` |
-| `lib.rs` | `build_state` (compiles everything once), `start_background` (tasks), `serve` (accept loop, per-IP connection cap), admin server, `run` |
+| `lib.rs` | `build_state` (compiles everything once), `start_background` (tasks), `run`; re-exports `serve` |
+| `server.rs` | `serve`: accept loop, per-IP connection cap (`ConnGuard`), header-read timeout, one task per connection |
+| `admin.rs` | Admin server: `/metrics`, `/healthz`, `/inventory`, `/bans`, `POST /bans/unban` |
+| `util.rs` | `now_secs`, `header_str`, `form_decode` (exact one-pass form decoding) |
 | `state.rs` | `State`: everything shared between requests, behind one `Arc` |
 | `config.rs` | `GatewayConfig` and every section (serde, `deny_unknown_fields`), defaults, `validate()` |
 | `proxy/mod.rs` | `handle`: the request pipeline, fusion and enforcement |
@@ -57,7 +60,7 @@ main ─► GatewayConfig::load ─► validate
 creates files. Every config error (bad regex, bad CIDR, missing GeoDb for country rules,
 CrowdSec without a key) is found at startup, never at request time.
 
-## Connection layer (`lib.rs::serve`)
+## Connection layer (`server.rs::serve`)
 
 - **Per-IP connection cap** (`limits.max_connections_per_ip`, default 256) on the *peer*
   address. Trusted proxies are exempt, because every client arrives through them. The count is held by
