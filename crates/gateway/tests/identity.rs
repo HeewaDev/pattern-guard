@@ -309,3 +309,43 @@ action = "block"
         r.body
     );
 }
+
+#[tokio::test]
+async fn blocked_or_refused_requests_do_not_spend_an_accounts_budget() {
+    let (gw, _) = start_gateway(
+        r#"
+[client_ip]
+trusted_proxies = ["127.0.0.1"]
+[[operations]]
+name = "checkout"
+path = "/denied"
+account = "query:account"
+limit = { requests = 2, per_secs = 3600 }
+"#,
+    )
+    .await;
+    // (GET: a fresh client's first request being a write looks risky to the
+    // behavioural engine once the route has seen failures)
+    let attempt = |n: u32, target: &'static str| async move {
+        let ip = from(n);
+        send(gw, "GET", target, &[("x-forwarded-for", ip.as_str())], "").await
+    };
+    // someone who knows the account identifier: blocked by the WAF before reaching
+    // the application, or answered 401 by it
+    let attack = "/denied?account=victim&ok&q=%3Cscript%3Ealert(1)%3C/script%3E";
+    for n in 10..14 {
+        let r = attempt(n, attack).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    }
+    for n in 14..18 {
+        let r = attempt(n, "/denied?account=victim").await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
+    }
+    // the owner's budget is intact; what the application accepted is spent
+    for n in 18..20 {
+        let r = attempt(n, "/denied?account=victim&ok").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    }
+    let r = attempt(20, "/denied?account=victim&ok").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{}", r.body);
+}

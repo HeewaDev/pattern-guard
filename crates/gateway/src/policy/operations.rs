@@ -572,16 +572,22 @@ fn severity(a: OperationAction) -> u8 {
 /// State to settle once the application has answered.
 pub struct Ticket<'a> {
     ops: &'a Operations,
+    /// Budget tokens reserved at check time: (operation, bucket key).
+    tokens: Vec<(usize, u64)>,
     unique: Vec<(usize, u64)>,
     logins: Vec<(usize, u64, IpAddr)>,
     done: bool,
 }
 
 impl Ticket<'_> {
-    /// Records the outcome: unique values are kept as used after a 2xx answer (else
-    /// released), login failures and successes update the counters.
+    /// Records the outcome: budget tokens are given back after a 401 / 403 answer (the
+    /// requester was not that account), unique values are kept as used after a 2xx
+    /// answer (else released), login failures and successes update the counters.
     pub fn complete(mut self, status: u16) {
         self.done = true;
+        if matches!(status, 401 | 403) {
+            self.refund();
+        }
         let now = Instant::now();
         let ok = (200..300).contains(&status);
         if !self.unique.is_empty() {
@@ -623,12 +629,32 @@ impl Ticket<'_> {
             }
         }
     }
+
+    /// Gives the reserved budget tokens back (at most up to each bucket's capacity).
+    fn refund(&mut self) {
+        if self.tokens.is_empty() {
+            return;
+        }
+        let mut buckets = lock(&self.ops.buckets);
+        for (i, key) in self.tokens.drain(..) {
+            if let (Some((capacity, _)), Some(b)) =
+                (self.ops.ops[i].limit, buckets.peek_mut(&(i, key)))
+            {
+                b.tokens = (b.tokens + 1.0).min(capacity);
+            }
+        }
+    }
 }
 
 impl Drop for Ticket<'_> {
     fn drop(&mut self) {
-        // not forwarded (blocked, challenged, error): release in-flight values
-        if !self.done && !self.unique.is_empty() {
+        if self.done {
+            return;
+        }
+        // not forwarded (blocked, challenged, error): the request spent nothing, and
+        // its in-flight values are released
+        self.refund();
+        if !self.unique.is_empty() {
             let mut seen = lock(&self.ops.unique);
             for k in &self.unique {
                 if matches!(seen.peek(k), Some(Seen::InFlight)) {
@@ -749,6 +775,7 @@ impl Operations {
     ) -> (Option<OpHit>, Ticket<'_>) {
         let mut ticket = Ticket {
             ops: self,
+            tokens: Vec::new(),
             unique: Vec::new(),
             logins: Vec::new(),
             done: false,
@@ -819,7 +846,10 @@ impl Operations {
                 b.tokens = (b.tokens + elapsed * refill).min(capacity);
                 b.at = now;
                 if b.tokens >= 1.0 {
+                    // reserved now, so a concurrent burst is limited; the ticket gives
+                    // it back if the request is not forwarded or not that account's
                     b.tokens -= 1.0;
+                    ticket.tokens.push((i, key));
                 } else {
                     let wait = ((1.0 - b.tokens) / refill).ceil().max(1.0) as u64;
                     consider(hit("account_limit", 429, Some(wait)));
@@ -932,6 +962,69 @@ limit = { requests = 2, per_secs = 3600 }
     }
 
     #[test]
+    fn requests_never_forwarded_or_refused_by_the_app_do_not_spend_the_budget() {
+        let o = ops(r#"
+[[operations]]
+name = "checkout"
+path = "/checkout"
+account = "query:account"
+limit = { requests = 2, per_secs = 3600 }
+"#);
+        let p = req("POST", "/checkout?account=victim", &[]);
+        let t0 = Instant::now();
+        // someone who knows the identifier: blocked by another layer (the ticket is
+        // dropped) or answered 401 / 403 by the application (not that account)
+        for k in 0..12 {
+            let ip: IpAddr = format!("203.0.113.{k}").parse().unwrap();
+            let (h, t) = o.check_at(ip, &p, b"", t0);
+            assert!(h.is_none(), "attempt {k}");
+            match k % 3 {
+                0 => drop(t),
+                1 => t.complete(401),
+                _ => t.complete(403),
+            }
+        }
+        // the owner still has the whole budget; what the app accepted is spent
+        let owner: IpAddr = "198.51.100.5".parse().unwrap();
+        for status in [200, 500] {
+            let (h, t) = o.check_at(owner, &p, b"", t0);
+            assert!(h.is_none());
+            t.complete(status);
+        }
+        let (h, _) = o.check_at(owner, &p, b"", t0);
+        assert_eq!(h.unwrap().kind, "account_limit");
+    }
+
+    #[test]
+    fn budget_is_reserved_while_requests_are_in_flight() {
+        let o = ops(r#"
+[[operations]]
+name = "checkout"
+path = "/checkout"
+account = "header:authorization"
+limit = { requests = 2, per_secs = 3600 }
+"#);
+        let p = req("POST", "/checkout", &[("authorization", "Bearer alice")]);
+        let ip: IpAddr = IP.parse().unwrap();
+        let t0 = Instant::now();
+        // a concurrent burst: two in flight, the third is refused
+        let (h1, t1) = o.check_at(ip, &p, b"", t0);
+        let (h2, t2) = o.check_at(ip, &p, b"", t0);
+        let (h3, t3) = o.check_at(ip, &p, b"", t0);
+        assert!(h1.is_none() && h2.is_none());
+        assert_eq!(h3.unwrap().kind, "account_limit");
+        drop(t3); // took no token, gives none back
+        assert!(o.check_at(ip, &p, b"", t0).0.is_some());
+        // one is refused by the application: its token comes back, once
+        t1.complete(403);
+        let (h, t4) = o.check_at(ip, &p, b"", t0);
+        assert!(h.is_none());
+        t2.complete(200);
+        t4.complete(200);
+        assert!(o.check_at(ip, &p, b"", t0).0.is_some());
+    }
+
+    #[test]
     fn replay_and_race_are_refused_but_failures_can_retry() {
         let o = ops(r#"
 [[operations]]
@@ -1004,11 +1097,9 @@ limit = { requests = 1, per_secs = 60 }
             "/order",
             &[("content-type", "application/x-www-form-urlencoded")],
         );
-        assert!(
-            o.check(ip, &form, b"item=1&user=ann%40example.com")
-                .0
-                .is_none()
-        );
+        let (h, t) = o.check(ip, &form, b"item=1&user=ann%40example.com");
+        assert!(h.is_none());
+        t.complete(200);
         assert_eq!(
             o.check(ip, &form, b"user=ann%40example.com&item=2")
                 .0

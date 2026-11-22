@@ -114,9 +114,11 @@ include_allowed = false
 # "json:<dotted.path>" (values are hashed, never stored; form: and json: fields are
 # read from URL-encoded, multipart or JSON bodies, whatever the declared Content-Type,
 # and form:name also matches a top-level JSON field). Checks: a budget per account
-# (`limit`), allowed sources (`allowed_ips`), replay protection (`unique`: a value
-# such as a transaction id is accepted once; held while in flight, kept only after a
-# 2xx answer). action = "block" | "challenge" | "delay" | "log".
+# (`limit`; key it on what your app authenticates, a session cookie or Authorization,
+# not a public user name: a token comes back only if the request is not forwarded or
+# your app answers 401 / 403), allowed sources (`allowed_ips`), replay protection
+# (`unique`: a value such as a transaction id is accepted once; held while in flight,
+# kept only after a 2xx answer). action = "block" | "challenge" | "delay" | "log".
 # Answers: 429 + Retry-After (budget), 409 (replay), 403 (source / missing account).
 # [[operations]]
 # name = "checkout"
