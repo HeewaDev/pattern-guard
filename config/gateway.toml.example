@@ -27,6 +27,7 @@ header = "x-forwarded-for"
 [limits]
 max_connections_per_ip = 256
 header_read_timeout_secs = 10          # slowloris protection
+decision_log_queue_bytes = 16777216    # decision-log lines waiting for a slow disk; more are dropped
 
 [waf]
 enabled = true

@@ -118,16 +118,21 @@ pub struct LimitsConfig {
     /// Seconds a client has to send complete request headers (slowloris protection).
     #[serde(default = "d_header_timeout")]
     pub header_read_timeout_secs: u64,
+    /// Bytes of decision-log lines that may wait in memory for a slow or stalled disk;
+    /// further lines are dropped and counted.
+    #[serde(default = "d_log_queue_bytes")]
+    pub decision_log_queue_bytes: usize,
 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
-        Self {
-            max_connections_per_ip: d_conn(),
-            header_read_timeout_secs: d_header_timeout(),
-        }
+        toml::from_str("").unwrap()
     }
 }
+
+/// Smallest `limits.decision_log_queue_bytes`: room for the largest line (values and
+/// findings are truncated, see `proxy/decision_log.rs`).
+pub const MIN_LOG_QUEUE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -731,6 +736,9 @@ fn d_conn() -> u32 {
 fn d_header_timeout() -> u64 {
     10
 }
+fn d_log_queue_bytes() -> usize {
+    16 * 1024 * 1024
+}
 fn d_block_score() -> f64 {
     7.0
 }
@@ -809,6 +817,11 @@ impl GatewayConfig {
         {
             return Err("bans: need threshold ≥ 1 and escalation ≥ 1".into());
         }
+        if self.limits.decision_log_queue_bytes < MIN_LOG_QUEUE_BYTES {
+            return Err(format!(
+                "limits.decision_log_queue_bytes must be at least {MIN_LOG_QUEUE_BYTES}"
+            ));
+        }
         if self.challenge.difficulty > 28 {
             return Err(
                 "challenge.difficulty above 28 bits would take minutes in a browser".into(),
@@ -856,5 +869,17 @@ mod tests {
             GatewayConfig::from_toml_str("upstream = \"http://x\"\n[crowdsec]\nenabled = true\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn limits() {
+        let c = GatewayConfig::from_toml_str("upstream = \"http://x\"\n").unwrap();
+        assert_eq!(c.limits.decision_log_queue_bytes, 16 * 1024 * 1024);
+        let bad = |l: &str| {
+            GatewayConfig::from_toml_str(&format!("upstream = \"http://x\"\n[limits]\n{l}\n"))
+                .is_err()
+        };
+        assert!(bad("decision_log_queue_bytes = 1000"));
+        assert!(!bad("decision_log_queue_bytes = 65536"));
     }
 }
