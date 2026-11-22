@@ -72,7 +72,7 @@ pub(crate) fn wrap(args: &[String]) -> Result<(), BoxErr> {
     std::process::exit(last_code);
 }
 
-/// Parses argv[0] = program name. Supports `--config`, `--repeat`, optional `--`, then command args.
+/// Parses `argv[0]` = program name. Supports `--config`, `--repeat`, optional `--`, then command args.
 fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     let mut config_path = None;
     let mut repeat_n = None;

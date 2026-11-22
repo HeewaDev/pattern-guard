@@ -1,0 +1,39 @@
+# cargo-deny: licence policy, security advisories and crate sources.
+# Runs in CI (.github/workflows/rust.yml, job `deny`). Locally: `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Every RustSec advisory for a crate in Cargo.lock fails the check. To accept one,
+# add its id here with a comment explaining why it doesn't apply.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences only: borrowed code and dependencies must be MIT / Apache-2.0
+# compatible (docs/ROADMAP.md, risk "licence contamination"). GPL, AGPL, LGPL, MPL and
+# unknown licences fail the check. An `A OR B` expression passes if one side is allowed.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+# Workspace crates depend on each other by path without a version; that's fine until
+# they are published (cargo then requires versions anyway).
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
