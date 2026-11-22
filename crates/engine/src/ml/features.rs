@@ -84,12 +84,46 @@ const BROWSER_BURST: f64 = 30.0;
 /// Smoothing for rate ratios: one request per minute.
 const RATE_FLOOR: f64 = 1.0 / 60.0;
 
-/// Request facts derived once per request and shared with the rules engine.
+/// Request facts derived once per request, before the guard takes its state lock, so
+/// that work proportional to the request's size (templating the path, scanning it for
+/// probes, hashing the actor id and user agent) never runs under the lock.
 #[derive(Debug, Clone, Copy)]
 pub struct Prepared {
+    /// Hash of (method, route template).
     pub route: u64,
+    /// The object id from the path (last numeric segment), if any.
     pub id: Option<u64>,
+    /// The path matches a scanner probe pattern.
     pub probe: bool,
+    /// Hash of the actor id.
+    pub actor: u64,
+    /// Hash of the fingerprint, else of the user agent.
+    pub client: Option<u64>,
+    pub ip: Option<IpAddr>,
+    /// POST, PUT, PATCH or DELETE.
+    pub write: bool,
+    /// GET or HEAD.
+    pub read: bool,
+}
+
+impl Prepared {
+    /// Fills the actor, client, IP and method facts from `ev`; the route facts come from
+    /// the caller (see [`normalize_path`](crate::normalize::normalize_path) and
+    /// [`is_probe_path`](crate::normalize::is_probe_path)).
+    pub fn new(ev: &Event, route: u64, id: Option<u64>, probe: bool) -> Self {
+        let method = ev.action.as_str();
+        let is = |ms: &[&str]| ms.iter().any(|m| method.eq_ignore_ascii_case(m));
+        Self {
+            route,
+            id,
+            probe,
+            actor: ev.actor_key(),
+            client: ev.client_key(),
+            ip: ev.client_ip(),
+            write: is(&["POST", "PUT", "PATCH", "DELETE"]),
+            read: is(&["GET", "HEAD"]),
+        }
+    }
 }
 
 /// Response codes that count as a failed/abusive outcome.
@@ -206,20 +240,14 @@ impl FeatureEngine {
     }
 
     /// Records the request and returns its feature vector (computed including this request).
-    pub fn observe_request(&mut self, ev: &Event, p: &Prepared, now: f64) -> Features {
+    /// Constant time: everything that depends on the request's size is in `p`.
+    pub fn observe_request(&mut self, p: &Prepared, now: f64) -> Features {
         let mut f = [0.0; N_FEATURES];
-        let method = ev.action.as_str();
-        let is_write = ["POST", "PUT", "PATCH", "DELETE"]
-            .iter()
-            .any(|m| method.eq_ignore_ascii_case(m));
-        let is_read = ["GET", "HEAD"]
-            .iter()
-            .any(|m| method.eq_ignore_ascii_case(m));
+        let (is_write, is_read) = (p.write, p.read);
 
         // ---- actor ----
-        let actor = ev.actor_key();
-        let actor_is_new = !self.actors.contains(&actor);
-        let a = self.actors.get_or_insert_mut(actor, ActorState::default);
+        let actor_is_new = !self.actors.contains(&p.actor);
+        let a = self.actors.get_or_insert_mut(p.actor, ActorState::default);
         let n_prev = a.n;
         a.n += 1;
         if let Some(last) = a.last_seen {
@@ -265,7 +293,7 @@ impl FeatureEngine {
         f[27] = (f[0] - BROWSER_BURST.ln_1p()).max(0.0);
 
         // ---- subnet ----
-        if let Some(ip) = ev.client_ip() {
+        if let Some(ip) = p.ip {
             let key = self.subnet_key(ip);
             let s = self.subnets.get_or_insert_mut(key, SubnetState::default);
             if actor_is_new {
@@ -281,7 +309,7 @@ impl FeatureEngine {
         }
 
         // ---- client fingerprint / user agent ----
-        if let Some(key) = ev.client_key() {
+        if let Some(key) = p.client {
             let c = self.clients.get_or_insert_mut(key, ClientState::default);
             c.volume.add(1.0, now, TAU_CLIENT);
             if actor_is_new {
@@ -370,9 +398,9 @@ impl FeatureEngine {
     }
 
     /// Feeds back the response status of a request already passed to `observe_request`.
-    pub fn observe_response(&mut self, ev: &Event, p: &Prepared, status: u16, now: f64) {
+    pub fn observe_response(&mut self, p: &Prepared, status: u16, now: f64) {
         let fail = is_failure(status) as u8 as f64;
-        if let Some(a) = self.actors.peek_mut(&ev.actor_key()) {
+        if let Some(a) = self.actors.peek_mut(&p.actor) {
             a.responses.add(1.0, now, TAU_OUTCOME);
             a.fails.add(fail, now, TAU_OUTCOME);
             a.route_resp.add(p.route, 1.0, now, TAU_OUTCOME, 8);
@@ -380,14 +408,14 @@ impl FeatureEngine {
                 a.route_fail.add(p.route, 1.0, now, TAU_OUTCOME, 8);
             }
         }
-        if let Some(ip) = ev.client_ip() {
+        if let Some(ip) = p.ip {
             let key = self.subnet_key(ip);
             if let Some(s) = self.subnets.peek_mut(&key) {
                 s.responses.add(1.0, now, TAU_OUTCOME);
                 s.fails.add(fail, now, TAU_OUTCOME);
             }
         }
-        if let Some(key) = ev.client_key() {
+        if let Some(key) = p.client {
             if let Some(c) = self.clients.peek_mut(&key) {
                 c.responses.add(1.0, now, TAU_OUTCOME);
                 c.fails.add(fail, now, TAU_OUTCOME);
@@ -418,7 +446,7 @@ mod tests {
     use crate::util::normalize::{hash_str, normalize_path};
     use std::time::{Duration, SystemTime};
 
-    fn ev(actor: &str, method: &str, path: &str, t: f64) -> (Event, Prepared) {
+    fn ev(actor: &str, method: &str, path: &str, t: f64) -> Prepared {
         let e = Event::new(
             actor,
             method,
@@ -427,12 +455,7 @@ mod tests {
         )
         .with_user_agent("test-agent");
         let n = normalize_path(path);
-        let p = Prepared {
-            route: hash_str(&[method, &n.template]),
-            id: n.id,
-            probe: false,
-        };
-        (e, p)
+        Prepared::new(&e, hash_str(&[method, &n.template]), n.id, false)
     }
 
     fn idx(name: &str) -> usize {
@@ -444,14 +467,14 @@ mod tests {
         let mut fe = FeatureEngine::new(AdaptiveConfig::default(), None);
         let mut f = [0.0; N_FEATURES];
         for i in 0..30 {
-            let (e, p) = ev(
+            let p = ev(
                 "ip:192.0.2.1",
                 "GET",
                 &format!("/product/{}", 1000 + i),
                 i as f64 * 5.0,
             );
-            f = fe.observe_request(&e, &p, i as f64 * 5.0);
-            fe.observe_response(&e, &p, 404, i as f64 * 5.0);
+            f = fe.observe_request(&p, i as f64 * 5.0);
+            fe.observe_response(&p, 404, i as f64 * 5.0);
         }
         assert!(f[idx("actor_sequential")] > 0.8, "{:?}", f);
         assert!(f[idx("actor_fail_ratio")] > 0.8);
@@ -466,13 +489,13 @@ mod tests {
         let mut t = 0.0;
         // baseline: one request every 10s for an hour
         while t < 3600.0 {
-            let (e, p) = ev(
+            let p = ev(
                 &format!("ip:198.51.100.{}", (t as u64 / 10) % 200),
                 "GET",
                 "/search?q=a",
                 t,
             );
-            let f = fe.observe_request(&e, &p, t);
+            let f = fe.observe_request(&p, t);
             let s = f[idx("surge_x_client_route_share")];
             assert!(s < 1.0, "no surge at baseline (t={t}): {s}");
             t += 10.0;
@@ -480,13 +503,13 @@ mod tests {
         // flood: 50 rps from many IPs, same client fingerprint, one route
         let mut f = [0.0; N_FEATURES];
         for i in 0..3000 {
-            let (e, p) = ev(
+            let p = ev(
                 &format!("ip:203.0.113.{}", i % 250),
                 "GET",
                 "/search?q=b",
                 t,
             );
-            f = fe.observe_request(&e, &p, t);
+            f = fe.observe_request(&p, t);
             t += 0.02;
         }
         let s = f[idx("surge_x_client_route_share")];
@@ -501,14 +524,14 @@ mod tests {
         let mut n = 0u64;
         let mut login = |fe: &mut FeatureEngine, t: f64, status: u16| {
             n += 1;
-            let (e, p) = ev(
+            let p = ev(
                 &format!("ip:198.51.{}.{}", n / 250 % 250, n % 250),
                 "POST",
                 "/login",
                 t,
             );
-            let f = fe.observe_request(&e, &p, t);
-            fe.observe_response(&e, &p, status, t);
+            let f = fe.observe_request(&p, t);
+            fe.observe_response(&p, status, t);
             f
         };
         // 30 min of normal logins, 10% failures
@@ -531,8 +554,8 @@ mod tests {
         assert!(f[idx("actor_route_fail_ratio")] < 0.2, "fresh actor");
         let a = ev("ip:192.0.2.9", "POST", "/login", t);
         for _ in 0..3 {
-            f = fe.observe_request(&a.0, &a.1, t);
-            fe.observe_response(&a.0, &a.1, 401, t);
+            f = fe.observe_request(&a, t);
+            fe.observe_response(&a, 401, t);
             t += 1.0;
         }
         assert!(f[fail_x] > 0.2, "second wave still a surge: {}", f[fail_x]);

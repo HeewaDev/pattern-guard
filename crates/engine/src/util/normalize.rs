@@ -128,8 +128,18 @@ const PROBE_PATTERNS: &[&str] = &[
     "/debug.log",
 ];
 
+/// Only this many leading bytes of a path are scanned for probe patterns. Scanner probes
+/// are short; the cap keeps the ~55 substring searches cheap for a 64 KB path.
+pub const PROBE_SCAN_BYTES: usize = 2048;
+
+/// Whether `path` contains a well-known scanner probe or one of `extra`
+/// (case-insensitive). Only the first [`PROBE_SCAN_BYTES`] bytes are scanned.
 pub fn is_probe_path(path: &str, extra: &[String]) -> bool {
-    let lower = path.to_ascii_lowercase();
+    let mut end = path.len().min(PROBE_SCAN_BYTES);
+    while !path.is_char_boundary(end) {
+        end -= 1;
+    }
+    let lower = path[..end].to_ascii_lowercase();
     PROBE_PATTERNS.iter().any(|p| lower.contains(p))
         || extra
             .iter()
@@ -171,5 +181,16 @@ mod tests {
         assert!(is_probe_path("/static/../../etc/passwd", &[]));
         assert!(!is_probe_path("/product/12", &[]));
         assert!(is_probe_path("/secret-admin", &["/secret-admin".into()]));
+    }
+
+    #[test]
+    fn probe_scan_is_capped() {
+        let pad = "/a".repeat(PROBE_SCAN_BYTES / 2 - 3);
+        assert!(is_probe_path(&format!("{pad}/.env"), &[]));
+        assert!(!is_probe_path(&format!("{pad}/x/.env"), &[]));
+        // The cap never splits a multi-byte character.
+        let pad = "é".repeat(PROBE_SCAN_BYTES);
+        assert!(!is_probe_path(&format!("x{pad}/.env"), &[]));
+        assert!(is_probe_path(&format!("/.env{pad}"), &[]));
     }
 }
