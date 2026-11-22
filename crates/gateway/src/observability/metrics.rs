@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub struct Metrics {
@@ -21,6 +21,9 @@ pub struct Metrics {
     pub connections_rejected: AtomicU64,
     /// Decision-log lines dropped because the writer was too far behind.
     pub decision_log_dropped: AtomicU64,
+    /// Reputation entries evicted because their source was at its cap (shared with
+    /// the `IntelStore`).
+    pub intel_evicted: Arc<AtomicU64>,
     pub crowdsec_ok: AtomicU64,
     pub duration_us_sum: AtomicU64,
     pub requests: AtomicU64,
@@ -115,6 +118,11 @@ impl Metrics {
                 "pattern_guard_decision_log_dropped_total",
                 "Decision-log lines dropped because the writer fell behind (queue full by lines or bytes).",
                 &self.decision_log_dropped,
+            ),
+            (
+                "pattern_guard_intel_evicted_total",
+                "Reputation entries dropped because their source was at its cap (soonest-expiring first).",
+                &*self.intel_evicted,
             ),
         ] {
             c(&mut s, name, help);

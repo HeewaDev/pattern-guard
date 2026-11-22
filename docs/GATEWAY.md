@@ -393,11 +393,18 @@ software on your server can absorb more traffic than its uplink carries.
 
 | Path | |
 |---|---|
-| `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries, CrowdSec status, decision time |
+| `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries (and entries evicted at a cap), CrowdSec status, decision time, dropped decision-log lines |
 | `/healthz` | `ok` |
 | `/inventory` | API discovery: every route template seen (`GET /api/items/{n}`), with volume, block count, status codes, first/last seen. At most 10 000 routes; templates longer than 512 bytes are cut (ending in `…`); requests refused by `[protocol]` are not recorded |
-| `/bans` | Active automatic and trap bans: IP, reason, seconds left |
-| `POST /bans/unban?ip=…` | Lift a ban |
+| `/bans` | Active automatic and trap bans: IP (or `/64`, see below), reason, seconds left; soonest-expiring first |
+| `POST /bans/unban?ip=…` | Lift a ban. A merged IPv6 ban is lifted as its `/64` (`?ip=2001:db8:1:2::/64`) |
+
+Gateway bans are capped by `limits.max_bans` (default 100 000; the ban closest to expiry
+is dropped first, counted in `pattern_guard_intel_evicted_total`). When 16 addresses of
+one IPv6 `/64` are banned at the same time, they are merged into one `/64` ban that
+lasts as long as the longest of them, and later bans inside it extend it: a client that
+rotates through its `/64` costs one entry and is banned on addresses it hasn't used yet.
+IPv4 bans are never merged (one address may be a whole carrier-grade NAT).
 
 ## Performance
 
@@ -417,6 +424,8 @@ attacker-sized value:
 | Table | Cap | Per entry |
 |---|---|---|
 | Rate-limit buckets | 200 000 (least recently used evicted) | fixed: keyed by a keyed 64-bit hash of the IP, route or header value, never the value itself |
+| Reputation store: gateway bans (traps, repeat offenders) | `limits.max_bans` (default 100 000); the ban closest to expiry is dropped; IPv6 bans of one `/64` merged after 16 | ~350 bytes; 100 000 bans plus the offender history ≈ 50 MiB |
+| Reputation store: each external source (every CrowdSec origin, Suricata, Wazuh) | `limits.max_intel_entries_per_source` (default 500 000); the source's entry closest to expiry is dropped, entries without expiry last | ~350 bytes (≈ 170 MiB for a full source) |
 | API inventory | 10 000 routes (new routes are ignored once full) | method + template, cut at 512 bytes; `[protocol]` rejects are not recorded; `/inventory` copies the table under its lock and serialises it afterwards |
 | Decision-log queue (lines waiting for the disk) | 10 000 lines and `limits.decision_log_queue_bytes` (default 16 MiB, minimum 64 KiB) | one line, a few KiB at most (see below) |
 
@@ -432,6 +441,16 @@ change. A line lists at most 16 WAF findings, the highest-scoring ones in their 
 order; when more were found, `pattern_guard.waf_omitted` says how many were left out (all
 of them still count in `pattern_guard_waf_findings_total`). Without this, a 31 KB cookie
 of tiny XSS fragments made a 247 KB line; it now makes a 3.5 KB one.
+
+**Reputation store under pressure.** Each source has its own cap and only ever evicts its
+own entries, so a flood of trap bans from rotating addresses can't push out CrowdSec or
+Suricata decisions, and the CrowdSec stream can't push out your bans. Evicting the entry
+closest to expiry keeps the long, escalated bans of repeat offenders and drops the
+short-lived ones first. The store keeps an expiry-ordered index per source: the
+30-second sweep visits only expired entries (in batches, releasing its lock in between),
+and the entry count behind `pattern_guard_intel_entries` is a counter, so a `/metrics`
+scrape no longer walks the table. Ranges other than IPv6 `/64` are still matched by a
+linear scan; keep CrowdSec range decisions to a few thousand.
 
 ## Limits of this version
 
