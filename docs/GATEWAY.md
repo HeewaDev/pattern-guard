@@ -140,6 +140,27 @@ Typical uses:
 
 Every matching limit consumes a token. The most severe exceeded limit decides.
 
+**A `header:<name>` key is chosen by the client.** Each distinct value gets its own
+bucket, and the gateway can't tell a real API key from an invented one, so a client
+that sends a new value with every request is never limited. Such a limit throttles
+honest clients (per-customer quotas), not attackers. Pair it with an `ip` limit on the
+same route:
+
+```toml
+[[rate_limits]]
+name = "API per key"
+path = "/api/"
+key = "header:x-api-key"
+requests = 600
+per_secs = 60
+
+[[rate_limits]]
+name = "API per IP"           # header values are chosen by the client
+path = "/api/"
+requests = 1200
+per_secs = 60
+```
+
 ## Business operations
 
 Rate limits per IP don't stop an attacker who spreads requests over many IPs, or who
@@ -225,6 +246,14 @@ window_secs = 900
 `account` takes the same sources as for operations, and body fields are read the same
 way, whatever the declared Content-Type (see [Business operations](#business-operations)).
 User names are compared without regard to case.
+
+**A lockout can be turned against your users.** Failures count per account from any
+IP, so anyone who knows a user name can fail `max_failures` times on it and lock it
+for the rest of `window_secs`. With `action = "block"`, the owner is refused too (429)
+until the window ends. Keep the default `challenge` unless that is acceptable: a
+browser holding a clearance cookie (it solved a proof-of-work within
+`challenge.ttl_secs`) still gets through, while a client without one gets 403
+`challenge_required` (a `POST` is never answered with the proof-of-work page itself).
 
 ## Bans and honeypot traps
 
@@ -341,6 +370,13 @@ against a live Wazuh manager:
 * `exclude_paths`: path prefixes skipped entirely (health checks, webhooks you verify by signature).
 * `exclude_params`: field names whose values are not inspected (rich-text editors, code snippets).
   Applies to query, form, JSON and multipart fields, and to upload file names (`filename:<field>`).
+  A name is excluded **wherever it appears and on every path**: in the query or body of
+  any route, as a JSON key at any depth (`json.post.body` and `json.body[3]` count as
+  `body`), and as a cookie or header of that name. An attacker can put a payload in a
+  parameter with an excluded name on any route and the WAF won't look at it. Keep the
+  list short and the names specific (`article_html`, not `text`). When only one route
+  needs it, a `skip_waf` rule for that route's path confines the gap to that route,
+  at the price of not inspecting its other parameters.
 * Measured accuracy, including hold-out results and their limits: [FEATURES.md](FEATURES.md) §3.
 
 ## Connection-level protection

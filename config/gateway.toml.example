@@ -34,7 +34,8 @@ block_score = 7.0                      # 0–10
 log_score = 4.0
 inspect_body_bytes = 65536
 exclude_paths = ["/healthz"]
-exclude_params = []                    # e.g. ["html_body"] for rich-text editors
+exclude_params = []                    # e.g. ["html_body"] for rich-text editors; a name
+                                       # is excluded in every location and on every path
 
 [challenge]
 enabled = true
@@ -103,10 +104,16 @@ include_allowed = false
 # per_secs = 60
 #
 # [[rate_limits]]
-# name = "API per key"
-# path = "/api/"
+# name = "API per key"                  # each value gets its own bucket, and clients
+# path = "/api/"                        # choose the values: pair it with an ip limit
 # key = "header:x-api-key"
 # requests = 600
+# per_secs = 60
+#
+# [[rate_limits]]
+# name = "API per IP"
+# path = "/api/"
+# requests = 1200
 # per_secs = 60
 
 # ---- Business operations: routes that move money or data. Identify the account with
@@ -146,7 +153,8 @@ include_allowed = false
 # max_failures = 5
 # max_accounts_per_ip = 10
 # window_secs = 900
-# action = "challenge"
+# action = "challenge"                  # "block" lets anyone who knows a user name
+#                                       # lock that account for the window
 
 # ---- Automatic bans for repeat offenders (fail2ban-style). Banned IPs are refused
 # outright; each repeat ban lasts `escalation` times longer. List / lift bans on the
