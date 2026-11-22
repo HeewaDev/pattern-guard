@@ -1,5 +1,5 @@
 //! WAF accuracy on a hand-built corpus of real-world attack payloads and tricky benign
-//! values. Run with `cargo test --test waf_corpus -- --nocapture` to see the misses.
+//! values. Run with `cargo test -p pattern-guard-waf --test corpus -- --nocapture` to see the misses.
 
 use pattern_guard_waf::Inspector;
 

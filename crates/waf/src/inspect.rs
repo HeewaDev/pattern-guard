@@ -24,7 +24,7 @@ pub struct Finding {
     pub class: AttackClass,
     /// 0–10.
     pub score: f64,
-    /// Where it was found: `path`, `query:id`, `body:comment`, `json:user.name`, `header:user-agent`, `cookie:sid`.
+    /// Where it was found: `path`, `query:id`, `body:comment`, `json.user.name`, `header:user-agent`, `cookie:sid`.
     pub location: String,
     pub indicators: Vec<&'static str>,
     /// Decoded value (truncated) for the log.
