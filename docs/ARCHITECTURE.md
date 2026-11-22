@@ -1,5 +1,9 @@
 # Architecture
 
+This page is the overview. For module-level detail (the exact pipeline order, fusion
+tie-breaks, locks, analysers), how-to recipes and the proposed target structure, see
+[architecture/](architecture/README.md).
+
 ## Components
 
 | Component | Crate / path | What it is |

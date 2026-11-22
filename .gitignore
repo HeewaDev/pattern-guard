@@ -1,3 +1,4 @@
 /target/
 guard.toml
 .env
+graphify-out/
