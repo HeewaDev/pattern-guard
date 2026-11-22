@@ -1,8 +1,10 @@
 //! Connection-level protection: the accept loop for the protected listener (per-IP
 //! connection cap with trusted proxies exempt, header-read timeout against slowloris,
-//! one task per connection) and the request-body reader (minimum rate / stall timeout,
-//! global budget for buffered body bytes).
+//! one task per connection), the in-flight request cap per resolved client IP, and the
+//! request-body reader (minimum rate / stall timeout, global budget for buffered body
+//! bytes).
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -63,7 +65,10 @@ fn refuse(status: StatusCode, msg: &'static str) -> Response<proxy::Body> {
     h.insert(header::CONTENT_TYPE, "text/plain".parse().unwrap());
     h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     h.insert(header::CONNECTION, "close".parse().unwrap());
-    if status == StatusCode::SERVICE_UNAVAILABLE {
+    if matches!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS
+    ) {
         h.insert(header::RETRY_AFTER, "1".parse().unwrap());
     }
     r
@@ -160,19 +165,91 @@ pub(crate) async fn read_body(
     Ok((body, reservation))
 }
 
-struct ConnGuard {
-    state: Arc<State>,
-    ip: IpAddr,
+/// Which per-IP count a [`Slot`] holds.
+#[derive(Clone, Copy)]
+enum Count {
+    /// Open connections per peer address (`State::conns`).
+    Connections,
+    /// Requests being handled per resolved client address (`State::in_flight`).
+    InFlight,
 }
 
-impl Drop for ConnGuard {
+/// One unit of a per-IP count, given back on drop. A map entry exists only while its
+/// count is above zero, so the maps are bounded by the connections that are open.
+struct Slot {
+    state: Arc<State>,
+    ip: IpAddr,
+    count: Count,
+}
+
+fn counts(state: &State, count: Count) -> &std::sync::Mutex<HashMap<IpAddr, u32>> {
+    match count {
+        Count::Connections => &state.conns,
+        Count::InFlight => &state.in_flight,
+    }
+}
+
+impl Slot {
+    /// Takes a slot for `ip` unless it already holds `limit`.
+    fn acquire(state: &Arc<State>, ip: IpAddr, count: Count, limit: u32) -> Option<Slot> {
+        let mut g = counts(state, count)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let c = g.entry(ip).or_default();
+        if *c >= limit {
+            if *c == 0 {
+                g.remove(&ip);
+            }
+            return None;
+        }
+        *c += 1;
+        Some(Slot {
+            state: state.clone(),
+            ip,
+            count,
+        })
+    }
+}
+
+impl Drop for Slot {
     fn drop(&mut self) {
-        let mut g = self.state.conns.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = counts(&self.state, self.count)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(c) = g.get_mut(&self.ip) {
             *c -= 1;
             if *c == 0 {
                 g.remove(&self.ip);
             }
+        }
+    }
+}
+
+/// Admits a request under `limits.max_requests_in_flight_per_ip`, counted per
+/// **resolved** client IP (after `client_ip.trusted_proxies`), so it also bounds a
+/// single client behind a CDN or load balancer, where the per-peer connection cap
+/// doesn't apply. The allow list is exempt. Over the cap: 429 with `Retry-After: 1`.
+fn admit(
+    state: &Arc<State>,
+    peer: IpAddr,
+    headers: &hyper::HeaderMap,
+) -> Result<Option<Slot>, Box<Response<proxy::Body>>> {
+    let limit = state.cfg.limits.max_requests_in_flight_per_ip;
+    if limit == 0 {
+        return Ok(None);
+    }
+    let ip = proxy::client_ip(state, peer, headers);
+    if any_contains(&state.allow, ip) {
+        return Ok(None);
+    }
+    match Slot::acquire(state, ip, Count::InFlight, limit) {
+        Some(slot) => Ok(Some(slot)),
+        None => {
+            state.metrics.rejected_in_flight.fetch_add(1, Relaxed);
+            Err(refused(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many concurrent requests",
+            ))
         }
     }
 }
@@ -191,17 +268,13 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
         let pip = normalize(peer.ip());
         let limit = state.cfg.limits.max_connections_per_ip;
         let guard = if limit > 0 && !any_contains(&state.trusted, pip) {
-            let mut g = state.conns.lock().unwrap_or_else(|e| e.into_inner());
-            let c = g.entry(pip).or_default();
-            if *c >= limit {
-                state.metrics.connections_rejected.fetch_add(1, Relaxed);
-                continue; // drop the stream
+            match Slot::acquire(&state, pip, Count::Connections, limit) {
+                Some(slot) => Some(slot),
+                None => {
+                    state.metrics.connections_rejected.fetch_add(1, Relaxed);
+                    continue; // drop the stream
+                }
             }
-            *c += 1;
-            Some(ConnGuard {
-                state: state.clone(),
-                ip: pip,
-            })
         } else {
             None
         };
@@ -209,7 +282,17 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
         let header_timeout = Duration::from_secs(state.cfg.limits.header_read_timeout_secs.max(1));
         tokio::spawn(async move {
             let _guard = guard;
-            let svc = service_fn(move |req| proxy::handle(st.clone(), peer, req));
+            let svc = service_fn(move |req: hyper::Request<Incoming>| {
+                let st = st.clone();
+                async move {
+                    // held until the response head is ready (body read, inspection, upstream)
+                    let _slot = match admit(&st, peer.ip(), req.headers()) {
+                        Ok(slot) => slot,
+                        Err(refusal) => return Ok(*refusal),
+                    };
+                    proxy::handle(st, peer, req).await
+                }
+            });
             let mut b = http1::Builder::new();
             b.timer(TokioTimer::new())
                 .header_read_timeout(header_timeout)

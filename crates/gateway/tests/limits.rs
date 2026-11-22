@@ -130,8 +130,13 @@ async fn eventually(what: &str, f: impl Fn() -> bool) {
 /// Opens a connection and sends a POST head announcing `len` body bytes plus `part`
 /// of the body, then leaves it hanging.
 async fn start_upload(gw: SocketAddr, len: usize, part: &[u8]) -> TcpStream {
+    start_upload_with(gw, "", len, part).await
+}
+
+/// `start_upload` with extra header lines (each ending in `\r\n`).
+async fn start_upload_with(gw: SocketAddr, extra: &str, len: usize, part: &[u8]) -> TcpStream {
     let mut s = TcpStream::connect(gw).await.unwrap();
-    let head = format!("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {len}\r\n\r\n");
+    let head = format!("POST /upload HTTP/1.1\r\nhost: x\r\n{extra}content-length: {len}\r\n\r\n");
     s.write_all(head.as_bytes()).await.unwrap();
     s.write_all(part).await.unwrap();
     s
@@ -250,6 +255,54 @@ async fn buffered_bodies_share_a_budget() {
     let head = format!("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {mib}\r\n\r\n");
     assert_eq!(roundtrip(&mut d, &head, &vec![b'b'; mib]).await, 200);
     assert_eq!(state.metrics.buffered_body_bytes.load(Relaxed), 0);
+}
+
+/// Behind a trusted proxy every client arrives from the proxy's address, which is exempt
+/// from the per-peer connection cap: one client could hold any number of requests. The
+/// in-flight cap counts the resolved client IP.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_flight_requests_are_capped_per_resolved_client() {
+    let (gw, state) = start_gateway(
+        "[client_ip]\ntrusted_proxies = [\"127.0.0.1\"]\n[limits]\nmax_requests_in_flight_per_ip = 2\n[access]\nallow = [\"198.51.100.0/24\"]\n",
+    )
+    .await;
+    let from = |ip: &str| format!("x-forwarded-for: {ip}\r\n");
+    let get = |ip: &str| format!("GET / HTTP/1.1\r\nhost: x\r\nx-forwarded-for: {ip}\r\n\r\n");
+    // client .5 holds two requests (stalled uploads) through the proxy
+    let a = start_upload_with(gw, &from("203.0.113.5"), 100, b"half").await;
+    let b = start_upload_with(gw, &from("203.0.113.5"), 100, b"half").await;
+    let st = state.clone();
+    eventually("two requests in flight", move || {
+        st.in_flight
+            .lock()
+            .unwrap()
+            .get(&"203.0.113.5".parse().unwrap())
+            == Some(&2)
+    })
+    .await;
+    // a third from the same client is refused …
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    s.write_all(get("203.0.113.5").as_bytes()).await.unwrap();
+    let (status, head) = read_response(&mut s).await;
+    assert_eq!(status, 429);
+    assert!(head.contains("retry-after: 1"), "{head}");
+    assert_eq!(state.metrics.rejected_in_flight.load(Relaxed), 1);
+    // … other clients behind the same proxy, and allow-listed ones, are not
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    assert_eq!(roundtrip(&mut s, &get("203.0.113.6"), b"").await, 200);
+    let c = start_upload_with(gw, &from("198.51.100.7"), 100, b"half").await;
+    let d = start_upload_with(gw, &from("198.51.100.7"), 100, b"half").await;
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    assert_eq!(roundtrip(&mut s, &get("198.51.100.7"), b"").await, 200);
+    // finishing (or abandoning) a request frees its slot
+    drop((a, b, c, d));
+    let st = state.clone();
+    eventually("slots released", move || {
+        st.in_flight.lock().unwrap().is_empty()
+    })
+    .await;
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    assert_eq!(roundtrip(&mut s, &get("203.0.113.5"), b"").await, 200);
 }
 
 /// `Content-Length` over `max_body_bytes` is refused before any of the body is read.

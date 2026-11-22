@@ -383,6 +383,14 @@ against a live Wazuh manager:
 ## Connection-level protection
 
 * `limits.max_connections_per_ip`: concurrent connections per client IP (trusted proxies exempt).
+* `limits.max_requests_in_flight_per_ip` (default 256, 0 = unlimited): requests in
+  progress (body upload, inspection, waiting for the upstream) per client IP *after*
+  `client_ip.trusted_proxies` is applied; more get **429** with `Retry-After: 1`. Behind a
+  CDN or load balancer every client arrives from a trusted peer, which the connection cap
+  exempts, so this is the per-client bound there. Without a proxy it changes nothing: one
+  HTTP/1.1 connection carries one request at a time, so 256 matches the connection cap.
+  Raise it if many users share one address (an office NAT) *and* your app holds requests
+  open for long (long polling). The allow list is exempt.
 * `limits.header_read_timeout_secs`: clients that trickle headers (slowloris) are dropped.
 * `max_body_bytes`: larger bodies get 413 before any work is done (a `Content-Length`
   over the limit is refused before the body is read).
@@ -407,8 +415,8 @@ against a live Wazuh manager:
   held 405 MiB.
 
 Refusals are counted in `pattern_guard_requests_rejected_total{reason="body_timeout" |
-"body_budget"}` (and 413s in `pattern_guard_body_too_large_total`). They happen before
-inspection, so they are not in the decision log.
+"body_budget" | "in_flight_per_ip"}` (and 413s in `pattern_guard_body_too_large_total`).
+They happen before inspection, so they are not in the decision log.
 
 Volumetric L3/L4 floods must be absorbed upstream (ISP / CDN / cloud scrubbing). No
 software on your server can absorb more traffic than its uplink carries.

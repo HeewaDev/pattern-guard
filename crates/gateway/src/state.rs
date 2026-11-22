@@ -46,7 +46,11 @@ pub struct State {
     pub leaks: Option<crate::hardening::leaks::LeakInspector>,
     pub geo_db: Option<crate::geo::GeoDb>,
     pub geo_policy: crate::geo::GeoPolicy,
+    /// Open connections per peer address (`limits.max_connections_per_ip`).
     pub conns: Mutex<HashMap<IpAddr, u32>>,
+    /// Requests being handled per resolved client address
+    /// (`limits.max_requests_in_flight_per_ip`).
+    pub in_flight: Mutex<HashMap<IpAddr, u32>>,
     pub req_counter: AtomicU64,
     pub console_second: AtomicU64,
     pub console_suppressed: AtomicU64,
