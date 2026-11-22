@@ -111,7 +111,9 @@ include_allowed = false
 
 # ---- Business operations: routes that move money or data. Identify the account with
 # account = "header:<name>" | "cookie:<name>" | "query:<name>" | "form:<name>" |
-# "json:<dotted.path>" (values are hashed, never stored). Checks: a budget per account
+# "json:<dotted.path>" (values are hashed, never stored; form: and json: fields are
+# read from URL-encoded, multipart or JSON bodies, whatever the declared Content-Type,
+# and form:name also matches a top-level JSON field). Checks: a budget per account
 # (`limit`), allowed sources (`allowed_ips`), replay protection (`unique`: a value
 # such as a transaction id is accepted once; held while in flight, kept only after a
 # 2xx answer). action = "block" | "challenge" | "delay" | "log".
