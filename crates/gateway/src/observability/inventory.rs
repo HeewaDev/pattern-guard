@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
-use crate::challenge::now_secs;
+use crate::util::now_secs;
 
 const MAX_ROUTES: usize = 10_000;
 

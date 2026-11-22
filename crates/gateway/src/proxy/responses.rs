@@ -8,6 +8,7 @@ use hyper::header::{self, HeaderMap, HeaderValue};
 use hyper::{Response, StatusCode};
 
 use super::Body;
+use crate::util::header_str;
 
 pub fn full(b: impl Into<Bytes>) -> Body {
     Full::new(b.into())
@@ -29,10 +30,6 @@ pub(super) fn respond(
     );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
-}
-
-pub(super) fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    h.get(name).and_then(|v| v.to_str().ok())
 }
 
 pub(super) fn wants_html(h: &HeaderMap) -> bool {

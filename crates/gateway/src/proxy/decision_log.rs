@@ -7,15 +7,15 @@ use pattern_guard::Assessment;
 use pattern_guard::waf::Finding;
 
 use super::Action;
-use super::responses::header_str;
 use crate::intel::IntelEntry;
 use crate::observability::eventlog::rfc3339_now;
 use crate::state::State;
+use crate::util::header_str;
 
 /// At most one console line per second (with a count of suppressed lines), so an attack
 /// can't turn stderr into a bottleneck. Full detail goes to the async decision log.
 fn console_slot(state: &State) -> bool {
-    let now = crate::challenge::now_secs();
+    let now = crate::util::now_secs();
     let last = state.console_second.load(Relaxed);
     if last != now
         && state

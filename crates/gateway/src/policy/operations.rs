@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{LoginConfig, OperationAction, OperationConfig};
 use crate::ipnet::{Cidr, any_contains};
+use crate::util::form_decode;
 
 const MAX_ENTRIES: usize = 200_000;
 /// Distinct failed accounts remembered per IP.
@@ -118,34 +119,8 @@ fn content_type(parts: &Parts) -> String {
 fn form_value(s: &str, name: &str) -> Option<String> {
     s.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        (url_decode(k) == name).then(|| url_decode(v))
+        (form_decode(k) == name).then(|| form_decode(v))
     })
-}
-
-fn url_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => {
-                match std::str::from_utf8(&b[i + 1..i + 3])
-                    .ok()
-                    .and_then(|h| u8::from_str_radix(h, 16).ok())
-                {
-                    Some(v) => {
-                        out.push(v);
-                        i += 2;
-                    }
-                    None => out.push(b'%'),
-                }
-            }
-            c => out.push(c),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn hash(scope: &str, value: &str) -> u64 {
