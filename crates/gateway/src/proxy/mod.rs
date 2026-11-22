@@ -26,7 +26,7 @@ pub use responses::full;
 
 use decision_log::{LogCtx, log_decision};
 use forward::{CloneHead, forward};
-use responses::{block_page, error_response, header_str, respond, too_many_requests, wants_html};
+use responses::{block_page, error_response, respond, too_many_requests, wants_html};
 use verify::verify;
 
 use crate::challenge::VERIFY_PATH;
@@ -34,6 +34,7 @@ use crate::config::{LimitAction, Mode, OperationAction, RuleAction};
 use crate::intel::IntelAction;
 use crate::ipnet::any_contains;
 use crate::state::State;
+use crate::util::header_str;
 
 pub type Body = BoxBody<Bytes, hyper::Error>;
 
@@ -80,7 +81,7 @@ pub async fn handle(
     let started = Instant::now();
     let id = format!(
         "{:x}-{:x}",
-        crate::challenge::now_secs(),
+        crate::util::now_secs(),
         state.req_counter.fetch_add(1, Relaxed)
     );
     let (parts, body) = req.into_parts();

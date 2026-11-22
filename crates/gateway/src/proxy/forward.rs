@@ -15,11 +15,12 @@ use hyper::{Request, Response, StatusCode, Uri};
 use pattern_guard::Assessment;
 
 use super::Body;
-use super::responses::{full, header_str, respond};
+use super::responses::{full, respond};
 use crate::config::{LeakAction, Mode};
 use crate::hardening::leaks::LeakInspector;
 use crate::ipnet::any_contains;
 use crate::state::State;
+use crate::util::header_str;
 
 const HOP_BY_HOP: [&str; 9] = [
     "connection",

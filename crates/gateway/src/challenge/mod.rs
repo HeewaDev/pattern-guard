@@ -17,6 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
+use crate::util::now_secs;
+
 type HmacSha256 = Hmac<Sha256>;
 
 pub const COOKIE: &str = "pg_clearance";
@@ -28,13 +30,6 @@ pub struct Challenger {
     secret: Vec<u8>,
     pub difficulty: u32,
     pub ttl_secs: u64,
-}
-
-pub fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// 32 bytes from the OS-seeded `RandomState` hasher plus time — no extra dependency.

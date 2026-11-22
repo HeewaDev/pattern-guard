@@ -10,6 +10,7 @@ use super::Body;
 use super::responses::respond;
 use crate::challenge::safe_return;
 use crate::state::State;
+use crate::util::form_decode;
 
 pub(super) fn verify(state: &State, ip: IpAddr, query: &str) -> Response<Body> {
     let mut q = std::collections::HashMap::new();
@@ -19,7 +20,7 @@ pub(super) fn verify(state: &State, ip: IpAddr, query: &str) -> Response<Body> {
         }
     }
     let get = |k: &str| q.get(k).copied().unwrap_or("");
-    let ret = percent_decode_simple(get("r"));
+    let ret = form_decode(get("r"));
     let ok = state.challenger.verify(
         ip,
         get("n"),
@@ -49,34 +50,5 @@ pub(super) fn verify(state: &State, ip: IpAddr, query: &str) -> Response<Body> {
                 "<!doctype html><meta charset=utf-8><title>Verification failed</title><p>Verification failed or expired. <a href=\"/\">Try again</a>.</p>",
             )
         }
-    }
-}
-
-fn percent_decode_simple(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(if b[i] == b'+' { b' ' } else { b[i] });
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn simple_percent_decoding() {
-        assert_eq!(percent_decode_simple("%2Fcart%3Fx%3D1"), "/cart?x=1");
-        assert_eq!(percent_decode_simple("%zz"), "%zz");
     }
 }

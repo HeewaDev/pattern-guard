@@ -15,6 +15,7 @@ pub mod observability;
 pub mod policy;
 pub mod proxy;
 pub mod state;
+pub mod util;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};

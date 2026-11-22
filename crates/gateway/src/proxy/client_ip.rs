@@ -4,9 +4,9 @@ use std::net::IpAddr;
 
 use hyper::header::HeaderMap;
 
-use super::responses::header_str;
 use crate::ipnet::{any_contains, normalize};
 use crate::state::State;
+use crate::util::header_str;
 
 /// Client IP: the peer, or — if the peer is a trusted proxy — the right-most untrusted
 /// address in the configured header.

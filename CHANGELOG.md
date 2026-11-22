@@ -84,6 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The workspace now has two members. CI runs fmt, clippy, tests and bench compilation for
   both.
 
+### Fixed
+
+- **Gateway**: a request to `/.pattern-guard/verify` whose `r=` value had a non-ASCII byte
+  right after `%` made the connection's task panic (the decoder sliced a string inside a
+  UTF-8 character). The gateway's two percent-decoders are now one byte-based
+  `util::form_decode`.
+- `pattern-guard-gateway` now takes the workspace version (was `0.1.0`).
+
 ## [0.3.0] - Unreleased
 
 The engine is rebuilt around an adaptive, explainable ML model. Tested against
