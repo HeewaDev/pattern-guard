@@ -170,6 +170,51 @@ fn cli_replay_combined_log() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("Replayed 50 requests from 1 actors"));
 }
 
+/// A far-future timestamp (bad clock or forged line) must not freeze the replay clock,
+/// and a Basic-auth user name must not be read as the time.
+#[test]
+fn cli_replay_skips_far_future_line() {
+    let dir = temp_dir("future");
+    let log = dir.join("access.log");
+    let mut s = String::new();
+    for i in 0..600 {
+        let user = if i == 100 {
+            "x [01/Jan/2099:00:00:00 +0000]"
+        } else {
+            "-"
+        };
+        let day = if i == 300 {
+            "01/Jan/2099"
+        } else {
+            "10/Oct/2024"
+        };
+        s.push_str(&format!(
+            "203.0.113.{} - {user} [{day}:13:{:02}:{:02} +0000] \"GET /api/status HTTP/1.1\" 200 512 \"-\" \"Mozilla/5.0\"\n",
+            i % 20,
+            i / 60,
+            i % 60,
+        ));
+    }
+    std::fs::write(&log, s).unwrap();
+    let out = Command::new(pattern_guard_exe())
+        .args(["replay", log.to_str().unwrap()])
+        .output()
+        .expect("spawn replay");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("line 301:"), "{stderr}");
+    assert!(
+        stdout.contains("Replayed 599 requests from 20 actors over 10.0 min"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("block 0.0%"), "{stdout}");
+}
+
 #[test]
 fn cli_train_requires_labels() {
     let dir = temp_dir("nolabels");
