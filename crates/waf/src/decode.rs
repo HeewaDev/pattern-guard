@@ -101,6 +101,31 @@ pub(crate) fn fold_html_lookalikes(s: &str) -> Option<String> {
     Some(s.chars().map(|c| map(c).unwrap_or(c)).collect())
 }
 
+/// Look-alike dots and slashes folded to ASCII: full-width `．` `／` `＼`, division slash
+/// `∕` (`%u2215`), one-dot leader `․`, small full stop `﹒`, and the hex notation `0x2e`
+/// `0x2f` `0x5c`. Windows best-fit mapping and some path canonicalisers turn these into
+/// `../`. Returns `None` when the value has none of them.
+pub(crate) fn fold_path_lookalikes(s: &str) -> Option<String> {
+    let map = |c: char| -> Option<char> {
+        Some(match c {
+            '\u{ff0e}' | '\u{2024}' | '\u{fe52}' => '.',
+            '\u{2215}' | '\u{2044}' | '\u{ff0f}' | '\u{29f8}' => '/',
+            '\u{ff3c}' | '\u{2216}' | '\u{fe68}' | '\u{29f9}' => '\\',
+            _ => return None,
+        })
+    };
+    let has_hex = s.contains("0x2e") || s.contains("0x2f") || s.contains("0x5c");
+    if !has_hex && (s.is_ascii() || !s.chars().any(|c| map(c).is_some())) {
+        return None;
+    }
+    let folded: String = s.chars().map(|c| map(c).unwrap_or(c)).collect();
+    let folded = folded
+        .replace("0x2e", ".")
+        .replace("0x2f", "/")
+        .replace("0x5c", "\\");
+    (folded != s).then_some(folded)
+}
+
 /// UTF-7 (`+ADw-script+AD4-` is `<script>`), which some browsers and parsers honour
 /// when a charset says so. Returns `None` unless decoding produced HTML or quote syntax.
 pub(crate) fn utf7_decode(s: &str) -> Option<String> {
@@ -447,6 +472,24 @@ mod tests {
             "plain words are skipped"
         );
         assert!(base64_variants("short").is_empty());
+    }
+
+    #[test]
+    fn path_lookalikes_fold_to_ascii() {
+        assert_eq!(
+            fold_path_lookalikes("\u{ff0e}\u{ff0e}\u{2215}x").as_deref(),
+            Some("../x")
+        );
+        assert_eq!(
+            fold_path_lookalikes("0x2e0x2e0x2fetc").as_deref(),
+            Some("../etc")
+        );
+        assert_eq!(
+            fold_path_lookalikes("\u{ff0e}\u{ff0e}\u{ff3c}").as_deref(),
+            Some("..\\")
+        );
+        assert_eq!(fold_path_lookalikes("plain ../path"), None);
+        assert_eq!(fold_path_lookalikes("café"), None);
     }
 
     #[test]

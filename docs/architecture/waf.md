@@ -29,7 +29,7 @@ Suggested thresholds: log at ≥ 4, block at ≥ 7. These are the gateway defaul
 | Path | Responsibility |
 |---|---|
 | `inspect.rs` | `Inspector`: request walking, the per-value pipeline, scoring, multipart, session fixation, JSON walking |
-| `decode.rs` | Server-like decoding (`%XX` ×≤4 with overlong UTF-8 folded to ASCII, `%uXXXX`, HTML entities, `\uXXXX` / `\xHH`), base64 variants, UTF-7, look-alike bracket folding |
+| `decode.rs` | Server-like decoding (`%XX` ×≤4 with overlong UTF-8 folded to ASCII, `%uXXXX`, HTML entities, `\uXXXX` / `\xHH`), base64 variants, UTF-7, look-alike bracket folding, look-alike dot / slash and `0x2e` folding |
 | `body.rs` | A body as text: byte-order marks, the declared charset, UTF-16 / UTF-32 transcoding (also undeclared, by RFC 4627 null-byte detection), `body_charset` for charsets that hide content (EBCDIC, UTF-7, unknown) |
 | `indicators.rs` | `AttackClass` and ~110 weighted regex indicators (`Indicator { class, name, weight, pattern }`) |
 | `lexicon.rs` | OWASP CRS phrase lists with Aho-Corasick, each with a scope (`Values`, `Path`, `Call`) |
@@ -63,6 +63,7 @@ raw ─► truncate (8 KiB) ─► decode: URL ×≤4 · %uXXXX · HTML entities
      │
      ├─ variants:  [comments removed] [comments → space] [Log4j lookups resolved ×≤3] [decoded]
      │             + UTF-7 decoding (if it decodes) + look-alike brackets folded (＜ « ‹ ¼ → <)
+     │             + look-alike dots / slashes and hex folded (．．∕ 0x2e0x2e0x2f → ../)
      │             + base64 decodings (whole value and fragments, 4 alignments)
      │             + check: javascript:/vbscript: split by tabs or newlines → js_uri_split (7)
      │
@@ -71,7 +72,9 @@ raw ─► truncate (8 KiB) ─► decode: URL ×≤4 · %uXXXX · HTML entities
      ├─ SQL           over decoded                  (not for headers limited to JNDI)
      ├─ Shell         over lowercased, newlines kept (not in the path)
      ├─ URL/SSRF      over decoded, with the parameter name (not in the path or Referer)
-     ├─ extras        NUL byte (7, not for raw bodies) · encoded traversal (3) · /*! (4) · /* */ (2)
+     ├─ extras        NUL byte (7, not for raw bodies) · disguised traversal (5: `../` only after decoding
+     │                the dots, which no client encodes) or encoded traversal (3) · /*! (4) · /* */ (2)
+     │                · command substitution in a header (+4)
      │
      ▼
 per class: Σ weights of DISTINCT indicator names ─► strongest class ─► cap at 10 ─► ≥ min_score → Finding
@@ -91,7 +94,7 @@ Scoring rules:
 | Analyser | Class(es) | What it recognises | Indicator names |
 |---|---|---|---|
 | Regex indicators | all | Signatures per class: tags and event handlers, traversal sequences, template syntax, JNDI lookups, XXE entities, Mongo operators, PHP tags and wrappers, Java serialisation, Node / Perl / EL code, prototype pollution | ~110, e.g. `script_tag`, `jndi_lookup` (see `indicators.rs`) |
-| Lexicons (CRS) | PathTraversal, CommandInjection, PhpInjection, JavaInjection | OS files (3, values), restricted files (7, path only), Unix shell words (4), PHP functions followed by `(` (5), Java classes (7) | `lfi_os_file`, `restricted_file`, `unix_shell`, `php_function_call`, `java_class` |
+| Lexicons (CRS) | PathTraversal, CommandInjection, PhpInjection, JavaInjection | OS files (3, values; +4 `lfi_path_value` when the whole value is that path), restricted files (7, path only), Unix shell words (4), PHP functions followed by `(` (5), Java classes (7) | `lfi_os_file`, `restricted_file`, `unix_shell`, `php_function_call`, `java_class` |
 | SQL tokenizer | SqlInjection | A quote breaking out of a string into SQL (7); numeric-context continuation (`1) or (1=1`), also into a comparison on a column (`1 or username='admin'`, `0 or id in (`, `1 or name is not null`: 7); the whole value is a SQL expression (3–4); database functions (3, dangerous ones 5). Values with three plain words in a row are prose | `sql_string_breakout`, `sql_numeric_breakout`, `sql_column_breakout`, `sql_expression`, `sql_known_function`, `sql_dangerous_function` |
 | Shell | CommandInjection | Undoes quotes, `${IFS}`, `{a,b}`, `[x]` and empty expansions, splits on `; \n \| & ( ) { }`, scores command words by position and arguments; Windows `FOR` and `IF` | `shell_chained_command` (5), `shell_command_word`, `shell_command_args`, `windows_for_loop` (7), … |
 | URL / SSRF | Ssrf, RemoteFileInclusion | Decimal, hex and octal IPv4, IPv4-mapped IPv6, Unicode look-alikes; internal ranges and names; cloud metadata; parser confusion (several `@`, or a space, `&` or `#` right before the `@`; backslashes in the authority); remote scripts on RFI-typical parameters | `ssrf_cloud_metadata`, `ssrf_internal_address`, `ssrf_obfuscated_ip`, `url_parser_confusion`, `rfi_remote_script`, `rfi_known_parameter`, … |

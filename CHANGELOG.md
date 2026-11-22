@@ -122,6 +122,21 @@ WAF bypasses found in an internal security review (regression tests in
 - **WAF panic**: a shell-like value with a multi-byte character after `-` (`;cat -é`, in a
   query, form field, cookie or User-Agent) panicked the connection's task.
 - Multipart header parameters: an O(n²) scan on quoted values full of `;` is now linear.
+- **Disguised path traversal**: look-alike dots and slashes (`%uff0e`, `%u2215`, `／`) and
+  hex notation (`0x2e0x2e0x2f`) are folded to `../`, and a traversal that only appears once
+  the dots are decoded (`%2e`, double encoding, overlong UTF-8, entities, look-alikes) scores
+  `disguised_traversal` (5): browsers and HTTP libraries never encode `.`. Plain relative
+  paths (`../img/logo.png`, a browser's `..%2Fimg`) are unchanged.
+- **OS file paths as a whole value** (`/etc/passwd`, `.ssh/id_rsa`, `c:\boot.ini`,
+  `file:///etc/hosts`): a parameter that is nothing but the path of a known OS file adds
+  `lfi_path_value` (4) to the CRS file-list hit, enough to block. The same path inside a
+  sentence is not affected. LFI hold-out (never tuned on): 34.7 % → 84.0 %.
+- **PHP filter chains** (`convert.iconv.UTF8.CSISO2022KR|convert.base64-decode…`, the
+  2022 RCE technique) score 7 (`php_filter_chain`).
+- **RFI parameter names** are compared case-insensitively (`_CONF[path]=https://…`,
+  `mosConfig_absolute_path=…`).
+- **Command substitution in a header** (``User-Agent: Mozilla/5.0`id` ``) adds
+  `header_command_substitution` (4): it used to score 4 in total.
 - **False positives found by the pinned benign corpus** (`scripts/fetch_eval_data.sh`):
   real User-Agents with the Indonesian locale (`(Linux; U; Android 4.4.2; id; …)`, UC Browser,
   BlackBerry) looked like a chained `id` command and were blocked; language tags alone in a

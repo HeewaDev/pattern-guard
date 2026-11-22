@@ -527,6 +527,14 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             7.0,
             r"\bphp://(filter|input|fd|memory|temp|stdin)|\bdata://text/plain|\b(compress\.zlib|compress\.bzip2|glob)://",
         ),
+        // PHP filter-chain RCE (2022): `convert.iconv.UTF8.CSISO2022KR|convert.base64-decode…`
+        // builds code out of charset conversions; the pieces mean nothing outside PHP filters
+        i(
+            PhpInjection,
+            "php_filter_chain",
+            7.0,
+            r"\bconvert\.iconv\.[a-z0-9_:-]+\.[a-z0-9_:-]+|\bconvert\.(base64|quoted-printable)-(en|de)code\|",
+        ),
         i(
             PhpInjection,
             "php_serialized_object",
