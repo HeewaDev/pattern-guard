@@ -162,8 +162,10 @@ impl RouteState {
 
 pub struct FeatureEngine {
     cfg: AdaptiveConfig,
-    actors: LruCache<String, ActorState>,
-    clients: LruCache<String, ClientState>,
+    /// Keyed by [`Event::actor_key`] and [`Event::client_key`] (64-bit hashes), so an entry
+    /// costs the same whatever the length of the actor id or user agent.
+    actors: LruCache<u64, ActorState>,
+    clients: LruCache<u64, ClientState>,
     subnets: LruCache<(u8, u128), SubnetState>,
     routes: LruCache<u64, RouteState>,
 }
@@ -215,10 +217,9 @@ impl FeatureEngine {
             .any(|m| method.eq_ignore_ascii_case(m));
 
         // ---- actor ----
-        let actor_is_new = !self.actors.contains(&ev.actor);
-        let a = self
-            .actors
-            .get_or_insert_mut(ev.actor.clone(), ActorState::default);
+        let actor = ev.actor_key();
+        let actor_is_new = !self.actors.contains(&actor);
+        let a = self.actors.get_or_insert_mut(actor, ActorState::default);
         let n_prev = a.n;
         a.n += 1;
         if let Some(last) = a.last_seen {
@@ -371,7 +372,7 @@ impl FeatureEngine {
     /// Feeds back the response status of a request already passed to `observe_request`.
     pub fn observe_response(&mut self, ev: &Event, p: &Prepared, status: u16, now: f64) {
         let fail = is_failure(status) as u8 as f64;
-        if let Some(a) = self.actors.peek_mut(&ev.actor) {
+        if let Some(a) = self.actors.peek_mut(&ev.actor_key()) {
             a.responses.add(1.0, now, TAU_OUTCOME);
             a.fails.add(fail, now, TAU_OUTCOME);
             a.route_resp.add(p.route, 1.0, now, TAU_OUTCOME, 8);
