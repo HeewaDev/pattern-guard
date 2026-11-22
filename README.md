@@ -55,9 +55,9 @@ The full feature list, compared against open-appsec and Imperva, is in
 | Test | Result |
 |---|---|
 | Behavioural ML, 1 h simulated mixed traffic, including attacks it never trained on | ~0.3 % of legitimate requests stopped, ~98.5 % of attack requests stopped |
-| WAF, PayloadsAllTheThings payload lists (4 451) vs 17 719 benign values (names, English words, user agents, code lines from docs) | 57.6 % of attacks blocked: SSTI 94 %, SQLi 91 %, NoSQL 58 %, XSS 58 %, command injection 55 %, file inclusion 39 %, traversal 38 % · **1** benign value blocked (a `curl … \| sh` command line) |
-| WAF hold-out lists never tuned on (SecLists / fuzzdb, 10 173 payloads) | command injection (commix) 99 %, XSS 89 %, SQLi 73 %, file inclusion 35 %. File inclusion and traversal are the gaps to close |
-| WAF on the OWASP CRS regression tests (3 730 attack requests) | **53.4 % blocked** (rules at paranoia level 1: 63.5 %), up from 11.8 %. RFI (19 %), PHP (30 %) and RCE (35 %) are the weakest classes; see [RESEARCH.md](docs/RESEARCH.md). These tests are now used for development, so they are no longer a hold-out |
+| WAF, PayloadsAllTheThings payload lists (4 437) vs 17 719 benign values (names, English words, user agents, code lines from docs) | 81.3 % of attacks blocked: traversal 99.9 %, SSTI 94 %, SQLi 91 %, file inclusion 66 %, XSS 58 %, NoSQL 58 %, command injection 55 % · **1** benign value blocked (a `curl … \| sh` command line) |
+| WAF hold-out lists never tuned on (SecLists / fuzzdb, 10 173 payloads) | 96.1 % blocked: command injection (commix) 99 %, XSS 89 %, file inclusion 84 %, SQLi 73 %. SQLi is the gap to close |
+| WAF on the OWASP CRS regression tests (3 730 attack requests) | **53.6 % blocked** (rules at paranoia level 1: 64.0 %), up from 11.8 %. RFI (27 %), PHP (30 %) and RCE (35 %) are the weakest classes; see [RESEARCH.md](docs/RESEARCH.md). These tests are now used for development, so they are no longer a hold-out |
 | Proof-of-work challenge in real Chromium | solved in 142 ms, clearance cookie set; curl without JS stays blocked |
 | Gateway throughput, full inspection | ~28 000 req/s, p99 ≈ 3.4 ms (4 vCPU shared with client and upstream) |
 
