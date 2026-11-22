@@ -34,6 +34,7 @@ struct Row {
     total: usize,
     stopped: usize,
     blocked: usize,
+    challenged: usize,
     actors: HashSet<String>,
     actors_stopped: HashSet<String>,
 }
@@ -56,6 +57,9 @@ fn run(name: &str, guard: &Guard, recs: &[sim::Rec]) {
         if a.decision == Decision::Block {
             row.blocked += 1;
         }
+        if a.decision == Decision::Challenge {
+            row.challenged += 1;
+        }
     }
     let us = start.elapsed().as_secs_f64() * 1e6 / recs.len() as f64;
 
@@ -64,40 +68,46 @@ fn run(name: &str, guard: &Guard, recs: &[sim::Rec]) {
         us
     );
     println!(
-        "{:<48} {:>8} {:>9} {:>9} {:>15}",
-        "scenario", "requests", "stopped%", "blocked%", "actors stopped"
+        "{:<48} {:>8} {:>9} {:>9} {:>11} {:>15}",
+        "scenario", "requests", "stopped%", "blocked%", "challenged%", "actors stopped"
     );
-    println!("{}", "-".repeat(93));
+    println!("{}", "-".repeat(105));
     let mut sorted: Vec<_> = rows.iter().collect();
     sorted.sort_by_key(|(n, r)| (r.label, n.contains("[unseen]"), *n));
     let (mut lt, mut ls, mut at, mut ast, mut lb) = (0, 0, 0, 0, 0);
+    let (mut lc, mut ahard) = (0, 0);
     let mut per_attack = Vec::new();
     for (n, r) in &sorted {
         println!(
-            "{:<48} {:>8} {:>9.1} {:>9.1} {:>8}/{:<6}",
+            "{:<48} {:>8} {:>9.1} {:>9.1} {:>11.1} {:>8}/{:<6}",
             n,
             r.total,
             100.0 * r.stopped as f64 / r.total as f64,
             100.0 * r.blocked as f64 / r.total as f64,
+            100.0 * r.challenged as f64 / r.total as f64,
             r.actors_stopped.len(),
             r.actors.len()
         );
         if r.label {
             at += r.total;
             ast += r.stopped;
+            ahard += r.blocked + r.challenged;
             per_attack.push(r.stopped as f64 / r.total as f64);
         } else {
             lt += r.total;
             ls += r.stopped;
             lb += r.blocked;
+            lc += r.challenged;
         }
     }
     println!(
-        "\nFalse positives: {:.2}% of legitimate requests stopped ({:.2}% blocked)  |  detection: {:.1}% of attack requests (avg per attack type {:.1}%)",
+        "\nFalse positives: {:.2}% of legitimate requests stopped ({:.2}% blocked, {:.2}% challenged)  |  detection: {:.1}% of attack requests (avg per attack type {:.1}%; {:.1}% blocked or challenged)",
         100.0 * ls as f64 / lt as f64,
         100.0 * lb as f64 / lt as f64,
+        100.0 * lc as f64 / lt as f64,
         100.0 * ast as f64 / at as f64,
-        100.0 * per_attack.iter().sum::<f64>() / per_attack.len() as f64
+        100.0 * per_attack.iter().sum::<f64>() / per_attack.len() as f64,
+        100.0 * ahard as f64 / at as f64
     );
 }
 

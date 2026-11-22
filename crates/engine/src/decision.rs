@@ -3,8 +3,11 @@ use std::time::Duration;
 /// Recommended action. Pattern-Guard never enforces; the caller does.
 ///
 /// Ordered from least to most severe: `Allow < Warn < Delay < Challenge < Block`.
-/// `Challenge` is only produced when `challenge_below` is configured; it means
-/// "probably automated — ask for proof of a human (CAPTCHA, JS check, re-auth)".
+/// `Challenge` is produced when `challenge_below` is configured and the risk falls in that
+/// band, and whenever the risk would block but comes only from evidence that innocent
+/// clients share (the network's or user agent's failures and new arrivals) or that every
+/// first contact has. It means "possibly automated — ask for proof of a human (CAPTCHA,
+/// JS check, re-auth)".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,

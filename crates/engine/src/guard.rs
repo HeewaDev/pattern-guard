@@ -87,19 +87,60 @@ struct Request {
 }
 
 /// What `assess` computes while holding the state lock.
+/// Model inputs that describe what *other* actors sharing this client key or network did,
+/// or that every legitimate first contact has (a first request, a write before any page
+/// view). They can raise the risk, but a block needs the actor's own behaviour too: an
+/// attacker copying a popular browser's user agent must not get that browser's users
+/// blocked and banned, and a password manager's first login must not look like stuffing.
+const SHARED_EVIDENCE: &[&str] = &[
+    // first contact: every legitimate client's first request has these
+    "actor_new",
+    "cold_write",
+    // failures and new arrivals pooled over the network or the client key (user agent /
+    // fingerprint), which innocent users share with whoever else uses it
+    "subnet_new_actors",
+    "subnet_fail_ratio",
+    "client_fail_ratio",
+    "client_new_actor_share",
+    "new_actor_surge_x_client_new_share",
+    "fail_surge_x_client_fail_ratio",
+    "client_route_share_x_new_share",
+    // Not here: route concentration and surges (`client_route_share`,
+    // `surge_x_client_route_share`, …). They are how distributed floods and scrapers are
+    // caught, and an innocent user doesn't share them by accident.
+];
+
+/// The model's risk without the positive contributions of shared evidence.
+fn own_model_risk(model_risk: f64, contrib: &Features, shared: &[bool; N_FEATURES]) -> f64 {
+    let r = model_risk.clamp(1e-12, 1.0 - 1e-12);
+    let z = (r / (1.0 - r)).ln()
+        - (0..N_FEATURES)
+            .filter(|&i| shared[i])
+            .map(|i| contrib[i].max(0.0))
+            .sum::<f64>();
+    1.0 / (1.0 + (-z).exp())
+}
+
 struct Scored {
     features: Features,
     model_risk: f64,
+    /// `model_risk` without shared evidence (see `SHARED_EVIDENCE`).
+    own_model_risk: f64,
     contrib: Features,
     rules_risk: f64,
     rule_name: &'static str,
     in_cooldown: bool,
+    /// The running cooldown was earned by the actor's own behaviour.
+    cooldown_own: bool,
 }
 
 #[derive(Default)]
 struct Strikes {
     blocks: Decay,
     until: f64,
+    /// Whether the actor's own behaviour (not only shared evidence) reached the block
+    /// threshold when the cooldown started: then it blocks, else it challenges.
+    own: bool,
 }
 
 struct State {
@@ -113,6 +154,8 @@ struct State {
 pub struct Guard {
     config: Config,
     model: Model,
+    /// `SHARED_EVIDENCE` as a mask over `FEATURE_NAMES`.
+    shared: [bool; N_FEATURES],
     state: Mutex<State>,
 }
 
@@ -139,9 +182,14 @@ impl Guard {
             rules: Tracker::new(g.max_actors),
             cooldowns: LruCache::new(g.max_actors.unwrap_or(NonZeroUsize::new(100_000).unwrap())),
         };
+        let mut shared = [false; N_FEATURES];
+        for (i, name) in FEATURE_NAMES.iter().enumerate() {
+            shared[i] = SHARED_EVIDENCE.contains(name);
+        }
         Ok(Self {
             config,
             model,
+            shared,
             state: Mutex::new(state),
         })
     }
@@ -231,27 +279,36 @@ impl Guard {
         };
 
         let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
-        let own_risk = model_risk.max(rules_risk);
-        let in_cooldown = st
+        let own_model_risk = own_model_risk(model_risk, &contrib, &self.shared);
+        let full_risk = model_risk.max(rules_risk);
+        let own_blocks = own_model_risk.max(rules_risk) >= block_at;
+        let (in_cooldown, cooldown_own) = st
             .cooldowns
             .get(&req.p.actor)
-            .is_some_and(|s| now < s.until);
-        if !eff.trusted && eff.cooldown_secs > 0.0 && own_risk >= block_at {
+            .filter(|s| now < s.until)
+            .map_or((false, false), |s| (true, s.own));
+        if !eff.trusted && eff.cooldown_secs > 0.0 && full_risk >= block_at {
             let s = st
                 .cooldowns
                 .get_or_insert_mut(req.p.actor, Strikes::default);
             s.blocks.add(1.0, now, eff.cooldown_secs);
             if s.blocks.get(now, eff.cooldown_secs) >= g.cooldown_after_blocks as f64 - 0.5 {
+                if now >= s.until {
+                    s.own = false;
+                }
                 s.until = now + eff.cooldown_secs;
+                s.own |= own_blocks;
             }
         }
         Scored {
             features,
             model_risk,
+            own_model_risk,
             contrib,
             rules_risk,
             rule_name,
             in_cooldown,
+            cooldown_own,
         }
     }
 
@@ -262,15 +319,18 @@ impl Guard {
         let Scored {
             features,
             model_risk,
+            own_model_risk,
             contrib,
             rules_risk,
             rule_name,
             in_cooldown,
+            cooldown_own,
         } = self.score(&mut self.lock(), &req, &eff);
 
         let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
         let mut risk = model_risk.max(rules_risk);
         let mut reasons: Vec<Reason> = Vec::new();
+        let mut shared_only = false;
 
         if eff.trusted {
             risk = 0.0;
@@ -285,6 +345,20 @@ impl Guard {
                 reasons.push(Reason {
                     signal: "cooldown",
                     weight: block_at,
+                    high: true,
+                });
+            }
+            // Shared or first-contact evidence alone can't block: such a request is
+            // challenged instead. A real browser passes the challenge (and a challenged form
+            // is sent again); a script without a JS engine doesn't.
+            // A cooldown earned by shared evidence challenges too.
+            let own_says_block =
+                own_model_risk.max(rules_risk) >= block_at || (in_cooldown && cooldown_own);
+            if risk >= block_at && !own_says_block {
+                shared_only = true;
+                reasons.push(Reason {
+                    signal: "shared_evidence_only",
+                    weight: model_risk,
                     high: true,
                 });
             }
@@ -305,7 +379,11 @@ impl Guard {
         }
 
         Assessment {
-            decision: eff.risk_to_decision(risk),
+            decision: if shared_only {
+                Decision::Challenge
+            } else {
+                eff.risk_to_decision(risk)
+            },
             risk,
             bot_score: (1.0 + ((1.0 - risk) * 98.0).round()) as u8,
             model_risk,

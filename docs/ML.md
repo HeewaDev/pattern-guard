@@ -80,18 +80,35 @@ clock), and records more than 1 h older than the newest one. The summary counts 
 Without labels you can still replay plain nginx/Apache logs to see what *would* be
 flagged and why: `pattern-guard replay access.log`.
 
+## Shared evidence can challenge, not block
+
+Inputs that innocent clients share (a network's or a user agent's failures and new
+arrivals) or that every first contact has (`actor_new`, `cold_write`) raise the risk, but a
+request that would block only because of them is challenged instead; see
+[architecture/engine.md](architecture/engine.md#shared-evidence). A cold login by a password
+manager, or a phone whose browser shares its user agent with an attacker, gets a challenge it
+can pass, not a block and a ban.
+
+Retraining with cold-write clients in the training data was tried and rejected
+(2026-11): with the current features the model then traded those clients for false positives
+on viral-link crowds (seed 8: 0.54 % → 1.23 % of legitimate requests stopped; more training
+hours made it worse). Telling a flash crowd from distributed stuffing needs a new feature.
+
 ## 4. Results on synthetic traffic (`cargo run --release -p pattern-guard-eval --bin realworld_eval`)
 
-One simulated site, 60 minutes, ~260 000 requests: shoppers, an office NAT, casual visitors,
-a 2-second polling dashboard, a partner API, a mobile app, uptime monitors, a viral spike
-and a login rush, plus staggered attacks. Attacks and the flash sale marked `[unseen]`
-were never part of training. Evaluated on seeds not used for training (7, 8, 9):
+One simulated site, 60 minutes: shoppers, an office NAT, casual visitors, a 2-second
+polling dashboard, a partner API, a mobile app, uptime monitors, a viral spike and a login
+rush, plus staggered attacks. Scenarios marked `[unseen]` were never part of training:
+attacks, a flash sale, and (since 2026-11) clients whose **first request is a write**:
+password-manager logins, app logins, an API client's token exchange, an SSO callback.
+Evaluated on seeds not used for training (7, 8, 9):
 
 | | 0.2 fixed rules | 0.3 adaptive (built-in model) |
 |---|---|---|
-| legitimate requests stopped | 11.9 % | **0.24 – 0.35 %** |
-| legitimate requests blocked | 11.5 % | **0.03 – 0.05 %** |
+| legitimate requests stopped | ~11 % | **0.44 – 0.54 %** |
+| legitimate requests blocked | ~10.5 % | **0.03 – 0.06 %** (the rest of the stopped ones are delayed or challenged) |
 | attack requests stopped | 52 % | **98.4 – 98.7 %** |
+| attack requests blocked or challenged | — | 91.7 – 93.2 % |
 | unseen: flash-sale spike (legit) | 2.6 % stopped | 0.0 % |
 | unseen: L7 flood with browser fingerprints | 95 % | 99.8 % |
 | unseen: different vulnerability scanner | 0 % | 100 % |

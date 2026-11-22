@@ -152,6 +152,15 @@ WAF bypasses found in an internal security review (regression tests in
 
 Gateway issues found in the same review:
 
+- **Behavioural engine: shared evidence can challenge, not block.** Evidence innocent
+  clients share (a network's or user agent's failures and new arrivals) or that every first
+  contact has (`actor_new`, `cold_write`) no longer blocks on its own: such a request gets
+  `Challenge` (reason `shared_evidence_only`), and a cooldown earned that way challenges
+  too. An attacker copying a popular browser's user agent no longer gets its users blocked
+  and banned, and a password manager's or app's first login is challenged, not blocked.
+  `realworld_eval` (seeds 7–9): legitimate requests blocked 0.13–0.17 % → 0.03–0.06 %;
+  stopped, detection and every attack's blocked-or-challenged rate unchanged.
+  `Decision::Challenge` can now appear without `challenge_below`.
 - **Engine and log replay** (behaviour unchanged, `realworld_eval` identical):
   - `pattern-guard replay` / `train` no longer panic on hostile access-log lines (out-of-range,
     NaN or huge timestamps, non-ASCII time zones are parse errors); in the combined format

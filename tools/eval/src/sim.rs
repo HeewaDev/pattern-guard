@@ -876,6 +876,101 @@ fn scanner2(s: &mut Sim, from: f64) {
     }
 }
 
+// ------------------------------------------------------------------ legitimate, cold writes
+// Clients whose first request is a write: no page view before it. They are generated after
+// everything else, so the traffic above stays identical for before/after comparisons.
+
+const JAVA_CLIENT: Profile = Profile {
+    fp: "t13d1715h1_java_httpclient",
+    ua: "Apache-HttpClient/4.5.14 (Java/17.0.9)",
+};
+
+/// Password managers and saved logins: the browser posts the login form straight away.
+fn direct_logins(s: &mut Sim, scenario: &'static str, path: &'static str, per_hour: f64) {
+    for _ in 0..(per_hour * s.dur / 3600.0) as usize {
+        let p = s.rng.browser();
+        let ip = if s.rng.chance(0.3) {
+            s.rng.carrier_ip()
+        } else {
+            s.rng.public_ip()
+        };
+        let actor = format!("ip:{ip}");
+        let w = Who {
+            actor: &actor,
+            ip: &ip,
+            p,
+            label: false,
+            scenario,
+        };
+        let mut t = s.rng.range(0.0, s.dur);
+        if s.rng.chance(0.1) {
+            s.push(&w, t, "POST", path, 401);
+            t += s.rng.range(3.0, 10.0);
+        }
+        s.push(&w, t, "POST", path, 302);
+        t += s.rng.range(0.1, 0.4);
+        s.push(&w, t, "GET", "/account", 200);
+        t += s.rng.range(5.0, 30.0);
+        let pages = s.rng.int(1, 4);
+        s.shopping_session(&w, t, pages);
+    }
+}
+
+/// Native apps: a cold login, then API calls.
+fn app_logins(s: &mut Sim) {
+    for _ in 0..(40.0 * s.dur / 3600.0) as usize {
+        let ip = if s.rng.chance(0.5) {
+            s.rng.carrier_ip()
+        } else {
+            s.rng.public_ip()
+        };
+        let actor = format!("ip:{ip}");
+        let w = Who {
+            actor: &actor,
+            ip: &ip,
+            p: OKHTTP,
+            label: false,
+            scenario: "legit: app login, then API (okhttp) [unseen]",
+        };
+        let mut t = s.rng.range(0.0, s.dur);
+        s.push(&w, t, "POST", "/api/login", 200);
+        for _ in 0..s.rng.int(3, 12) {
+            t += s.rng.range(1.0, 30.0);
+            let path = if s.rng.chance(0.5) {
+                "/api/feed"
+            } else {
+                "/api/notifications"
+            };
+            s.push(&w, t, "GET", path, 200);
+        }
+    }
+}
+
+/// Server-to-server clients: a token exchange, then a few writes.
+fn api_clients(s: &mut Sim) {
+    for i in 0..3 {
+        let ip = format!("198.51.100.{}", 210 + i);
+        let actor = format!("ip:{ip}");
+        let w = Who {
+            actor: &actor,
+            ip: &ip,
+            p: JAVA_CLIENT,
+            label: false,
+            scenario: "legit: API client token exchange (Java) [unseen]",
+        };
+        let mut t = s.rng.range(0.0, 300.0);
+        while t < s.dur {
+            s.push(&w, t, "POST", "/oauth/token", 200);
+            for _ in 0..s.rng.int(1, 6) {
+                t += s.rng.range(0.2, 3.0);
+                let id = s.rng.int(1, 100_000);
+                s.push(&w, t, "POST", format!("/api/orders/{id}/status"), 200);
+            }
+            t += s.rng.range(240.0, 600.0);
+        }
+    }
+}
+
 /// Generates `hours` consecutive hours of traffic, sorted by time (seconds from 0).
 pub fn generate(seed: u64, hours: u32, unseen: bool) -> Vec<Rec> {
     let mut all = Vec::new();
@@ -923,6 +1018,24 @@ pub fn generate(seed: u64, hours: u32, unseen: bool) -> Vec<Rec> {
             browser_flood(&mut s, 0.80 * d, 0.87 * d);
             random_scraper(&mut s, 0.08 * d, 0.92 * d);
             scanner2(&mut s, 0.85 * d);
+        }
+        // Cold writes, evaluation only (the built-in model is trained without them, so
+        // `gen_traffic` still reproduces it), after everything else (see `direct_logins`).
+        if unseen {
+            direct_logins(
+                &mut s,
+                "legit: password-manager login, POST first [unseen]",
+                "/login",
+                90.0,
+            );
+            app_logins(&mut s);
+            api_clients(&mut s);
+            direct_logins(
+                &mut s,
+                "legit: SSO callback, POST first [unseen]",
+                "/sso/callback",
+                40.0,
+            );
         }
         for r in &mut s.out {
             r.t += h as f64 * 3600.0;

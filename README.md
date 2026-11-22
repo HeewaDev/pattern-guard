@@ -54,7 +54,7 @@ The full feature list, compared against open-appsec and Imperva, is in
 
 | Test | Result |
 |---|---|
-| Behavioural ML, 1 h simulated mixed traffic, including attacks it never trained on | ~0.3 % of legitimate requests stopped, ~98.5 % of attack requests stopped |
+| Behavioural ML, 1 h simulated mixed traffic, including attacks and first-contact clients it never trained on | 0.44–0.54 % of legitimate requests stopped (0.03–0.06 % blocked, the rest delayed or challenged), 98.4–98.7 % of attack requests stopped |
 | WAF, PayloadsAllTheThings payload lists (4 437) vs 17 719 benign values (names, English words, user agents, code lines from docs) | 82.4 % of attacks blocked: traversal 99.9 %, SQLi 95 %, SSTI 94 %, file inclusion 66 %, XSS 58 %, NoSQL 58 %, command injection 55 % · **1** benign value blocked (a `curl … \| sh` command line) |
 | WAF hold-out lists never tuned on (SecLists / fuzzdb, 10 173 payloads) | 96.2 % blocked: command injection (commix) 99 %, XSS 89 %, file inclusion 84 %, SQLi 75 %. SQLi is the gap to close |
 | WAF on the OWASP CRS regression tests (3 730 attack requests) | **54.3 % blocked** (rules at paranoia level 1: 64.5 %), up from 11.8 %. RFI (27 %), PHP (30 %) and RCE (35 %) are the weakest classes; see [RESEARCH.md](docs/RESEARCH.md). These tests are now used for development, so they are no longer a hold-out |
