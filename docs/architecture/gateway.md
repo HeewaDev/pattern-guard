@@ -81,7 +81,7 @@ The stages below are in code order.
 | 1 | Request id | `hex(unix_secs)-hex(counter)`. Returned on block pages and forwarded as `x-pattern-guard-request-id` |
 | 2 | Client IP | `client_ip`: the peer, or, when the peer is in `trusted_proxies`, the right-most entry in `client_ip.header` that is not itself trusted, reading every line of the header in order. An unparsable entry, or a chain of trusted entries only, falls back to the peer |
 | 3 | Verify path | A request to `/.pattern-guard/verify?...` (any method) goes to `verify` **before anything else**: no body read, no layers, not even the deny list. A clearance never lifts a Block, so a banned client gains nothing here |
-| 4 | Body | Buffered up to `max_body_bytes` (default 10 MiB) with `http_body_util::Limited`. Over the limit → **413** |
+| 4 | Body | `server::read_body`, frame by frame, up to `max_body_bytes` (default 10 MiB): a `Content-Length` over it → **413** up front; less than `body_min_bytes_per_sec` × `body_read_timeout_secs` per period (30 KiB per 30 s by default) → **408**; over the global `max_buffered_body_bytes` budget (256 MiB, reserved as frames arrive, released when the request ends) → **503** + `Retry-After`; broken framing or a disconnect → **400**. Requests in flight per resolved client IP are capped first (`max_requests_in_flight_per_ip`, 256 → **429**, allow list exempt) |
 | 5 | Allow list | `access.allow` → forward immediately: no ML, WAF, operations or logging |
 | 6 | Rules | Country lookup (if a GeoDb is loaded), then `rules.evaluate`. The first terminal rule wins, `log` rules accumulate, `skip_waf` sets a flag. A terminal `allow` → forward immediately |
 | 7 | Gatekeeper checks | `rate_limiter.check`, `operations.check` (returns a hit and a **ticket**), `protocol.check`, `bans.trap`. A trap hit calls `bans.ban_now` straight away |
@@ -166,10 +166,16 @@ Wazuh alerts  ──tail────┘     │
                               └── lookup(ip) per request: strongest live entry (Ban > Challenge)
 ```
 
-- **Model.** Single IPs live in a `HashMap<IpAddr, Vec<IntelEntry>>`. Ranges live in a
-  `Vec<(Cidr, IntelEntry)>`, which is **scanned linearly** on every lookup. Each entry has
-  `source`, `reason`, `action` and an optional expiry. Adding an entry replaces the same
-  source's entry for that IP or range, so sources never overwrite each other.
+- **Model.** Single IPs and IPv6 /64s are O(1) map lookups; other ranges live in a list that
+  is **scanned linearly** on every lookup. Each entry has `source`, `reason`, `action` and an
+  optional expiry. Adding an entry replaces the same source's entry for that IP or range, so
+  sources never overwrite each other.
+- **Bounded per source.** `gateway:ban` holds at most `limits.max_bans` (100 000) entries,
+  every other source (each CrowdSec origin, Suricata, Wazuh) `max_intel_entries_per_source`
+  (500 000). Over its cap a source evicts its own entry closest to expiry (never-expiring
+  ones last), so a flood of bans can't push out CrowdSec decisions, or the reverse. Each
+  source keeps an expiry index: eviction and `sweep()` (batches of 4 096, lock released in
+  between) touch only what they remove; `len()` is an atomic counter.
 - **CrowdSec.** The first poll uses `startup=true` and replaces all `crowdsec*` entries. Later
   polls apply `new` and `deleted` decisions. `ban` → Ban, `captcha` → Challenge. Durations
   use Go syntax (`4h0m0s`), capped at a year. `crowdsec_ok` in metrics reflects the last poll.
@@ -177,8 +183,10 @@ Wazuh alerts  ──tail────┘     │
   and keeps partial lines between reads. Suricata: `event_type = alert`, `severity ≤
   min_severity` (default 2), attacker = `dest_ip` for `to_client` traffic. Every hit becomes an
   entry expiring after `block_secs`.
-- **Bans** are intel entries with source `gateway:ban`. `/bans` lists them and `POST
-  /bans/unban?ip=` removes them. Escalation: `ban_secs × escalation^previous_bans`, capped at
+- **Bans** are intel entries with source `gateway:ban`. Once 16 addresses of one IPv6 /64
+  are banned they become one /64 ban (IPv4 is never merged, because of CGNAT). `/bans` lists
+  them soonest-expiring first, merged ones as `prefix/64`, and `POST /bans/unban?ip=` removes
+  them. Escalation: `ban_secs × escalation^previous_bans`, capped at
   `max_ban_secs`. Offender history is kept in an LRU of 100 000 IPs.
 
 ## Proof-of-work challenge (`challenge/`)
@@ -238,11 +246,12 @@ process runs. A request that reaches the fuse takes these locks:
 | `rate_limiter.buckets` | `Mutex<LruCache>` (200 000) | 1× if any limit is configured | all limits are checked under one lock |
 | `operations` caches | several `Mutex<LruCache>` | only on matching routes | settled again in `Ticket::complete` |
 | `bans.offenders` | `Mutex<LruCache>` (100 000) | on a Block in prevent mode | |
-| `intel` | `RwLock` | 1 read | the range list is a linear scan |
+| `intel` | `RwLock` | 1 read | single IPs and /64s are map lookups; other ranges a linear scan |
+| `in_flight` | `Mutex<HashMap>` | per request (enter and leave) | requests in flight per resolved client IP |
 | `conns` | `Mutex<HashMap>` | per connection, not per request | |
 | `inventory` | `Mutex<HashMap>` (≤ 10 000 routes) | 1× | |
 | `metrics` | atomics + 3 small `Mutex<HashMap>` | WAF classes, `blocked_by`, feeds | |
-| decision log | `mpsc` (10 000) | `try_send`, never blocks | lines are dropped if the writer falls behind |
+| decision log | `mpsc` (10 000 lines) + a byte budget (`decision_log_queue_bytes`, 16 MiB) | `try_send`, never blocks | lines are dropped (and counted) if the writer falls behind; client values truncated, ≤ 16 findings per line |
 | `waf` (`Inspector`) | immutable | none | the `RegexSet` lazy DFA cache is per thread |
 
 Runtime: tokio multi-threaded, hyper 1 HTTP/1.1 server and pooled client. WAF inspection
@@ -268,7 +277,9 @@ public contract.
 
 **Metrics** (`/metrics`): per-action counters, `would_mitigate`, challenges passed and failed,
 upstream errors, bodies too large, rejected connections, CrowdSec health, WAF hits per class, blocks per
-layer, feed hits, intel entries, and the summed decision time.
+layer, feed hits, intel entries, the summed decision time, requests rejected by reason
+(`body_timeout`, `body_budget`, `in_flight_per_ip`), buffered body bytes, dropped decision-log
+lines and evicted intel entries.
 
 **Inventory** (`/inventory`): one entry per `METHOD /template` (at most 10 000): first and last
 seen, requests, blocked, up to 16 status codes.
