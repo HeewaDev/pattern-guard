@@ -427,7 +427,10 @@ turn into a ~400 KB line: `http.hostname` at 256 bytes, `http.url` at 8 KiB (the
 `protocol.max_url_bytes`, so URLs the defaults accept are logged whole),
 `http.http_user_agent` at 1 KiB, each reason and reputation value at 512 bytes, WAF
 `location` and `sample` at 256 bytes. A truncated value ends in `…`; field names don't
-change.
+change. A line lists at most 16 WAF findings, the highest-scoring ones in their original
+order; when more were found, `pattern_guard.waf_omitted` says how many were left out (all
+of them still count in `pattern_guard_waf_findings_total`). Without this, a 31 KB cookie
+of tiny XSS fragments made a 247 KB line; it now makes a 3.5 KB one.
 
 ## Limits of this version
 

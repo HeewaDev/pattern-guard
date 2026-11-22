@@ -29,6 +29,26 @@ const MAX_LOCATION: usize = 256;
 const MAX_SAMPLE: usize = 256;
 /// Longest path and reason list on the console line.
 const MAX_CONSOLE: usize = 256;
+/// Most WAF findings written per line. Every value scoring at least `log_score` is a
+/// finding, so a 31 KB cookie of tiny XSS crumbs used to give a 247 KB line.
+const MAX_LOGGED_FINDINGS: usize = 16;
+
+/// The `MAX_LOGGED_FINDINGS` highest-scoring findings, in their original order.
+fn strongest(findings: &[Finding]) -> Vec<&Finding> {
+    if findings.len() <= MAX_LOGGED_FINDINGS {
+        return findings.iter().collect();
+    }
+    let mut idx: Vec<usize> = (0..findings.len()).collect();
+    idx.sort_by(|&a, &b| {
+        findings[b]
+            .score
+            .total_cmp(&findings[a].score)
+            .then(a.cmp(&b))
+    });
+    idx.truncate(MAX_LOGGED_FINDINGS);
+    idx.sort_unstable();
+    idx.into_iter().map(|i| &findings[i]).collect()
+}
 
 /// `s` cut to at most `max` bytes (on a character boundary), marked with `…`.
 fn clip(s: &str, max: usize) -> Cow<'_, str> {
@@ -81,11 +101,13 @@ pub(super) struct LogCtx<'a> {
 }
 
 /// The decision-log JSON line. Field names are a public contract (SIEM rules, Wazuh
-/// decoders and dashboards key on them).
+/// decoders and dashboards key on them). `pattern_guard.waf_omitted` is only present
+/// when findings beyond `MAX_LOGGED_FINDINGS` were left out.
 fn line(parts: &hyper::http::request::Parts, c: &LogCtx, status: u16) -> String {
-    let waf: Vec<_> = c
-        .findings
-        .iter()
+    let kept = strongest(c.findings);
+    let omitted = c.findings.len() - kept.len();
+    let waf: Vec<_> = kept
+        .into_iter()
         .map(|f| {
             serde_json::json!({
                 "class": f.class.as_str(), "score": f.score,
@@ -95,7 +117,7 @@ fn line(parts: &hyper::http::request::Parts, c: &LogCtx, status: u16) -> String 
         })
         .collect();
     let reasons: Vec<_> = c.reasons.iter().map(|r| clip(r, MAX_REASON)).collect();
-    serde_json::json!({
+    let mut line = serde_json::json!({
         "timestamp": rfc3339_now(),
         "event_type": if c.action > Action::Allow || !c.findings.is_empty() { "alert" } else { "http" },
         "src_ip": c.ip.to_string(),
@@ -124,8 +146,11 @@ fn line(parts: &hyper::http::request::Parts, c: &LogCtx, status: u16) -> String 
                 "reason": clip(&e.reason, MAX_REASON),
             })),
         }
-    })
-    .to_string()
+    });
+    if omitted > 0 {
+        line["pattern_guard"]["waf_omitted"] = omitted.into();
+    }
+    line.to_string()
 }
 
 pub(super) fn log_decision(
@@ -226,5 +251,42 @@ mod tests {
         assert!(f["sample"].as_str().unwrap().len() <= MAX_SAMPLE + 3);
         assert_eq!(f["class"], "xss");
         assert_eq!(v["pattern_guard"]["layer"], "waf");
+        assert!(v["pattern_guard"].get("waf_omitted").is_none());
+    }
+
+    fn finding(score: f64, location: String) -> Finding {
+        Finding {
+            class: AttackClass::CrossSiteScripting,
+            score,
+            location,
+            indicators: vec!["event_handler"],
+            sample: "<svg/onload=alert(1)>".into(),
+        }
+    }
+
+    #[test]
+    fn strongest_findings_are_kept_in_order() {
+        // fewer than the cap: all, untouched
+        let few: Vec<_> = (0..3).map(|i| finding(5.0, format!("query:{i}"))).collect();
+        assert_eq!(strongest(&few).len(), 3);
+        // 1 000 findings, three strong ones spread out
+        let mut many: Vec<_> = (0..1000)
+            .map(|i| finding(4.0 + (i % 5) as f64 * 0.1, format!("cookie:c{i}")))
+            .collect();
+        for (i, at) in [(0, 10.0), (500, 9.5), (999, 9.0)] {
+            many[i].score = at;
+        }
+        let kept = strongest(&many);
+        assert_eq!(kept.len(), MAX_LOGGED_FINDINGS);
+        assert_eq!(kept[0].location, "cookie:c0");
+        assert!(kept.iter().any(|f| f.location == "cookie:c500"));
+        assert_eq!(kept.last().unwrap().location, "cookie:c999");
+        // the rest are the next best (4.4), in their original order
+        assert!(kept.iter().all(|f| f.score >= 4.4));
+        let pos: Vec<usize> = kept
+            .iter()
+            .map(|f| f.location[8..].parse().unwrap())
+            .collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]));
     }
 }

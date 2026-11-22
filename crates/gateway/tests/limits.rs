@@ -144,6 +144,44 @@ async fn decision_log_truncates_huge_client_values() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every WAF finding used to be written to the line: a 31 KB cookie of tiny XSS crumbs
+/// (1 300 findings) gave a 247 KB line. The strongest findings are kept, the rest
+/// counted.
+#[tokio::test]
+async fn decision_log_caps_findings_per_line() {
+    let dir = temp_dir("findings");
+    let log = dir.join("decisions.jsonl");
+    let (gw, _state) = start_gateway(&format!(
+        "mode = \"detect\"\n[log]\ndecisions = \"{}\"\n",
+        log.display()
+    ))
+    .await;
+    let cookie = "a=<svg/onload=alert(1)>;".repeat(1300); // under the 32 KiB header limit
+    let head = format!("GET / HTTP/1.1\r\nhost: x\r\ncookie: {cookie}\r\n\r\n");
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    assert_eq!(roundtrip(&mut s, &head, b"").await, 200);
+    let lines = wait_for_lines(&log, 1).await;
+    println!(
+        "request of {} bytes → decision-log line of {} bytes",
+        head.len(),
+        lines[0].len()
+    );
+    assert!(
+        lines[0].len() < 16 * 1024,
+        "decision-log line of {} bytes",
+        lines[0].len()
+    );
+    let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    let pg = &v["pattern_guard"];
+    let logged = pg["waf"].as_array().unwrap().len();
+    let omitted = pg["waf_omitted"].as_u64().unwrap() as usize;
+    assert_eq!(logged, 16);
+    assert!(omitted >= 1000, "{omitted} omitted");
+    assert_eq!(pg["layer"], "waf");
+    assert_eq!(v["event_type"], "alert");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With a stalled writer (a FIFO nobody reads), queued lines are bounded by bytes, not
 /// only by their count.
 #[cfg(target_os = "linux")]
