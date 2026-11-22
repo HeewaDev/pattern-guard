@@ -112,9 +112,13 @@ WAF bypasses found in an internal security review (regression tests in
   value), and there was no limit on values per request: one ~430 KB request cost ~7 s of
   CPU and a few of them stalled the gateway. Long, diverse values (and the rest of a request
   that has spent 2 ms in the automaton) are now matched one regex at a time, with identical
-  results; identical decoding variants are scanned once; at most 4 096 values are inspected
+  results; identical decoding variants are scanned once; at most 8 192 values are inspected
   per request, more is flagged `inspection_limit` (7). Worst case now ~35–45 ms; a typical
   request got faster (~15.5 µs).
+- **Large and deep JSON**: the walk stopped silently after 1 000 items per level and at depth
+  32, so a payload in item 1 001 or behind 1 000 keys was never seen. JSON is now walked to the
+  request's value budget (a key or string inspected clean is not inspected again in that
+  request, so bulk payloads stay cheap); deeper than 64 levels is flagged `json_too_deep` (7).
 - **WAF panic**: a shell-like value with a multi-byte character after `-` (`;cat -é`, in a
   query, form field, cookie or User-Agent) panicked the connection's task.
 - Multipart header parameters: an O(n²) scan on quoted values full of `;` is now linear.

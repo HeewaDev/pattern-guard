@@ -51,7 +51,7 @@ Suggested thresholds: log at ≥ 4, block at ≥ 7. These are the gateway defaul
 | `Cookie` | `cookie:<name>` per pair | yes | |
 | Every other header | `header:<name>` | no | **Only** JNDI / Java indicators (`jndi_only`), so arbitrary headers can't cause false positives |
 | Form body | `body-name`, `body:<name>` | yes | `application/x-www-form-urlencoded`. Every non-multipart body is first decoded to text by `body.rs` |
-| JSON body | `json.<path>`, `json.<path>-key`, `json.items[2]` | no | Walked recursively: depth ≤ 32, ≤ 1 000 items per level. Invalid JSON is inspected as text |
+| JSON body | `json.<path>`, `json.<path>-key`, `json.items[2]` | no | Walked recursively to the request's value budget; deeper than 64 levels gives `json_too_deep` (7). Invalid JSON is inspected as text |
 | Multipart body | `body:<field>`, `filename:<field>`, `json.<field>…`, `multipart` | no | See [Multipart](#multipart) |
 | XML, `text/*` | `body` | no | The whole (truncated) body as one value |
 | No or an unknown content type | `json…` or `body` | no | Inspected anyway (frameworks often parse bodies whatever the declared type): walked as JSON if it starts with `{` / `[` and parses, otherwise one value. Binary content (a raw upload) is only searched for embedded server code (`upload_embedded_php`: 8) |
@@ -126,7 +126,8 @@ A body that fails to parse as multipart falls back to whole-body inspection.
   and every value after a request has spent 2 ms in the set, is matched one regex at a time
   (`Inspector::indicator_matches`): ~0.4 ms for 8 KiB. Both paths return the same matches
   (unit-tested). Identical variants are scanned once.
-- **Per-request cap.** At most 4 096 values are inspected per request. Beyond that the request
+- **Per-request cap.** At most 8 192 values are inspected per request (a JSON key or string inspected
+  clean once is not inspected or counted again in that request). Beyond that the request
   gets an `inspection_limit` finding (class `protocol`, 7), so padding can't push a payload past
   an uninspected limit. Worst measured request (~430 KB of hostile headers and body): ~35–45 ms
   of WAF CPU, down from ~7 s.
