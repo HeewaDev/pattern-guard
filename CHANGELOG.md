@@ -86,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Dependencies** (found by the new `cargo-deny` CI job): `lru` 0.12.5 → 0.19.1
+  (RUSTSEC-2026-0002, an unsound `IterMut`, and RUSTSEC-2026-0253, a use-after-free if a
+  key's `Drop` panics during `pop()`; Pattern-Guard's keys are integers, strings and IP
+  addresses, whose `Drop` never panics) and `crossbeam-epoch` 0.9.18 → 0.9.21
+  (RUSTSEC-2026-0204; only used by the benchmark library).
+
 WAF bypasses found in an internal security review (regression tests in
 `crates/waf/tests/bypass_regressions.rs`):
 
