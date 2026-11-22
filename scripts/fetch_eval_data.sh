@@ -134,7 +134,8 @@ import sys
 p = sys.argv[1]
 seen, out = set(), []
 for line in open(p, encoding="utf-8", errors="replace"):
-    line = line.rstrip("\n")
+    # dotdotpwn-style templates: the attack tool replaces {FILE} with a target
+    line = line.rstrip("\n").replace("{FILE}", "etc/passwd")
     if line not in seen:
         seen.add(line)
         out.append(line)
