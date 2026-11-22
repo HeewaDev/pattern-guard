@@ -409,6 +409,15 @@ value (`cargo bench -p pattern-guard-waf`).
 The behavioural engine runs behind a single lock today; sharding it is the next
 performance step.
 
+### Memory bounds
+
+Every table the gateway keeps per client, key or route is capped, and no entry stores an
+attacker-sized value:
+
+| Table | Cap | Per entry |
+|---|---|---|
+| Rate-limit buckets | 200 000 (least recently used evicted) | fixed: keyed by a keyed 64-bit hash of the IP, route or header value, never the value itself |
+
 ## Limits of this version
 
 * HTTP/1.1 only towards clients and upstream; no WebSocket upgrade passthrough yet.
