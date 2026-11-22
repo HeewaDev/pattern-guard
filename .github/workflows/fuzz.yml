@@ -1,0 +1,54 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # nightly, 5 minutes per target
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/waf/**"
+      - "crates/engine/src/logs.rs"
+      - "crates/engine/src/config.rs"
+      - "crates/engine/src/ml/model.rs"
+      - "crates/gateway/src/config.rs"
+      - "crates/gateway/src/policy/**"
+      - "fuzz/**"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "600"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [waf_inspect, waf_multipart, waf_value, engine_log_line, config]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz
+        env:
+          # 60 s on pull requests, the dispatch input when run by hand, 300 s nightly.
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
+        run: |
+          corpus="$GITHUB_WORKSPACE/fuzz/corpus/${{ matrix.target }}"
+          seeds="$GITHUB_WORKSPACE/fuzz/seeds/${{ matrix.target }}"
+          mkdir -p "$corpus" "$seeds"
+          cargo fuzz run ${{ matrix.target }} "$corpus" "$seeds" -- \
+            -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

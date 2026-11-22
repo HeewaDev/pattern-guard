@@ -38,6 +38,10 @@ cargo test --workspace
 cargo bench --workspace --no-run
 ```
 
+Also in CI: rustdoc on stable (`RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps`),
+`cargo deny check` (licences, advisories, sources; `deny.toml`), and nightly fuzzing
+(`.github/workflows/fuzz.yml`, targets in `fuzz/`, a separate workspace: `cargo +nightly fuzz run <target>`).
+
 Focused:
 
 ```bash

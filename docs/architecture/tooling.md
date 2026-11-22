@@ -59,12 +59,37 @@ say so. None of these datasets are vendored. See [target.md](target.md) for maki
 | `cargo run --release -p pattern-guard-gateway --example loadtest -- [concurrency] [seconds]` | Gateway against the bare upstream in one process. Client, gateway and upstream share the CPU, so the result is a lower bound |
 | `cargo run -p pattern-guard --example burst_demo` / `repetition_demo` | Threshold-rule demos using `config/demo/*.toml` |
 
-## CI (`.github/workflows/rust.yml`)
+## CI (`.github/workflows/`)
 
-On every push and pull request to `main`: `cargo fmt --check`, `cargo clippy --workspace --all-targets
--D warnings`, `cargo test --workspace`, `cargo bench --workspace --no-run`, on Rust **1.85**
-(the MSRV, also the Docker build image). Not in CI yet: evaluation gates, fuzzing,
-dependency and licence audit, a stable-toolchain build. See [target.md](target.md).
+| Workflow / job | When | What |
+|---|---|---|
+| `rust.yml` · `check` | every push and pull request to `main` | Rust **1.85** (the MSRV, also the Docker build image): `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, `cargo bench --workspace --no-run` |
+| `rust.yml` · `stable` | same | newest stable Rust: `cargo test --workspace`, `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` |
+| `rust.yml` · `deny` | same | `cargo-deny` with `deny.toml`: permissive licences only, every RustSec advisory fails, crates.io only |
+| `fuzz.yml` | nightly (300 s per target), pull requests touching parsers (60 s), by hand | `cargo fuzz` on nightly for each target in `fuzz/`; a crashing input is uploaded as an artefact |
+
+Not in CI yet: evaluation gates (`waf_eval`, `crs_eval`, `realworld_eval` must not regress).
+They need the evaluation datasets to be fetchable reproducibly first; see [target.md](target.md).
+
+## Fuzzing (`fuzz/`)
+
+A separate cargo workspace (cargo-fuzz needs nightly). Targets:
+
+| Target | Exercises |
+|---|---|
+| `waf_inspect` | whole-request inspection: target, header values, body under six content types |
+| `waf_multipart` | the multipart parser and upload checks |
+| `waf_value` | one value through the decoder, every variant and every analyser, at eight locations |
+| `engine_log_line` | access-log parsing (combined and JSONL) |
+| `config` | gateway config + compiling rules, rate limits and operations; engine config; model files |
+
+```bash
+cargo install cargo-fuzz          # needs a nightly toolchain and a C++ compiler
+cargo +nightly fuzz run waf_inspect fuzz/corpus/waf_inspect fuzz/seeds/waf_inspect
+```
+
+Seed inputs live in `fuzz/seeds/<target>/` (committed). The growing corpus and crash
+artefacts (`fuzz/corpus`, `fuzz/artifacts`) are git-ignored.
 
 ## Deployment artefacts
 

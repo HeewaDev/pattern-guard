@@ -1,0 +1,10 @@
+--b
+Content-Disposition: form-data; name="comment"
+
+hello
+--b
+Content-Disposition: form-data; name="file"; filename="a.txt"
+Content-Type: text/plain
+
+some text
+--b--
