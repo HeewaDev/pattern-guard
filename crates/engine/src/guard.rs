@@ -86,7 +86,8 @@ struct State {
     clock: Clock,
     engine: FeatureEngine,
     rules: Tracker,
-    cooldowns: LruCache<String, Strikes>,
+    /// Keyed by `Event::actor_key` (a 64-bit hash of the actor id).
+    cooldowns: LruCache<u64, Strikes>,
 }
 
 pub struct Guard {
@@ -177,6 +178,7 @@ impl Guard {
     pub fn assess(&self, event: &Event) -> Assessment {
         let g = &self.config.guard;
         let eff = g.for_actor(&event.actor);
+        let actor = event.actor_key();
         let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let st = &mut *st;
         let now = st.clock.now(event);
@@ -192,7 +194,7 @@ impl Guard {
 
         let (rules_risk, rule_name) = if g.mode != Mode::Adaptive && eff.rules_enabled() {
             let s = st.rules.record(
-                &event.actor,
+                actor,
                 rep_key,
                 target_key,
                 event.effective_weight(),
@@ -206,10 +208,7 @@ impl Guard {
 
         let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
         let own_risk = model_risk.max(rules_risk);
-        let in_cooldown = st
-            .cooldowns
-            .get(&event.actor)
-            .is_some_and(|s| now < s.until);
+        let in_cooldown = st.cooldowns.get(&actor).is_some_and(|s| now < s.until);
         let mut risk = own_risk;
         let mut reasons: Vec<Reason> = Vec::new();
 
@@ -247,9 +246,7 @@ impl Guard {
 
         let decision = eff.risk_to_decision(risk);
         if !eff.trusted && eff.cooldown_secs > 0.0 && own_risk >= block_at {
-            let s = st
-                .cooldowns
-                .get_or_insert_mut(event.actor.clone(), Strikes::default);
+            let s = st.cooldowns.get_or_insert_mut(actor, Strikes::default);
             s.blocks.add(1.0, now, eff.cooldown_secs);
             if s.blocks.get(now, eff.cooldown_secs) >= g.cooldown_after_blocks as f64 - 0.5 {
                 s.until = now + eff.cooldown_secs;

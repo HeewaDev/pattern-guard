@@ -47,7 +47,8 @@ pub struct WindowStats {
 }
 
 pub struct Tracker {
-    actors: LruCache<String, ActorWindow>,
+    /// Keyed by `Event::actor_key` (a 64-bit hash of the actor id).
+    actors: LruCache<u64, ActorWindow>,
 }
 
 impl Tracker {
@@ -62,16 +63,14 @@ impl Tracker {
 
     pub fn record(
         &mut self,
-        actor: &str,
+        actor: u64,
         rep_key: u64,
         target_key: u64,
         weight: f64,
         now: f64,
         cfg: &EffectiveConfig,
     ) -> WindowStats {
-        let w = self
-            .actors
-            .get_or_insert_mut(actor.to_string(), ActorWindow::default);
+        let w = self.actors.get_or_insert_mut(actor, ActorWindow::default);
 
         let interval_hit = match (cfg.interval_secs, w.q.back()) {
             (Some(t), Some(prev)) => {
@@ -161,11 +160,11 @@ mod tests {
         let c = cfg("[guard]\nwindow_secs = 10\nburst_max_events = 100\n");
         let mut t = Tracker::new(None);
         for i in 0..5 {
-            t.record("a", 1, 1, 1.0, i as f64, &c);
+            t.record(1, 1, 1, 1.0, i as f64, &c);
         }
-        let s = t.record("a", 1, 1, 1.0, 5.0, &c);
+        let s = t.record(1, 1, 1, 1.0, 5.0, &c);
         assert_eq!(s.count, 6);
-        let s = t.record("a", 2, 2, 1.0, 14.5, &c); // 0..4 expired
+        let s = t.record(1, 2, 2, 1.0, 14.5, &c); // 0..4 expired
         assert_eq!(s.count, 2);
         assert_eq!(s.repetition, 1);
         assert_eq!(s.distinct_targets, 2);
@@ -177,7 +176,7 @@ mod tests {
         let mut t = Tracker::new(None);
         let mut s = None;
         for _ in 0..10_000 {
-            s = Some(t.record("a", 1, 1, 1.0, 0.0, &c));
+            s = Some(t.record(1, 1, 1, 1.0, 0.0, &c));
         }
         let s = s.unwrap();
         assert_eq!(s.count, 22);
@@ -190,12 +189,12 @@ mod tests {
         let mut t = Tracker::new(None);
         let mut s = None;
         for i in 0..10 {
-            s = Some(t.record("a", 1, 1, 1.0, i as f64 * 2.0, &c));
+            s = Some(t.record(1, 1, 1, 1.0, i as f64 * 2.0, &c));
         }
         let s = s.unwrap();
         assert_eq!((s.interval_gaps, s.interval_hits), (9, 9));
         // irregular gap
-        let s = t.record("a", 1, 1, 1.0, 30.0, &c);
+        let s = t.record(1, 1, 1, 1.0, 30.0, &c);
         assert_eq!((s.interval_gaps, s.interval_hits), (10, 9));
     }
 
@@ -205,7 +204,7 @@ mod tests {
         let mut t = Tracker::new(None);
         let mut last = None;
         for i in 0..50 {
-            last = Some(t.record("a", 1, 1, 1.0, i as f64, &c));
+            last = Some(t.record(1, 1, 1, 1.0, i as f64, &c));
         }
         let s = last.unwrap();
         assert_eq!(s.interval_hits, s.interval_gaps);
@@ -215,9 +214,9 @@ mod tests {
     fn lru_evicts_least_recent_actor() {
         let c = cfg("[guard]\nburst_max_events = 10\n");
         let mut t = Tracker::new(NonZeroUsize::new(2));
-        t.record("a1", 1, 1, 1.0, 0.0, &c);
-        t.record("a2", 1, 1, 1.0, 0.0, &c);
-        t.record("a3", 1, 1, 1.0, 0.0, &c);
-        assert_eq!(t.record("a1", 1, 1, 1.0, 0.0, &c).count, 1);
+        t.record(11, 1, 1, 1.0, 0.0, &c);
+        t.record(12, 1, 1, 1.0, 0.0, &c);
+        t.record(13, 1, 1, 1.0, 0.0, &c);
+        assert_eq!(t.record(11, 1, 1, 1.0, 0.0, &c).count, 1);
     }
 }

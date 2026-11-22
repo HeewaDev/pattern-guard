@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::SystemTime;
 
+use crate::util::normalize::hash_str;
+
 /// A single request / run / call.
 ///
 /// Only `actor`, `action`, `target` and `timestamp` are required. Every optional
@@ -98,11 +100,19 @@ impl Event {
             .unwrap_or(0.0)
     }
 
-    /// The fingerprint key used for cross-actor grouping: fingerprint, else user agent.
-    pub(crate) fn client_key(&self) -> Option<String> {
+    /// The key the engine's actor tables (features, rules, cooldowns) use: a 64-bit hash
+    /// of `actor`, so an embedder passing long actor strings can't grow memory with them.
+    pub(crate) fn actor_key(&self) -> u64 {
+        hash_str(&[&self.actor])
+    }
+
+    /// The key used for cross-actor grouping: a 64-bit hash of the fingerprint, else of the
+    /// user agent (in separate namespaces). Hashed so that a client-chosen user agent of
+    /// any size costs 8 bytes in the client table.
+    pub(crate) fn client_key(&self) -> Option<u64> {
         match (&self.fingerprint, &self.user_agent) {
-            (Some(f), _) if !f.is_empty() => Some(format!("fp:{f}")),
-            (_, Some(u)) if !u.is_empty() => Some(format!("ua:{u}")),
+            (Some(f), _) if !f.is_empty() => Some(hash_str(&["fp", f])),
+            (_, Some(u)) if !u.is_empty() => Some(hash_str(&["ua", u])),
             _ => None,
         }
     }
@@ -124,11 +134,22 @@ mod tests {
 
     #[test]
     fn client_key_prefers_fingerprint() {
-        let e = Event::new("a", "GET", "/", SystemTime::now())
-            .with_user_agent("curl/8")
-            .with_fingerprint("t13d");
-        assert_eq!(e.client_key().as_deref(), Some("fp:t13d"));
-        let e = Event::new("a", "GET", "/", SystemTime::now()).with_user_agent("curl/8");
-        assert_eq!(e.client_key().as_deref(), Some("ua:curl/8"));
+        let ev = |ua: Option<&str>, fp: Option<&str>| {
+            let mut e = Event::new("a", "GET", "/", SystemTime::now());
+            e.user_agent = ua.map(Into::into);
+            e.fingerprint = fp.map(Into::into);
+            e.client_key()
+        };
+        let fp = ev(Some("curl/8"), Some("t13d"));
+        assert_eq!(fp, ev(None, Some("t13d")));
+        assert_eq!(fp, ev(Some("other"), Some("t13d")));
+        let ua = ev(Some("curl/8"), None);
+        assert_eq!(ua, ev(Some("curl/8"), Some("")));
+        assert!(fp.is_some() && ua.is_some());
+        // Same string as a fingerprint and as a user agent: different clients.
+        assert_ne!(ev(Some("x"), None), ev(None, Some("x")));
+        assert_ne!(ua, ev(Some("curl/9"), None));
+        assert_eq!(ev(None, None), None);
+        assert_eq!(ev(Some(""), Some("")), None);
     }
 }
