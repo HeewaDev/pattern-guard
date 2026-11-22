@@ -218,15 +218,25 @@ pub(crate) fn params(v: &str) -> (Vec<(String, String)>, bool) {
         let mut val = String::new();
         if b.get(i) == Some(&'"') {
             i += 1;
+            // characters since the last `&` while they could still name an entity
+            // (`&auml`, `&#228`), tracked as we go: rescanning `val` at every `;` was
+            // quadratic in the value length
+            let mut entity: Option<usize> = None;
             while i < b.len() && b[i] != '"' {
                 if b[i] == '\\' && i + 1 < b.len() {
                     confusing = true;
                     i += 1;
                 }
                 // (a `;` ending an HTML entity such as `&auml;` is not a trick)
-                if matches!(b[i], '=' | '"') || (b[i] == ';' && !ends_with_entity(&val)) {
+                let ends_entity = entity.is_some_and(|n| (2..=10).contains(&n));
+                if matches!(b[i], '=' | '"') || (b[i] == ';' && !ends_entity) {
                     confusing = true;
                 }
+                entity = match (b[i], entity) {
+                    ('&', _) => Some(0),
+                    (c, Some(n)) if c.is_ascii_alphanumeric() || c == '#' => Some(n + 1),
+                    _ => None,
+                };
                 val.push(b[i]);
                 i += 1;
             }
@@ -249,18 +259,6 @@ pub(crate) fn params(v: &str) -> (Vec<(String, String)>, bool) {
         out.push((key, val));
     }
     (out, confusing)
-}
-
-/// Whether `s` ends with the start of an HTML entity: `&auml`, `&#228`, `&#xe4`.
-fn ends_with_entity(s: &str) -> bool {
-    match s.rfind('&') {
-        Some(i) => {
-            let name = &s[i + 1..];
-            (2..=10).contains(&name.len())
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '#')
-        }
-        None => false,
-    }
 }
 
 pub(crate) fn param(ps: &[(String, String)], key: &str) -> Option<String> {
@@ -386,6 +384,20 @@ pub(crate) fn embedded_code(content: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entities_in_quoted_parameters_and_long_values() {
+        let (_, confusing) = params("form-data; name=\"f\"; filename=\"caf&eacute;.txt\"");
+        assert!(!confusing, "an HTML entity's `;` is not a trick");
+        let (_, confusing) = params("form-data; name=\"f\"; filename=\"a;b.txt\"");
+        assert!(confusing);
+        let (_, confusing) = params("form-data; name=\"f\"; filename=\"&;.txt\"");
+        assert!(confusing, "`&;` names no entity");
+        // used to rescan the value at every `;`: quadratic (64 KiB took ~100 ms)
+        let long = format!("form-data; name=\"f\"; filename=\"{}\"", ";".repeat(65_536));
+        let (ps, confusing) = params(&long);
+        assert!(confusing && ps.iter().any(|(k, _)| k == "filename"));
+    }
 
     #[test]
     fn parses_fields_files_and_anomalies() {
