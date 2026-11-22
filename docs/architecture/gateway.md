@@ -16,7 +16,8 @@ learning layers.
 | `util.rs` | `now_secs`, `header_str`, `form_decode` (exact one-pass form decoding) |
 | `state.rs` | `State`: everything shared between requests, behind one `Arc` |
 | `config.rs` | `GatewayConfig` and every section (serde, `deny_unknown_fields`), defaults, `validate()` |
-| `proxy/mod.rs` | `handle`: the request pipeline, fusion and enforcement |
+| `proxy/mod.rs` | `handle`: the request pipeline and enforcement |
+| `proxy/verdict.rs` | Fusion: `Action`, `Layer` (the logged layer names), `Signal`, `Respond`, `Verdict` |
 | `proxy/client_ip.rs` | Real client IP behind trusted proxies |
 | `proxy/forward.rs` | Upstream request (header hygiene, timeout), response headers, response leak inspection |
 | `proxy/verify.rs` | `/.pattern-guard/verify`: checks a proof-of-work solution, sets the clearance cookie |
@@ -98,8 +99,10 @@ A request is logged when it was mitigated or would have been, had WAF findings, 
 
 ### Fusion
 
-Each layer that fires calls `raise(action, layer, reason)`. The highest action wins. On a
-tie, the **first** layer raised keeps the attribution, because `raise` only replaces on a strictly
+Fusion lives in `proxy/verdict.rs` (`Action`, `Layer`, `Signal`, `Respond`, `Verdict`, with
+unit tests for every rule). Each layer that fires calls `verdict.raise(Signal::new(action, layer,
+reason))`, optionally with `.respond(...)` to say how an enforced block answers. The highest action
+wins. On a tie, the **first** layer raised keeps the attribution, because `raise` only replaces on a strictly
 higher action. Every reason is kept in the log, whichever layer won. The raise order, which is
 therefore the tie-break order, is:
 

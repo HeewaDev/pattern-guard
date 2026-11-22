@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use pattern_guard::Assessment;
 use pattern_guard::waf::Finding;
 
-use super::Action;
+use super::{Action, Layer};
 use crate::intel::IntelEntry;
 use crate::observability::eventlog::rfc3339_now;
 use crate::state::State;
@@ -45,7 +45,7 @@ pub(super) struct LogCtx<'a> {
     pub(super) intel: Option<&'a IntelEntry>,
     pub(super) reasons: &'a [String],
     pub(super) action: Action,
-    pub(super) layer: &'static str,
+    pub(super) layer: Layer,
     pub(super) enforced: bool,
     pub(super) country: Option<&'a str>,
 }
@@ -82,7 +82,7 @@ pub(super) fn log_decision(
         "pattern_guard": {
             "request_id": c.id,
             "action": c.action.as_str(),
-            "layer": c.layer,
+            "layer": c.layer.as_str(),
             "enforced": c.enforced,
             "mode": if c.enforced { "prevent" } else { "detect" },
             "risk": (c.assessment.risk * 1000.0).round() / 1000.0,
@@ -105,7 +105,7 @@ pub(super) fn log_decision(
             c.ip,
             parts.method,
             parts.uri.path(),
-            c.layer,
+            c.layer.as_str(),
             c.reasons.join(" | ")
         );
     }

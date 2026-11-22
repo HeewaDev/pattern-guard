@@ -122,8 +122,9 @@ call chains with grep or by reading the code. Run `graphify update .` again afte
 - The engine defaults to `time_source = "event"`. Never feed it client-supplied timestamps.
 - **Fusion:** the most severe action wins (Block > Challenge > Delay > Allow). On ties, the
   layer raised *first* keeps the attribution, and the enforced status depends on it:
-  `rate_limit` → 429, `protocol` → its own status, `operation` → its own status, everything else → 403. The raise
-  order is the sequence of `raise(...)` calls in `proxy/mod.rs::handle`.
+  `rate_limit` → 429, `protocol` → its own status, `operation` → its own status, everything else → 403 (each
+  `Signal` carries its `Respond`). The raise order is the sequence of `verdict.raise(...)` calls in
+  `proxy/mod.rs::handle`; the rules are unit-tested in `proxy/verdict.rs`.
 - The allow list and an `allow` rule return before the ML engine, WAF and operations run.
 - WAF location strings (`query:id`, `body:x`, `cookie:sid`, `json.user.name`,
   `header:user-agent`) are part of the log. The gateway also parses them back for `exclude_params`

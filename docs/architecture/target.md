@@ -300,7 +300,7 @@ before and after.
 | 1 | ✅ Hygiene: `version.workspace = true` for the gateway, the stale comments, `util.rs` (also fixed a panic in the verify path's decoder) | S | F7, F11 | — |
 | 2 | ✅ Repository: `deny.toml` + CI job, stable-toolchain job, `fuzz/` with five targets. ⬜ The eval-data fetch script (needs the exact sources of the payload and benign lists) | S–M | F10 | M1 |
 | 3 | ✅ `lib.rs` → `server.rs` + `admin.rs` | S | F6 | M3 shutdown |
-| 4 | `Layer`, `Signal`, `Verdict` in `proxy/verdict.rs`, replacing the `raise` closure and the status special cases, with tie-break tests | M | F1, F2 | — |
+| 4 | ✅ `Layer`, `Signal`, `Verdict` in `proxy/verdict.rs`, replacing the `raise` closure and the status special cases, with tie-break tests | M | F1, F2 | — |
 | 5 | Move the layer evaluation out of `handle` into `pipeline/` | M | F1 | M3 `ext_authz`, M4 / M5 layers |
 | 6 | WAF `Location` + applicability; the gateway uses `location.param()` | M | F2 | M2 exclusions |
 | 7 | WAF folder restructure (pure moves, one commit) | M | — | M2 work without conflicts |

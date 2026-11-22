@@ -236,7 +236,9 @@ async fn inspect_response(
     let leak = insp.scan(&buf[..buf.len().min(insp.max_bytes)]);
     if let Some(sig) = leak {
         if insp.action == LeakAction::Block && state.cfg.mode == Mode::Prevent {
-            state.metrics.inc_blocked_by("data_leak");
+            state
+                .metrics
+                .inc_blocked_by(super::Layer::DataLeak.as_str());
             let mut r = if html {
                 respond(
                     StatusCode::INTERNAL_SERVER_ERROR,

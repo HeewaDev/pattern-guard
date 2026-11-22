@@ -5,6 +5,7 @@ mod client_ip;
 mod decision_log;
 mod forward;
 mod responses;
+mod verdict;
 mod verify;
 
 use std::convert::Infallible;
@@ -23,6 +24,7 @@ use pattern_guard::{Decision, Event};
 
 pub use client_ip::client_ip;
 pub use responses::full;
+pub use verdict::{Action, Layer, Respond, Signal, Verdict};
 
 use decision_log::{LogCtx, log_decision};
 use forward::{CloneHead, forward};
@@ -37,25 +39,6 @@ use crate::state::State;
 use crate::util::header_str;
 
 pub type Body = BoxBody<Bytes, hyper::Error>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Action {
-    Allow,
-    Delay,
-    Challenge,
-    Block,
-}
-
-impl Action {
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Action::Allow => "allow",
-            Action::Delay => "delay",
-            Action::Challenge => "challenge",
-            Action::Block => "block",
-        }
-    }
-}
 
 /// Parameter name of a WAF location (`query:id`, `body:comment`, `cookie:sid`, `json.user.name`).
 fn param_name(location: &str) -> Option<&str> {
@@ -205,44 +188,26 @@ pub async fn handle(
     let intel = state.intel.lookup(ip);
     let denied = any_contains(&state.deny, ip);
 
-    // ---- fuse ----
-    let mut action = Action::Allow;
-    let mut layer = "behaviour";
-    let mut reasons: Vec<String> = Vec::new();
-    let mut raise =
-        |a: Action, l: &'static str, why: String, action: &mut Action, layer: &mut &'static str| {
-            if a > *action {
-                *action = a;
-                *layer = l;
-            }
-            reasons.push(why);
-        };
+    // ---- fuse: raise order = tie-break order (see verdict.rs) ----
+    let mut verdict = Verdict::default();
     if denied {
-        raise(
-            Action::Block,
-            "deny_list",
-            "deny_list".into(),
-            &mut action,
-            &mut layer,
-        );
+        verdict.raise(Signal::new(Action::Block, Layer::DenyList, "deny_list"));
     }
     if let Some(v) = &violation {
-        raise(
-            Action::Block,
-            "protocol",
-            format!("protocol:{}", v.reason),
-            &mut action,
-            &mut layer,
+        verdict.raise(
+            Signal::new(
+                Action::Block,
+                Layer::Protocol,
+                format!("protocol:{}", v.reason),
+            )
+            .respond(Respond::Status {
+                status: v.status,
+                reason: v.reason.clone(),
+            }),
         );
     }
     if let Some(t) = &trap {
-        raise(
-            Action::Block,
-            "trap",
-            format!("trap:{t}"),
-            &mut action,
-            &mut layer,
-        );
+        verdict.raise(Signal::new(Action::Block, Layer::Trap, format!("trap:{t}")));
     }
     if let Some((a, name)) = &rule.terminal {
         let a = match a {
@@ -250,24 +215,19 @@ pub async fn handle(
             RuleAction::Challenge => Action::Challenge,
             _ => Action::Delay,
         };
-        raise(a, "rule", format!("rule:{name}"), &mut action, &mut layer);
+        verdict.raise(Signal::new(a, Layer::Rule, format!("rule:{name}")));
     }
-    match state.geo_policy.verdict(country) {
-        Some(crate::geo::GeoVerdict::Block) => raise(
-            Action::Block,
-            "geo",
+    let geo = match state.geo_policy.verdict(country) {
+        Some(crate::geo::GeoVerdict::Block) => Some(Action::Block),
+        Some(crate::geo::GeoVerdict::Challenge) => Some(Action::Challenge),
+        None => None,
+    };
+    if let Some(a) = geo {
+        verdict.raise(Signal::new(
+            a,
+            Layer::Geo,
             format!("geo:{}", country.unwrap_or("?")),
-            &mut action,
-            &mut layer,
-        ),
-        Some(crate::geo::GeoVerdict::Challenge) => raise(
-            Action::Challenge,
-            "geo",
-            format!("geo:{}", country.unwrap_or("?")),
-            &mut action,
-            &mut layer,
-        ),
-        None => {}
+        ));
     }
     if let Some(hit) = &limit {
         let a = match hit.action {
@@ -275,12 +235,12 @@ pub async fn handle(
             LimitAction::Challenge => Action::Challenge,
             LimitAction::Delay => Action::Delay,
         };
-        raise(
-            a,
-            "rate_limit",
-            format!("rate_limit:{}", hit.name),
-            &mut action,
-            &mut layer,
+        verdict.raise(
+            Signal::new(a, Layer::RateLimit, format!("rate_limit:{}", hit.name)).respond(
+                Respond::TooManyRequests {
+                    retry_after: hit.retry_after,
+                },
+            ),
         );
     }
     if let Some(hit) = &op_hit {
@@ -295,59 +255,62 @@ pub async fn handle(
             .as_deref()
             .map(|a| format!(" account={a}"))
             .unwrap_or_default();
-        raise(
-            a,
-            "operation",
-            format!("operation:{}:{}{account}", hit.name, hit.kind),
-            &mut action,
-            &mut layer,
+        let respond = if hit.status == 429 {
+            Respond::TooManyRequests {
+                retry_after: hit.retry_after.unwrap_or(1),
+            }
+        } else {
+            Respond::Status {
+                status: StatusCode::from_u16(hit.status).unwrap_or(StatusCode::FORBIDDEN),
+                reason: hit.kind.to_string(),
+            }
+        };
+        verdict.raise(
+            Signal::new(
+                a,
+                Layer::Operation,
+                format!("operation:{}:{}{account}", hit.name, hit.kind),
+            )
+            .respond(respond),
         );
     }
     for name in &rule.logged {
-        raise(
+        verdict.raise(Signal::new(
             Action::Allow,
-            "rule",
+            Layer::Rule,
             format!("rule-log:{name}"),
-            &mut action,
-            &mut layer,
-        );
+        ));
     }
     if any_contains(&state.challenge_list, ip) {
-        raise(
+        verdict.raise(Signal::new(
             Action::Challenge,
+            Layer::ChallengeList,
             "challenge_list",
-            "challenge_list".into(),
-            &mut action,
-            &mut layer,
-        );
+        ));
     }
     if let Some(e) = &intel {
         let a = match e.action {
             IntelAction::Ban => Action::Block,
             IntelAction::Challenge => Action::Challenge,
         };
-        raise(
+        verdict.raise(Signal::new(
             a,
-            "reputation",
+            Layer::Reputation,
             format!("{}: {}", e.source, e.reason),
-            &mut action,
-            &mut layer,
-        );
+        ));
     }
     if let Some(top) = findings.iter().max_by(|a, b| a.score.total_cmp(&b.score)) {
         if top.score >= state.cfg.waf.block_score {
-            raise(
+            verdict.raise(Signal::new(
                 Action::Block,
-                "waf",
+                Layer::Waf,
                 format!(
                     "waf:{} at {} (score {:.1})",
                     top.class.as_str(),
                     top.location,
                     top.score
                 ),
-                &mut action,
-                &mut layer,
-            );
+            ));
         }
     }
     let ml = match assessment.decision {
@@ -358,25 +321,24 @@ pub async fn handle(
     };
     if ml > Action::Allow {
         let why: Vec<String> = assessment.reasons.iter().map(|r| r.to_string()).collect();
-        raise(
+        verdict.raise(Signal::new(
             ml,
-            "behaviour",
+            Layer::Behaviour,
             format!("ml:{}", why.join(",")),
-            &mut action,
-            &mut layer,
-        );
+        ));
     }
-    if action == Action::Challenge && !state.cfg.challenge.enabled {
-        action = Action::Block;
+    if !state.cfg.challenge.enabled {
+        verdict.challenge_disabled();
     }
-    let cleared = matches!(action, Action::Challenge | Action::Delay)
+    if matches!(verdict.action(), Action::Challenge | Action::Delay)
         && state
             .challenger
-            .has_clearance(ip, header_str(&parts.headers, "cookie"));
-    if cleared {
-        action = Action::Allow;
-        reasons.push("clearance".into());
+            .has_clearance(ip, header_str(&parts.headers, "cookie"))
+    {
+        verdict.clear();
     }
+    let action = verdict.action();
+    let layer = verdict.layer();
 
     let enforce = state.cfg.mode == Mode::Prevent;
     let decide_us = started.elapsed().as_micros() as u64;
@@ -391,16 +353,16 @@ pub async fn handle(
     };
     counter.fetch_add(1, Relaxed);
     if action == Action::Block {
-        state.metrics.inc_blocked_by(layer);
+        state.metrics.inc_blocked_by(layer.as_str());
     }
     if !enforce && action > Action::Allow {
         state.metrics.would_mitigate.fetch_add(1, Relaxed);
     }
 
     // Repeat offenders get banned (bans and traps don't count, they already are one).
-    if enforce && action == Action::Block && !matches!(layer, "reputation" | "trap") {
+    if enforce && action == Action::Block && layer.counts_towards_bans() {
         if let Some(d) = state.bans.record_block(ip, &state.intel) {
-            reasons.push(format!("banned for {}s", d.as_secs()));
+            verdict.note(format!("banned for {}s", d.as_secs()));
         }
     }
 
@@ -412,7 +374,7 @@ pub async fn handle(
         assessment: &assessment,
         findings: &findings,
         intel: intel.as_ref(),
-        reasons: &reasons,
+        reasons: verdict.reasons(),
         action,
         layer,
         enforced: enforce,
@@ -423,36 +385,21 @@ pub async fn handle(
     if enforce {
         match action {
             Action::Block => {
-                let rate_limited = layer == "rate_limit";
-                let protocol = violation.as_ref().filter(|_| layer == "protocol");
-                let operation = op_hit.as_ref().filter(|_| layer == "operation");
-                let status = match (rate_limited, protocol, operation) {
-                    (true, _, _) => 429,
-                    (_, Some(v), _) => v.status.as_u16(),
-                    (_, _, Some(h)) => h.status,
-                    _ => 403,
-                };
+                let respond = verdict.respond();
+                let status = respond.status().as_u16();
                 state.guard.observe_response(&event, status);
                 state
                     .inventory
                     .record(parts.method.as_str(), &template, status, true);
                 log_decision(&state, &parts, &ctx, status);
-                if let Some(h) = operation {
-                    return Ok(if h.status == 429 {
-                        too_many_requests(&parts.headers, &id, h.retry_after.unwrap_or(1))
-                    } else {
-                        error_response(
-                            &parts.headers,
-                            &id,
-                            StatusCode::from_u16(h.status).unwrap_or(StatusCode::FORBIDDEN),
-                            h.kind,
-                        )
-                    });
-                }
-                return Ok(match (&limit, rate_limited, protocol) {
-                    (Some(hit), true, _) => too_many_requests(&parts.headers, &id, hit.retry_after),
-                    (_, _, Some(v)) => error_response(&parts.headers, &id, v.status, &v.reason),
-                    _ => block_page(&parts.headers, &id),
+                return Ok(match respond {
+                    Respond::BlockPage => block_page(&parts.headers, &id),
+                    Respond::TooManyRequests { retry_after } => {
+                        too_many_requests(&parts.headers, &id, *retry_after)
+                    }
+                    Respond::Status { status, reason } => {
+                        error_response(&parts.headers, &id, *status, reason)
+                    }
                 });
             }
             Action::Challenge => {
@@ -499,12 +446,12 @@ pub async fn handle(
         .inventory
         .record(parts.method.as_str(), &template, status, false);
     if let Some((signature, blocked)) = leak {
-        let mut leak_reasons = reasons.clone();
+        let mut leak_reasons = verdict.reasons().to_vec();
         leak_reasons.push(format!("data_leak:{signature}"));
         let ctx = LogCtx {
             reasons: &leak_reasons,
             action: if blocked { Action::Block } else { action },
-            layer: if blocked { "data_leak" } else { layer },
+            layer: if blocked { Layer::DataLeak } else { layer },
             ..ctx
         };
         log_decision(&state, &parts, &ctx, status);

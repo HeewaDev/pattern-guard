@@ -72,11 +72,13 @@ Take `policy/rate_limit.rs` or `policy/protocol.rs` as the template.
 3. **State** (`state.rs`): a field. In **`lib.rs::build_state`**: `Xyz::compile(&cfg.xyz)?`.
 4. **Pipeline** (`proxy/mod.rs::handle`):
    - Compute the hit with the other gatekeeper checks (after the allow list and rules, before the fuse).
-   - `raise(action, "xyz", format!("xyz:{name}"), …)`. **The position of this call is the
-     tie-break order** (see [gateway.md](gateway.md#fusion)). Put it where its attribution
-     should win against equally severe layers.
-   - If an enforced Block needs a status other than 403, extend the status selection in the
-     `Action::Block` arm.
+   - Add a `Layer::Xyz` variant in `proxy/verdict.rs` (and to `Layer::ALL` and `as_str`;
+     the contract test lists every name).
+   - `verdict.raise(Signal::new(action, Layer::Xyz, format!("xyz:{name}")))`. **The position
+     of this call is the tie-break order** (see [gateway.md](gateway.md#fusion)). Put it where
+     its attribution should win against equally severe layers.
+   - If an enforced Block needs a status other than the 403 block page, attach it to the signal:
+     `.respond(Respond::TooManyRequests { retry_after })` or `.respond(Respond::Status { status, reason })`.
    - If the layer needs the upstream's answer (like `[[operations]]`), return a ticket and
      settle it next to `op_ticket.complete(status)`.
 5. **The new layer name `xyz` is a public value.** It shows up in `pattern_guard.layer`,
