@@ -43,6 +43,11 @@ point, not a substitute for your own data.
 
 ## 3. Train on your own traffic
 
+`pattern-guard replay` and `train` skip lines they can't trust instead of letting them
+distort the replay clock: invalid dates, a record more than 60 s ahead of the replay clock
+that the following records don't confirm (one injected far-future line used to freeze the
+clock), and records more than 1 h older than the newest one. The summary counts them.
+
 1. **Export logs as JSONL** (one request per line):
    ```json
    {"ts": 1700000000.25, "ip": "203.0.113.7", "method": "POST", "path": "/login",
