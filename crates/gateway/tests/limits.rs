@@ -291,3 +291,58 @@ async fn inventory_skips_protocol_rejects_and_caps_templates() {
         json.len()
     );
 }
+
+// ---------------------------------------------------------------- reputation store
+
+/// Trap bans used to add one store entry per client address, without a cap: behind a
+/// trusted proxy or over IPv6, every request can carry a new address.
+#[tokio::test]
+async fn trap_bans_are_capped_and_aggregated_per_slash64() {
+    let (gw, state) = start_gateway(
+        "[client_ip]\ntrusted_proxies = [\"127.0.0.1\"]\n[limits]\nmax_bans = 100\n[traps]\npaths = [\"/wp-login.php\"]\n",
+    )
+    .await;
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    let hit = |xff: String| {
+        format!("GET /wp-login.php HTTP/1.1\r\nhost: x\r\nx-forwarded-for: {xff}\r\n\r\n")
+    };
+    // 300 distinct IPv4 clients: the cap keeps the 100 latest bans
+    for i in 0..300u32 {
+        let xff = format!("10.0.{}.{}", i / 256, i % 256);
+        assert_eq!(roundtrip(&mut s, &hit(xff), b"").await, 403);
+    }
+    let bans = state
+        .intel
+        .list(pattern_guard_gateway::policy::bans::SOURCE);
+    assert_eq!((state.intel.len(), bans.len()), (100, 100));
+    assert_eq!(state.intel.evicted(), 200);
+    assert!(state.intel.lookup("10.0.1.43".parse().unwrap()).is_some());
+    assert!(state.intel.lookup("10.0.0.0".parse().unwrap()).is_none());
+
+    // 500 addresses of one /64: merged into a single /64 ban after 16
+    for i in 1..=500u32 {
+        let xff = format!("2001:db8:1:2::{i:x}");
+        assert_eq!(roundtrip(&mut s, &hit(xff), b"").await, 403);
+    }
+    let bans = state
+        .intel
+        .list(pattern_guard_gateway::policy::bans::SOURCE);
+    let nets: Vec<_> = bans.iter().filter(|(k, _)| k.contains('/')).collect();
+    assert_eq!(nets.len(), 1, "{nets:?}");
+    assert_eq!(nets[0].0, "2001:db8:1:2::/64");
+    assert!(
+        bans.iter()
+            .all(|(k, _)| !k.starts_with("2001:db8:1:2::") || k.ends_with("/64")),
+        "no single-address bans left in the /64"
+    );
+    assert!(state.intel.len() <= 100);
+    // an address of that /64 that never made a request is banned too
+    let e = state
+        .intel
+        .lookup("2001:db8:1:2:aaaa::1".parse().unwrap())
+        .unwrap();
+    assert_eq!(e.action, pattern_guard_gateway::intel::IntelAction::Ban);
+    let mut fresh = TcpStream::connect(gw).await.unwrap();
+    let head = "GET / HTTP/1.1\r\nhost: x\r\nx-forwarded-for: 2001:db8:1:2:bbbb::7\r\n\r\n";
+    assert_eq!(roundtrip(&mut fresh, head, b"").await, 403);
+}

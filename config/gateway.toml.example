@@ -28,6 +28,8 @@ header = "x-forwarded-for"
 max_connections_per_ip = 256
 header_read_timeout_secs = 10          # slowloris protection
 decision_log_queue_bytes = 16777216    # decision-log lines waiting for a slow disk; more are dropped
+max_bans = 100000                      # gateway bans kept; the one closest to expiry goes first
+max_intel_entries_per_source = 500000  # per CrowdSec origin / Suricata / Wazuh
 
 [waf]
 enabled = true

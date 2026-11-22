@@ -78,7 +78,11 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         ),
         guard,
         waf: Inspector::new(),
-        intel: Arc::new(IntelStore::default()),
+        intel: Arc::new(
+            IntelStore::new(cfg.limits.max_intel_entries_per_source)
+                .with_source_cap(policy::bans::SOURCE, cfg.limits.max_bans)
+                .with_eviction_counter(metrics.intel_evicted.clone()),
+        ),
         log: cfg.log.decisions.clone().map(|path| {
             EventLog::start(path, cfg.limits.decision_log_queue_bytes, metrics.clone())
         }),

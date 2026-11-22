@@ -122,6 +122,14 @@ pub struct LimitsConfig {
     /// further lines are dropped and counted.
     #[serde(default = "d_log_queue_bytes")]
     pub decision_log_queue_bytes: usize,
+    /// Bans the gateway issues itself (repeat offenders, traps) kept at once. Over the
+    /// cap, the ban closest to expiry is dropped.
+    #[serde(default = "d_max_bans")]
+    pub max_bans: usize,
+    /// Reputation entries kept per external source (each CrowdSec origin, Suricata,
+    /// Wazuh). Over the cap, that source's entry closest to expiry is dropped.
+    #[serde(default = "d_max_intel_per_source")]
+    pub max_intel_entries_per_source: usize,
 }
 
 impl Default for LimitsConfig {
@@ -739,6 +747,12 @@ fn d_header_timeout() -> u64 {
 fn d_log_queue_bytes() -> usize {
     16 * 1024 * 1024
 }
+fn d_max_bans() -> usize {
+    100_000
+}
+fn d_max_intel_per_source() -> usize {
+    500_000 // = intel::store::DEFAULT_MAX_PER_SOURCE
+}
 fn d_block_score() -> f64 {
     7.0
 }
@@ -822,6 +836,11 @@ impl GatewayConfig {
                 "limits.decision_log_queue_bytes must be at least {MIN_LOG_QUEUE_BYTES}"
             ));
         }
+        if self.limits.max_bans == 0 || self.limits.max_intel_entries_per_source == 0 {
+            return Err(
+                "limits.max_bans and limits.max_intel_entries_per_source must be at least 1".into(),
+            );
+        }
         if self.challenge.difficulty > 28 {
             return Err(
                 "challenge.difficulty above 28 bits would take minutes in a browser".into(),
@@ -881,5 +900,11 @@ mod tests {
         };
         assert!(bad("decision_log_queue_bytes = 1000"));
         assert!(!bad("decision_log_queue_bytes = 65536"));
+        assert_eq!(
+            (c.limits.max_bans, c.limits.max_intel_entries_per_source),
+            (100_000, 500_000)
+        );
+        assert!(bad("max_bans = 0"));
+        assert!(bad("max_intel_entries_per_source = 0"));
     }
 }

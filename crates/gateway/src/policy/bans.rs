@@ -3,6 +3,9 @@
 //! Bans are written to the shared intel store with source `gateway:ban`, so they are
 //! enforced like any other reputation entry, expire on their own and show up in
 //! `/bans` on the admin port.
+//!
+//! The store keeps at most `limits.max_bans` of them (the one closest to expiry is
+//! dropped first), and merges IPv6 bans that share a `/64` into one `/64` ban.
 
 use std::collections::VecDeque;
 use std::net::IpAddr;
@@ -14,7 +17,6 @@ use lru::LruCache;
 
 use crate::config::{BanConfig, TrapConfig};
 use crate::intel::{IntelAction, IntelEntry, IntelStore};
-use crate::ipnet::Cidr;
 
 pub const SOURCE: &str = "gateway:ban";
 
@@ -102,9 +104,12 @@ impl Bans {
     }
 }
 
+/// Bounded by `limits.max_bans` (the store evicts the ban closest to expiry), and IPv6
+/// bans of one `/64` are merged into a single `/64` ban (see `IntelStore::add_aggregated`),
+/// so a client rotating addresses can't grow the store one entry per request.
 fn add_ban(intel: &IntelStore, ip: IpAddr, secs: u64, reason: String, now: Instant) {
-    intel.add(
-        Cidr::parse(&ip.to_string()).expect("an IP is a valid CIDR"),
+    intel.add_aggregated(
+        ip,
         IntelEntry {
             action: IntelAction::Ban,
             source: SOURCE.into(),
