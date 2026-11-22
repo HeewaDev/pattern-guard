@@ -165,13 +165,20 @@ unique = "json:transaction_id"              # each transaction accepted once
 |---|---|---|
 | `account` | Identifies the account: `header:<name>`, `cookie:<name>`, `query:<name>`, `form:<name>` or `json:<dotted.path>`. Values are hashed (SHA-256); tokens and user names are never stored or logged | |
 | `require_account` | Refuse requests without the identifier | 403 `account_missing` |
-| `limit` | Token bucket per account (per IP if there is no account) | 429 + Retry-After `account_limit` |
+| `limit` | Token bucket per account (per IP if there is no account). A token is reserved when the request arrives, so concurrent bursts are limited, and given back if the request is not forwarded (another layer stopped it) or your app answers 401 or 403 (the requester was not that account) | 429 + Retry-After `account_limit` |
 | `allowed_ips` | Only these sources may call the route | 403 `source_not_allowed` |
 | `unique` + `unique_ttl_secs` | A value that may be used once. It is held while its request is in flight, so concurrent duplicates (race-condition double spends) are refused, and kept as used only if your app answered 2xx, so a provider retrying after a failure still gets through | 409 `replay` |
 | `action` | `block` (default), `challenge`, `delay` or `log` (record only) | |
 
 The deciding layer is `operation`; the decision log reason names the operation, the
 check and a short account hash, e.g. `operation:checkout:account_limit account=fa8c06dd`.
+
+**Key budgets on what your application authenticates**: a session cookie or the
+`Authorization` header, not a public identifier such as a user name, e-mail address or
+account number in the query or body. Anyone who knows a public identifier can send
+requests in that account's name. Their tokens come back only when your app answers 401
+or 403, so requests it accepts, or refuses with another status (400, 422, …), still
+spend the owner's budget and can lock the owner out.
 
 **Identifiers in the body** (`form:` and `json:`, for operations and logins) are read
 the way applications read them, not by the declared Content-Type alone, so an attacker
