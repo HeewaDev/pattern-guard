@@ -309,3 +309,35 @@ fn os_file_path_as_the_whole_value() {
         assert!(value_score(&w, benign) < BLOCK, "{benign}");
     }
 }
+
+/// SQL fragments that are attacks as a whole value, time-based probes, MySQL scientific
+/// notation, catalog names and look-alike quotes; everyday phrases stay clean.
+#[test]
+fn sql_fragments_time_probes_and_lookalike_quotes() {
+    let w = Inspector::new();
+    for attack in [
+        "OR x=x",
+        "AND deleted = 0)",
+        "ORDER BY 3--",
+        "' group by password having 1=1--",
+        "select pg_sleep",
+        "'; WAITFOR DELAY '0:0:5'--",
+        "information_schema",
+        "' or '1′='1",
+        "%u2019 or %u2019a%u2019=%u2019a",
+    ] {
+        assert!(value_score(&w, attack) >= BLOCK, "{attack}");
+    }
+    for benign in [
+        "or best offer",
+        "and so on",
+        "order by date",
+        "group by size please",
+        "And then x = 5",
+        "it’s John’s car, isn’t it?",
+        "Rock’n’roll ’92",
+        "the year 2.e is odd",
+    ] {
+        assert!(value_score(&w, benign) < BLOCK, "{benign}");
+    }
+}

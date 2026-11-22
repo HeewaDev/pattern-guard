@@ -131,6 +131,11 @@ WAF bypasses found in an internal security review (regression tests in
   `file:///etc/hosts`): a parameter that is nothing but the path of a known OS file adds
   `lfi_path_value` (4) to the CRS file-list hit, enough to block. The same path inside a
   sentence is not affected. LFI hold-out (never tuned on): 34.7 % → 84.0 %.
+- **SQL injection**: fragments that are attacks as a whole value (`OR x=x`, `AND deleted = 0)`,
+  `ORDER BY 3--`, `HAVING 1=1`), time-based probes without a call (`select pg_sleep`,
+  `WAITFOR DELAY '`), MySQL scientific-notation evasion (`1.e(ascii)`), a value that is a
+  system catalog name, and look-alike quotes (`’`, `′`, `ʼ`, folded to `'`). Development SQLi
+  90.7 → 95.0 %, CRS 942 42.8 → 45.7 %, hold-out SQLi 72.9 → 75.0 %; benign unchanged.
 - **PHP filter chains** (`convert.iconv.UTF8.CSISO2022KR|convert.base64-decode…`, the
   2022 RCE technique) score 7 (`php_filter_chain`).
 - **RFI parameter names** are compared case-insensitively (`_CONF[path]=https://…`,

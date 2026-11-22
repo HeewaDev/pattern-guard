@@ -364,7 +364,7 @@ impl Sql {
             // rules don't take bare words as operands because English is full of
             // them; this shape needs a real comparison right after the word.
             column_breakout: Regex::new(concat!(
-                r"^\s*[-+]?\d+(?:\.\d+)?\)*\s*(?:(?:or|and|xor)\s|\|\||&&)[\s(]*",
+                r"^\s*(?:[-+]?\d+(?:\.\d+)?\)*\s*)?(?:(?:or|and|xor)\s|\|\||&&)[\s(]*",
                 r"[a-z_][a-z0-9_$.]*",
                 r"(?:\s*(?:<=>|<>|!=|<=|>=|=|<|>)\s*\S",
                 r"|\s+(?:not\s+)?(?:like|rlike|regexp|in|between)\s*['\x22(\d-]",
