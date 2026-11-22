@@ -129,7 +129,7 @@ The engine's `Warn` maps to Allow. The `data_leak` layer is raised later, on the
 | Action | Prevent mode | ML feedback |
 |---|---|---|
 | **Block** | Status from the winning layer: `rate_limit` → **429** + `Retry-After`; `protocol` → 405 / 414 / 431 / 400 / 403; `operation` → its status (429 + `Retry-After`, 409 replay, 403 source / account); anything else → **403** block page (HTML or JSON by `Accept`) | `observe_response(status)` |
-| **Challenge** | **403** with the proof-of-work page for `GET` with `Accept: text/html`, otherwise JSON `{"error":"challenge_required"}` | *none*: deliberately neutral |
+| **Challenge** | **403** with the proof-of-work page for browsers (`Accept: text/html`). After a `GET` it redirects back; a same-origin URL-encoded form `POST` (≤ 16 KiB, ≤ 200 fields) is sent again once solved; any other browser `POST` returns to its form page (same-origin `Referer`) or `/`. Other clients get JSON `{"error":"challenge_required"}` | *none*: deliberately neutral |
 | **Delay** | Sleep `min(engine delay or delay_max_secs, delay_max_secs)`, then forward | the upstream status |
 | **Allow** | Forward | the upstream status |
 
@@ -200,6 +200,13 @@ gateway                                         browser
   key, clearances don't survive a restart and aren't valid across instances.
 - `safe_return` accepts only same-site relative paths (no `//`, `/\` or CR/LF). On the
   page, the path is a JSON string with `<`, `>` and `&` escaped.
+- **Form re-submission.** For a challenged browser form `POST`, the page holds the fields as
+  hidden inputs (HTML-escaped; inserted after every other placeholder, so text such as
+  `__RETURN__` in a field is never substituted). Once solved it fetches
+  `/.pattern-guard/verify?…&j=1` (204 + `Set-Cookie`, no redirect) and submits the form.
+  Only for requests the browser marks same-origin (`Sec-Fetch-Site: same-origin`, else
+  `Origin`, else `Referer` matching `Host`): re-sending a cross-site POST from this origin
+  would make it same-site and defeat `SameSite` cookies and `Origin` checks (CSRF).
 - Stateless: nothing is stored per challenge. Replaying a solved challenge within its
   5-minute TTL just issues another cookie for the same IP.
 

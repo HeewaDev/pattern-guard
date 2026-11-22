@@ -1059,3 +1059,106 @@ action = "allow"
         r.body
     );
 }
+
+/// A browser form POST that meets a challenge can continue: same-origin forms are sent
+/// again after the proof of work, cross-site ones never are (that would defeat CSRF
+/// protection), and API clients keep the JSON answer.
+#[tokio::test]
+async fn challenged_form_posts_can_continue() {
+    let gw = start_gateway(
+        r#"
+[[rules]]
+name = "challenge logins"
+path = "/signin"
+methods = ["POST"]
+action = "challenge"
+"#,
+    )
+    .await;
+    let xff = ("x-forwarded-for", "203.0.113.77");
+    let html = ("accept", "text/html");
+    let form = ("content-type", "application/x-www-form-urlencoded");
+    let body = "user=anna&pass=p%40ss&note=Tom+%26+Jerry+%3C3";
+
+    let page = send(
+        gw.addr,
+        "POST",
+        "/signin?ok=1",
+        &[xff, html, form, ("sec-fetch-site", "same-origin")],
+        body,
+    )
+    .await;
+    assert_eq!(page.status, StatusCode::FORBIDDEN);
+    assert!(page.body.contains("id=\"pg-resubmit\""), "{}", page.body);
+    assert!(page.body.contains("name=\"user\" value=\"anna\""));
+    assert!(
+        page.body
+            .contains("name=\"note\" value=\"Tom &amp; Jerry &lt;3\"")
+    );
+
+    // solve it the way the page does, then fetch the cookie with j=1
+    let vars = &page.body[page.body.find("var N=").unwrap()..];
+    let nonce = between(vars, "var N=\"", "\"");
+    let e = between(vars, ",E=", ",");
+    let d: u32 = between(vars, ",D=", ",").parse().unwrap();
+    let s = between(vars, ",S=\"", "\"");
+    let counter = (0u64..)
+        .find(|c| {
+            let h = Sha256::digest(format!("{nonce}:{c}").as_bytes());
+            pattern_guard_gateway::challenge::leading_zero_bits(&h) >= d
+        })
+        .unwrap();
+    let verify = format!("/.pattern-guard/verify?n={nonce}&e={e}&d={d}&s={s}&c={counter}&j=1");
+    let v = send(gw.addr, "GET", &verify, &[xff], "").await;
+    assert_eq!(v.status, StatusCode::NO_CONTENT);
+    assert!(v.headers.get("location").is_none());
+    let cookie = v
+        .headers
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // the re-sent form now reaches the application
+    let resent = send(
+        gw.addr,
+        "POST",
+        "/signin?ok=1",
+        &[xff, html, form, ("cookie", &cookie)],
+        body,
+    )
+    .await;
+    assert_eq!(resent.status, StatusCode::OK, "{}", resent.body);
+
+    // a cross-site POST gets the page but nothing to re-send
+    let cross = send(
+        gw.addr,
+        "POST",
+        "/signin",
+        &[
+            ("x-forwarded-for", "203.0.113.78"),
+            html,
+            form,
+            ("sec-fetch-site", "cross-site"),
+        ],
+        body,
+    )
+    .await;
+    assert_eq!(cross.status, StatusCode::FORBIDDEN);
+    assert!(cross.body.contains("not a bot") && !cross.body.contains("id=\"pg-resubmit\""));
+
+    // API clients keep the JSON answer
+    let api = send(
+        gw.addr,
+        "POST",
+        "/signin",
+        &[("x-forwarded-for", "203.0.113.79"), form],
+        body,
+    )
+    .await;
+    assert!(api.body.contains("challenge_required"));
+}

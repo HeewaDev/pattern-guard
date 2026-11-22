@@ -152,6 +152,12 @@ WAF bypasses found in an internal security review (regression tests in
 
 Gateway issues found in the same review:
 
+- **Challenged form POSTs**: a browser that met a challenge on a `POST` (e.g. a login form
+  under `[[logins]]` with the default `challenge`) got a JSON 403 and was stuck. It now gets
+  the proof-of-work page; a same-origin URL-encoded form is sent again once solved
+  (`verify?…&j=1` returns 204 + the cookie), other browser POSTs return to their form page.
+  Cross-site POSTs are never re-sent, which would defeat SameSite cookies and Origin-based
+  CSRF checks. API clients still get JSON.
 - **Client identity**: the `X-Forwarded-For` sent upstream is rebuilt from the resolved
   client (`<client>` for a direct client, `<client>, <trusted hops>, <peer>` behind trusted
   proxies), so entries a client forged no longer reach the application; a non-XFF

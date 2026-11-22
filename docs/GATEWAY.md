@@ -41,7 +41,7 @@ Caddy, HAProxy, a cloud load balancer or a CDN — and list that hop in
 |---|---|---|
 | Allow | proxied to your app; `x-pattern-guard-bot-score`, `-risk`, `-request-id` added | your app's status |
 | Delay | proxied after up to `delay_max_secs` | your app's status |
-| Challenge | 403 page that solves a SHA-256 proof-of-work in the browser (~0.1–0.5 s at difficulty 16), then sets an HttpOnly, IP-bound clearance cookie for `ttl_secs`. Non-HTML clients get `{"error":"challenge_required"}` | neutral (humans aren't punished for meeting a challenge) |
+| Challenge | 403 page that solves a SHA-256 proof-of-work in the browser (~0.1–0.5 s at difficulty 16), then sets an HttpOnly, IP-bound clearance cookie for `ttl_secs`. A challenged form `POST` from your own pages (same-origin, URL-encoded) is sent again automatically once solved, so a login isn't lost; other browser POSTs return to the form page. Non-HTML clients get `{"error":"challenge_required"}` | neutral (humans aren't punished for meeting a challenge) |
 | Block | 403 page / JSON with a request id | 403 (repeated attempts escalate) |
 
 A valid clearance cookie lifts Challenge and Delay, never Block.
@@ -250,10 +250,11 @@ User names are compared without regard to case.
 **A lockout can be turned against your users.** Failures count per account from any
 IP, so anyone who knows a user name can fail `max_failures` times on it and lock it
 for the rest of `window_secs`. With `action = "block"`, the owner is refused too (429)
-until the window ends. Keep the default `challenge` unless that is acceptable: a
-browser holding a clearance cookie (it solved a proof-of-work within
-`challenge.ttl_secs`) still gets through, while a client without one gets 403
-`challenge_required` (a `POST` is never answered with the proof-of-work page itself).
+until the window ends. Keep the default `challenge` unless that is acceptable: the real
+user's browser solves the proof-of-work and its login form is sent again automatically
+(same-origin, URL-encoded forms), or it returns to the login page; a browser that already
+holds a clearance cookie goes straight through. Scripts and API clients without a cookie
+get 403 `challenge_required`.
 
 ## Bans and honeypot traps
 
