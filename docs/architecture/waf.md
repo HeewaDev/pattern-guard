@@ -118,12 +118,23 @@ A body that fails to parse as multipart falls back to whole-body inspection.
 
 ## Performance
 
-- Typical cost: ~17–20 µs per request (`benches/inspect_bench.rs`).
+- Typical cost: ~15–20 µs per request (`benches/inspect_bench.rs`).
+- **Adaptive indicator matching.** The combined `RegexSet` is fastest on ordinary text, but on
+  random-looking input (many distinct characters, little repetition) its lazy DFA keeps building
+  new states and falls back to a slow engine: ~8 ms for 8 KiB of random punctuation, ~1 ms even
+  for 1 KiB. A value that is long (≥ 256 bytes) and diverse (≥ 40 distinct bytes in any variant),
+  and every value after a request has spent 2 ms in the set, is matched one regex at a time
+  (`Inspector::indicator_matches`): ~0.4 ms for 8 KiB. Both paths return the same matches
+  (unit-tested). Identical variants are scanned once.
+- **Per-request cap.** At most 4 096 values are inspected per request. Beyond that the request
+  gets an `inspection_limit` finding (class `protocol`, 7), so padding can't push a payload past
+  an uninspected limit. Worst measured request (~430 KB of hostile headers and body): ~35–45 ms
+  of WAF CPU, down from ~7 s.
 - **The lazy-DFA cache.** The indicator `RegexSet` is built with `dfa_size_limit(16 <<
   20)`. With the regex crate's default 2 MiB, varied attack traffic makes the cache thrash and the
   crate falls back to the PikeVM, about 60× slower (~1.4 ms per request). The cache is per
   thread, so budget about 16 MiB of WAF cache per worker thread.
-- The number of variants drives the cost. Each new variant means one more pass of the `RegexSet`. Decoders that run
+- The number of distinct variants drives the cost: each one is another matching pass. Decoders that run
   only when a trigger is present (base64 needs ≥ 12 base64 characters including a digit or upper-case
   letter; UTF-7 needs `+…-`) keep the common case cheap.
 - Input caps: 8 KiB per value, the body window set by the caller (gateway: 64 KiB), JSON depth and width,

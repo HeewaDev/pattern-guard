@@ -195,7 +195,9 @@ impl Shell {
             (a.len() > 1
                 && (a.starts_with('-') || a.starts_with('+'))
                 && !a[1..].starts_with('-')
-                && a[1..2].chars().all(|c| c.is_ascii_alphanumeric()))
+                && a.as_bytes()
+                    .get(1)
+                    .is_some_and(|b| b.is_ascii_alphanumeric()))
                 || a.starts_with('/')
                 || a.starts_with("~")
                 || a.starts_with("./")
