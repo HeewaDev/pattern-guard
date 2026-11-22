@@ -20,7 +20,8 @@ the structure and the data flow.
 | `Assessment { decision, risk, bot_score, model_risk, rules_risk, reasons, features }` | The result. `bot_score` = `1 + round((1 − risk) × 98)` |
 | `Decision` | `Allow < Warn < Delay(d) < Challenge < Block`. `Challenge` appears only when `challenge_below` is set |
 | `Model`, `model::train`, `TrainOptions`, `model::mimicry_copy` | Load, save, train and augment the logistic model |
-| `logs::{parse_line, LogFormat, LogRecord}` | Parse nginx/Apache combined or JSONL access logs (used by the CLI) |
+| `logs::{parse_line, LogFormat, LogRecord}` | Parse nginx/Apache combined or JSONL access logs (used by the CLI); timestamps validated (1970–9999), the combined-format time anchored on the request's opening quote |
+| `logs::{ReplayOrder, Ordered}` | Replay ordering for `replay` / `train`: skips a record more than 60 s ahead unless the next records confirm the jump, and records more than 1 h older than the newest |
 | `normalize::normalize_path` | Route templating, also used by the gateway for rate-limit keys and the inventory |
 | `pattern_guard::waf` | Re-export of the `pattern-guard-waf` crate |
 
@@ -41,17 +42,17 @@ the structure and the data flow.
 | `rules/analyzer.rs` | Turns window statistics into a rules risk (`max` or probabilistic OR) |
 | `util/normalize.rs` | Route templates: `{n}` numbers (the last one becomes the event's object id), `{uuid}`, `{hex}` (≥ 16 hex digits), `{token}` (≥ 24 characters with a digit), digit runs inside words; `hash_str`; scanner probe paths |
 | `util/stats.rs` | `Decay` (exponentially decayed counter), `GapStats`, `TopCounts`, `RecentIds`, `smoothed_ratio` |
-| `logs.rs` | Access-log parsing; CLF dates converted without a date crate |
+| `logs.rs` | Access-log parsing (hostile lines are errors, never panics); CLF dates converted without a date crate; `ReplayOrder` |
 
 ## `assess` step by step
 
 ```
 Event
  │ 1. effective config for the actor  ([guard] merged with [guard.actors."<id>"])
- │ 2. lock state (one Mutex for the whole guard)
- │ 3. now = clock.now(event)
- │ 4. prepare: template = normalize_path(target); route = hash(method, template);
- │             id = numeric/uuid id from the path; probe = scanner path?
+ │ 2. prepare (no lock): template = normalize_path(target); route = hash(method, template);
+ │             id = numeric/uuid id from the path; probe = scanner path (first 2 KiB)?;
+ │             actor and client keys = 64-bit hashes
+ │ 3. lock state (one Mutex for the whole guard); now = clock.now(event)
  │ 5. mode ≠ rules     → features = FeatureEngine.observe_request(...)   (updates state)
  │                       (model_risk, contributions) = Model.predict(features)
  │ 6. mode ≠ adaptive  → rules_risk = analyzer(Tracker.record(...))     (only if a rule is set)
@@ -98,9 +99,9 @@ Four LRU tables, each entry a handful of 16-byte decayed counters:
 
 | Table | Key | Cap (default) | Holds |
 |---|---|---|---|
-| actors | actor id | `max_actors` (100 000) | burst, volume, failures, route mix (top 16), recent ids, request gaps, read count |
+| actors | 64-bit hash of the actor id | `max_actors` (100 000) | burst, volume, failures, route mix (top 16), recent ids, request gaps, read count |
 | subnets | (/24 or /56 prefix) | `max_subnets` (50 000) | new actors appearing, failures |
-| clients | fingerprint, else user agent | `max_fingerprints` (50 000) | volume, new actors, failures, route mix (top 32), recent ids |
+| clients | 64-bit hash of the fingerprint, else of the user agent | `max_fingerprints` (50 000) | volume, new actors, failures, route mix (top 32), recent ids |
 | routes | hash(method, template) | `max_routes` (10 000) | short-window rate, failures, new-actor arrivals, and their **baselines** |
 
 Time constants: burst 10 s; volume 300 s; outcomes and objects 600 s; client 300 s;
@@ -150,7 +151,10 @@ window per actor on event time, with O(1) incremental counts and a memory cap pe
 ## Concurrency
 
 One `Mutex<State>` guards the clock, the feature engine, the rules tracker and the cooldowns.
-It is held for ~2 µs per `assess` and again for `observe_response`. It is the gateway's main
+Everything that doesn't need shared state (path template, route and target keys, probe scan
+of the first 2 KiB, actor and client hashes) is prepared before locking, so the lock is held
+~0.8 µs per call whatever the request's size; reasons and the decision are built after
+unlocking. It is held once for `assess` and again for `observe_response`. It is the gateway's main
 serialisation point.
 
 Sharding it (milestone M3) is not a pure refactor. Actor state shards cleanly by actor hash,

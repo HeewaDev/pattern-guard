@@ -152,6 +152,18 @@ WAF bypasses found in an internal security review (regression tests in
 
 Gateway issues found in the same review:
 
+- **Engine and log replay** (behaviour unchanged, `realworld_eval` identical):
+  - `pattern-guard replay` / `train` no longer panic on hostile access-log lines (out-of-range,
+    NaN or huge timestamps, non-ASCII time zones are parse errors); in the combined format
+    the Basic-auth user name can no longer set the event time, nor an escaped `\"` the
+    status; `logs::ReplayOrder` skips unconfirmed far-future and badly out-of-order
+    records, so one injected line can no longer freeze the replay clock (3 580 of 7 201
+    benign requests were stopped after one).
+  - The client and actor tables are keyed by 64-bit hashes: 300 KB user agents could take
+    ~14 GiB, now ~43 MiB for 50 000 clients.
+  - Request preparation runs before the engine's lock, now held ~0.8 µs per call whatever
+    the request size: one client sending 400 KB user agents used to cut other traffic from
+    ~197 000 to 23 requests/s (3 threads); now ~655 000.
 - **Challenged form POSTs**: a browser that met a challenge on a `POST` (e.g. a login form
   under `[[logins]]` with the default `challenge`) got a JSON 403 and was stuck. It now gets
   the proof-of-work page; a same-origin URL-encoded form is sent again once solved
@@ -178,6 +190,13 @@ Gateway issues found in the same review:
   canonical (`policy/path.rs`): protections apply when either form matches (ignoring
   case), exemptions only when both match. Query-string rules match the raw and the decoded
   query the same way.
+
+### Changed
+
+- `pattern_guard::features::Prepared` gains `actor`, `client`, `ip`, `write`, `read` and
+  `Prepared::new`; `FeatureEngine::observe_request` / `observe_response` take `&Prepared`
+  instead of `&Event`. `normalize::is_probe_path` scans the first 2 KiB of a path. Log
+  timestamps must lie between 1970 and 9999.
 
 ### Fixed
 
