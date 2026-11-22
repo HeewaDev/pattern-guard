@@ -1,11 +1,11 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use lru::LruCache;
 
-use crate::config::{Config, Mode, TimeSource};
+use crate::config::{Config, EffectiveConfig, Mode, TimeSource};
 use crate::decision::Decision;
 use crate::error::Error;
 use crate::event::Event;
@@ -62,18 +62,38 @@ enum Clock {
 }
 
 impl Clock {
-    fn now(&mut self, ev: &Event) -> f64 {
+    /// `event_secs`: the event's Unix timestamp (ignored by the system clock).
+    fn now(&mut self, event_secs: f64) -> f64 {
         match self {
             Clock::Event { max } => {
-                let t = ev.unix_secs();
-                if t > *max {
-                    *max = t;
+                if event_secs > *max {
+                    *max = event_secs;
                 }
                 *max
             }
             Clock::System { start } => start.elapsed().as_secs_f64(),
         }
     }
+}
+
+/// What `assess` and `observe_response` derive from an event before taking the state
+/// lock: everything whose cost grows with the request's size.
+struct Request {
+    p: Prepared,
+    rep_key: u64,
+    target_key: u64,
+    unix_secs: f64,
+    weight: f64,
+}
+
+/// What `assess` computes while holding the state lock.
+struct Scored {
+    features: Features,
+    model_risk: f64,
+    contrib: Features,
+    rules_risk: f64,
+    rule_name: &'static str,
+    in_cooldown: bool,
 }
 
 #[derive(Default)]
@@ -158,34 +178,38 @@ impl Guard {
         (a.decision, a.risk)
     }
 
-    fn prepare(&self, ev: &Event, probe_extra: &[String]) -> (Prepared, u64, u64) {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Route templating, probe scanning and key hashing. Runs before the state lock is
+    /// taken: the lock is shared by every request, and a 64 KB path with a 400 KB user
+    /// agent held it for ~830 µs when this ran inside it.
+    fn prepare(&self, ev: &Event) -> Request {
+        let g = &self.config.guard;
         let n = normalize_path(&ev.target);
         let route = hash_str(&[&ev.action, &n.template]);
-        let (rep_key, target_key) = if self.config.guard.normalize_targets {
+        let (rep_key, target_key) = if g.normalize_targets {
             (route, hash_str(&[&n.template]))
         } else {
             (hash_str(&[&ev.action, &ev.target]), hash_str(&[&ev.target]))
         };
-        let p = Prepared {
-            route,
-            id: n.id,
-            probe: is_probe_path(&ev.target, probe_extra),
-        };
-        (p, rep_key, target_key)
+        let probe = is_probe_path(&ev.target, &g.adaptive.probe_paths);
+        Request {
+            p: Prepared::new(ev, route, n.id, probe),
+            rep_key,
+            target_key,
+            unix_secs: ev.unix_secs(),
+            weight: ev.effective_weight(),
+        }
     }
 
-    /// Scores one request and records it. Call once per request, before handling it.
-    pub fn assess(&self, event: &Event) -> Assessment {
+    /// The part of `assess` that reads and updates shared state. Constant time.
+    fn score(&self, st: &mut State, req: &Request, eff: &EffectiveConfig) -> Scored {
         let g = &self.config.guard;
-        let eff = g.for_actor(&event.actor);
-        let actor = event.actor_key();
-        let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let st = &mut *st;
-        let now = st.clock.now(event);
-        let (p, rep_key, target_key) = self.prepare(event, st.engine.probe_paths());
-
+        let now = st.clock.now(req.unix_secs);
         let (features, model_risk, contrib) = if g.mode != Mode::Rules {
-            let f = st.engine.observe_request(event, &p, now);
+            let f = st.engine.observe_request(&req.p, now);
             let (risk, contrib) = self.model.predict(&f);
             (f, risk, contrib)
         } else {
@@ -194,22 +218,58 @@ impl Guard {
 
         let (rules_risk, rule_name) = if g.mode != Mode::Adaptive && eff.rules_enabled() {
             let s = st.rules.record(
-                actor,
-                rep_key,
-                target_key,
-                event.effective_weight(),
+                req.p.actor,
+                req.rep_key,
+                req.target_key,
+                req.weight,
                 now,
-                &eff,
+                eff,
             );
-            analyzer::rules_risk(&s, &eff)
+            analyzer::rules_risk(&s, eff)
         } else {
             (0.0, "rule:none")
         };
 
         let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
         let own_risk = model_risk.max(rules_risk);
-        let in_cooldown = st.cooldowns.get(&actor).is_some_and(|s| now < s.until);
-        let mut risk = own_risk;
+        let in_cooldown = st
+            .cooldowns
+            .get(&req.p.actor)
+            .is_some_and(|s| now < s.until);
+        if !eff.trusted && eff.cooldown_secs > 0.0 && own_risk >= block_at {
+            let s = st
+                .cooldowns
+                .get_or_insert_mut(req.p.actor, Strikes::default);
+            s.blocks.add(1.0, now, eff.cooldown_secs);
+            if s.blocks.get(now, eff.cooldown_secs) >= g.cooldown_after_blocks as f64 - 0.5 {
+                s.until = now + eff.cooldown_secs;
+            }
+        }
+        Scored {
+            features,
+            model_risk,
+            contrib,
+            rules_risk,
+            rule_name,
+            in_cooldown,
+        }
+    }
+
+    /// Scores one request and records it. Call once per request, before handling it.
+    pub fn assess(&self, event: &Event) -> Assessment {
+        let eff = self.config.guard.for_actor(&event.actor);
+        let req = self.prepare(event);
+        let Scored {
+            features,
+            model_risk,
+            contrib,
+            rules_risk,
+            rule_name,
+            in_cooldown,
+        } = self.score(&mut self.lock(), &req, &eff);
+
+        let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
+        let mut risk = model_risk.max(rules_risk);
         let mut reasons: Vec<Reason> = Vec::new();
 
         if eff.trusted {
@@ -244,17 +304,8 @@ impl Guard {
             }));
         }
 
-        let decision = eff.risk_to_decision(risk);
-        if !eff.trusted && eff.cooldown_secs > 0.0 && own_risk >= block_at {
-            let s = st.cooldowns.get_or_insert_mut(actor, Strikes::default);
-            s.blocks.add(1.0, now, eff.cooldown_secs);
-            if s.blocks.get(now, eff.cooldown_secs) >= g.cooldown_after_blocks as f64 - 0.5 {
-                s.until = now + eff.cooldown_secs;
-            }
-        }
-
         Assessment {
-            decision,
+            decision: eff.risk_to_decision(risk),
             risk,
             bot_score: (1.0 + ((1.0 - risk) * 98.0).round()) as u8,
             model_risk,
@@ -271,11 +322,14 @@ impl Guard {
         if self.config.guard.mode == Mode::Rules {
             return;
         }
-        let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let st = &mut *st;
-        let now = st.clock.now(event);
-        let (p, _, _) = self.prepare(event, st.engine.probe_paths());
-        st.engine.observe_response(event, &p, status, now);
+        let req = self.prepare(event);
+        self.record_response(&mut self.lock(), &req, status);
+    }
+
+    /// The part of `observe_response` that updates shared state. Constant time.
+    fn record_response(&self, st: &mut State, req: &Request, status: u16) {
+        let now = st.clock.now(req.unix_secs);
+        st.engine.observe_response(&req.p, status, now);
     }
 }
 
