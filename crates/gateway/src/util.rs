@@ -30,7 +30,7 @@ pub fn form_decode(s: &str) -> String {
             b'+' => out.push(b' '),
             b'%' if i + 2 < b.len() => match (hex(b[i + 1]), hex(b[i + 2])) {
                 (Some(h), Some(l)) => {
-                    out.push(h << 4 | l);
+                    out.push((h << 4) | l);
                     i += 2;
                 }
                 _ => out.push(b'%'),

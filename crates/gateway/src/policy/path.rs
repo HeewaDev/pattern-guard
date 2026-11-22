@@ -95,7 +95,7 @@ pub fn canonicalize(raw: &str) -> Cow<'_, str> {
         match b[i] {
             b'%' if i + 2 < b.len() => match (hex(b[i + 1]), hex(b[i + 2])) {
                 (Some(h), Some(l)) => {
-                    let c = h << 4 | l;
+                    let c = (h << 4) | l;
                     if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~') {
                         decoded.push(c);
                     } else if c == b'\\' {
