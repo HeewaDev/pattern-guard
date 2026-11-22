@@ -107,7 +107,19 @@ WAF bypasses found in an internal security review (regression tests in
   headers and in `Referer`, SSRF / RFI indicators no longer apply, so a development
   `http://localhost:3000` origin or referer is no longer logged as SSRF.
 - **Uploads**: with both `filename` and `filename*`, both names are checked.
-- Cost: a typical request takes ~19 µs instead of ~17.5 µs (`inspect_bench`).
+- **WAF CPU exhaustion** (critical): on random-looking values (e.g. 8 KiB of random
+  punctuation) the combined indicator automaton fell back to a slow engine (~200 ms per
+  value), and there was no limit on values per request: one ~430 KB request cost ~7 s of
+  CPU and a few of them stalled the gateway. Long, diverse values (and the rest of a request
+  that has spent 2 ms in the automaton) are now matched one regex at a time, with identical
+  results; identical decoding variants are scanned once; at most 4 096 values are inspected
+  per request, more is flagged `inspection_limit` (7). Worst case now ~35–45 ms; a typical
+  request got faster (~15.5 µs).
+- **WAF panic**: a shell-like value with a multi-byte character after `-` (`;cat -é`, in a
+  query, form field, cookie or User-Agent) panicked the connection's task.
+- Multipart header parameters: an O(n²) scan on quoted values full of `;` is now linear.
+- Cost of the bypass fixes above: a typical request took ~19 µs instead of ~17.5 µs before
+  the CPU fix brought it to ~15.5 µs (`inspect_bench`).
 
 Gateway issues found in the same review:
 

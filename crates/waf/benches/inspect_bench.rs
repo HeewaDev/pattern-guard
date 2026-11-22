@@ -62,5 +62,33 @@ fn bench(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench);
+/// Random printable values, a fresh one per iteration: the lazy DFA can't reuse states
+/// across values, which is how an attacker would send them. With one combined automaton
+/// this cost ~8 ms per 8 KiB value; the adaptive matcher keeps it near 2–3 ms.
+fn bench_random(c: &mut Criterion) {
+    let w = Inspector::new();
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut random = |len: usize| -> String {
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (b' ' + (x % 95) as u8) as char
+            })
+            .collect()
+    };
+    for len in [256usize, 8192] {
+        let values: Vec<String> = (0..64).map(|_| random(len)).collect();
+        let mut i = 0;
+        c.bench_function(&format!("{len} B random printable, fresh"), |b| {
+            b.iter(|| {
+                i = (i + 1) % values.len();
+                black_box(w.inspect_value("query:q", &values[i], true))
+            })
+        });
+    }
+}
+
+criterion_group!(benches, bench, bench_random);
 criterion_main!(benches);
