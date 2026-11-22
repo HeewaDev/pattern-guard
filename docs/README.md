@@ -9,7 +9,8 @@
 | Roll it out safely and run it day to day | [OPERATIONS.md](OPERATIONS.md) |
 | Embed the engine in your Rust service | [USE-CASES.md](USE-CASES.md) → [CONFIG.md](CONFIG.md) |
 | Understand or retrain the ML | [ML.md](ML.md) |
-| Know how it's built | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Know how it's built | [ARCHITECTURE.md](ARCHITECTURE.md) → [architecture/](architecture/README.md) (in depth) |
+| Contribute code: add an indicator, a layer, a feature | [architecture/extending.md](architecture/extending.md) |
 | See every feature, its status and the gaps | [FEATURES.md](FEATURES.md) |
 | See where the product is going and what "done" means | [ROADMAP.md](ROADMAP.md) |
 | Learn what OWASP CRS and open-appsec do and what we adopt | [RESEARCH.md](RESEARCH.md) |
@@ -24,6 +25,7 @@
 | [CONFIG.md](CONFIG.md) | Every `guard.toml` key (behavioural engine) |
 | [ML.md](ML.md) | Features, model, training on your logs, results and caveats |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, request lifecycle, engine and WAF internals, concurrency, security model |
+| [architecture/](architecture/README.md) | In depth: [gateway](architecture/gateway.md), [engine](architecture/engine.md), [WAF](architecture/waf.md), [tooling](architecture/tooling.md), [extending](architecture/extending.md), [target structure](architecture/target.md) |
 | [USE-CASES.md](USE-CASES.md) | Library integration patterns (HTTP middleware, CLI, cron, service-to-service) |
 | [FEATURES.md](FEATURES.md) | Feature tracker vs open-appsec and Imperva; measured results |
 | [ROADMAP.md](ROADMAP.md) | Vision, KPIs, milestones with acceptance criteria, risks, workflow |
