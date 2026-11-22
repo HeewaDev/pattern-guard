@@ -69,7 +69,7 @@ pub(crate) struct BodyText<'a> {
 /// The lowercased `charset` parameter of a Content-Type, if any.
 pub(crate) fn charset(content_type: &str) -> Option<String> {
     crate::multipart::param(&crate::multipart::params(content_type).0, "charset")
-        .map(|c| c.trim().to_ascii_lowercase())
+        .map(|c| c.trim().trim_matches(['\'', '"']).to_ascii_lowercase())
         .filter(|c| !c.is_empty())
 }
 
@@ -265,6 +265,20 @@ mod tests {
         ] {
             assert!(!decode(b, "application/octet-stream").transcoded);
         }
+    }
+
+    #[test]
+    fn quoted_charsets_are_read_without_quotes() {
+        for ct in [
+            "text/plain; charset='utf-8'",
+            "text/plain; charset=\"UTF-8\"",
+        ] {
+            assert!(decode(b"a=1", ct).anomaly.is_none(), "{ct}");
+        }
+        assert_eq!(
+            decode(b"a", "text/plain; charset='ibm037'").anomaly,
+            Some(("body_charset", 7.0))
+        );
     }
 
     #[test]

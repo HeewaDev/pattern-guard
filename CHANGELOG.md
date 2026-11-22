@@ -122,6 +122,11 @@ WAF bypasses found in an internal security review (regression tests in
 - **WAF panic**: a shell-like value with a multi-byte character after `-` (`;cat -é`, in a
   query, form field, cookie or User-Agent) panicked the connection's task.
 - Multipart header parameters: an O(n²) scan on quoted values full of `;` is now linear.
+- **False positives found by the pinned benign corpus** (`scripts/fetch_eval_data.sh`):
+  real User-Agents with the Indonesian locale (`(Linux; U; Android 4.4.2; id; …)`, UC Browser,
+  BlackBerry) looked like a chained `id` command and were blocked; language tags alone in a
+  User-Agent comment are now ignored (`$(id)` and other attacks still block). A single-quoted
+  `charset='utf-8'` was flagged as an unknown charset.
 - Cost of the bypass fixes above: a typical request took ~19 µs instead of ~17.5 µs before
   the CPU fix brought it to ~15.5 µs (`inspect_bench`).
 
