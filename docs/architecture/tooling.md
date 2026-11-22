@@ -35,9 +35,24 @@ coreruleset checkout ──► python3 -I scripts/extract_crs_tests.py ──►
                          (YAML parsed as data only, no code runs; needs PyYAML)
 ```
 
-**Data hygiene.** Hold-out lists (SecLists, fuzzdb) are never used for tuning. The CRS tests
-and PayloadsAllTheThings are development data. A result measured on development data must
-say so. None of these datasets are vendored. See [target.md](target.md) for making them reproducible.
+**Reproducible data.** `scripts/fetch_eval_data.sh` downloads every dataset at a pinned commit
+into the git-ignored `tools/eval/data/` (nothing is redistributed), verifies each file against
+`tools/eval/datasets.sha256` (`--update` rewrites it after a pin changes), and builds:
+
+| Set | Source | Use |
+|---|---|---|
+| `dev/<class>.txt` | PayloadsAllTheThings payload lists (SQLi, XSS, command injection, traversal, LFI, NoSQL, SSTI) | development: fix categories here |
+| `holdout/<class>.txt` | SecLists and fuzzdb (SQLi, XSS, LFI, commix command injection) | **measure only, never tune** |
+| `benign/*.txt` | SecLists names and English words, SecLists user agents, code lines from the Rust book | false positives |
+| `crs_tests.jsonl` | OWASP CRS regression tests at the commit of the vendored CRS lists | development data since WAF 2.0 |
+
+Development lines that also appear in a hold-out list are removed (PayloadsAllTheThings copies
+some SecLists / fuzzdb lists), so the hold-out stays a hold-out. `scripts/eval_waf.sh` runs all of
+it and prints one summary; run it from an older worktree with `DATA=…` to compare commits on
+the same data.
+
+**Data hygiene.** Hold-out lists are never used for tuning. A result measured on development
+data must say so.
 
 ## Tests
 
