@@ -17,7 +17,9 @@ delay_max_secs = 5
 forward_scores = true                  # x-pattern-guard-bot-score / -risk / -request-id to your app
 
 [client_ip]
-# Your load balancer / CDN. Only these peers may set the client-IP header.
+# Your load balancer / CDN. Only these peers may set the client-IP header; the client
+# is the right-most address in it (all lines) that is not one of them. Your app then
+# receives X-Forwarded-For: <client>, <trusted hops>, and X-Real-IP: <client>.
 trusted_proxies = ["127.0.0.1"]
 header = "x-forwarded-for"
 # fingerprint_header = "x-ja4"         # if your TLS terminator adds a JA4 fingerprint

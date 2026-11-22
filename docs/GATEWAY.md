@@ -53,6 +53,34 @@ severe layer wins (Block > Challenge > Delay > Allow). The deciding layer appear
 `waf`, `behaviour`, `data_leak`. Enforced blocks from any layer except `reputation` and `trap`
 count towards automatic bans.
 
+## Client IP
+
+Every per-IP decision (access lists, rate limits, bans, reputation, the behavioural
+engine, clearance cookies) uses the client IP, resolved before anything else:
+
+- When the TCP peer is not in `client_ip.trusted_proxies`, the peer is the client.
+  Whatever it writes in `X-Forwarded-For` or similar headers is ignored.
+- When the peer is a trusted proxy, the client is the right-most address in
+  `client_ip.header` (default `X-Forwarded-For`) that is not itself a trusted proxy.
+  Every line of the header counts, in order, as if the lines were joined with commas.
+  An entry that is not a bare IP address (`203.0.113.7:4711`, `unknown`) falls back to
+  the peer.
+
+List your own hops (load balancer, reverse proxy, CDN ranges) in `trusted_proxies`, and
+nothing else.
+
+Your application receives a client identity it can trust:
+
+| Header | Value |
+|---|---|
+| `X-Forwarded-For` | The client, then the trusted proxies that relayed the request, ending with the gateway's peer: `203.0.113.7, 10.0.0.2, 10.0.0.1`. Entries left of the client, which the client wrote itself, are dropped. Without a trusted proxy in front, it is just the client |
+| `X-Real-IP` | The client |
+| `client_ip.header`, when it is not `X-Forwarded-For` (e.g. `CF-Connecting-IP`) | The client |
+
+So the application can read the client from `X-Real-IP` or the left-most
+`X-Forwarded-For` entry, as long as only the gateway can reach it. The RFC 7239
+`Forwarded` header is passed on unchanged: don't let the application trust it.
+
 ## Custom rules
 
 `[[rules]]`, evaluated in file order. Every condition you set must match. The first
