@@ -112,6 +112,7 @@ pub struct Inspector {
     jndi_only: Vec<bool>,
     comments: Regex,
     lookups: Regex,
+    ua_locale: Regex,
     session_names: Regex,
     lexicons: Lexicons,
     shell: Shell,
@@ -157,6 +158,10 @@ impl Inspector {
             sql: Sql::new(),
             ssrf: Ssrf::new(),
             comments: Regex::new(r"(?s)/\*.*?\*/").unwrap(),
+            // a language tag alone in a User-Agent comment: `(Linux; U; Android 4.4.2; id; …)`
+            // (never after `$`: `$(id)` is command substitution)
+            ua_locale: Regex::new(r"(?i)(^|[^$])([(;]\s*)[a-z]{2}(?:[-_][a-z]{2,4})?(\s*[;)])")
+                .unwrap(),
             // session-id parameter names of common frameworks (CRS 943110 / 943120)
             session_names: Regex::new(
                 r"^(jsessionid|jservsession|jwsession|aspsessionid|asp\.net_sessionid|zend_session_id|phpsessid|phpsession|play_session|weblogicsession|wlsession|rack\.session|laravel_session|next-auth\.session-token|meteor_login_token|session[-_]?id|sails\.sid|shiny-token|_session_id|_flask_session|_rails_session|cfid|cfsid|cftoken|connect\.sid|cakephp|ci_session|koa[.:]sess)$",
@@ -217,6 +222,15 @@ impl Inspector {
         }
         scan.values.set(n + 1);
         let raw = truncate(raw, self.max_value_len);
+        // User-Agent locale tokens: `; id;` is Indonesian in UC Browser and BlackBerry
+        // agents, not a chained `id` command
+        let ua_cleaned;
+        let raw = if location == "header:user-agent" {
+            ua_cleaned = self.ua_locale.replace_all(raw, "$1$2$3");
+            ua_cleaned.as_ref()
+        } else {
+            raw
+        };
         let decoded = decode(raw, form);
         let mut scores: BTreeMap<AttackClass, (f64, Vec<&'static str>)> = BTreeMap::new();
         let mut add = |class, name, w| {

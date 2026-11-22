@@ -208,3 +208,26 @@ fn large_and_deep_json() {
         .join(",");
     assert!(request_score(&w, &[], ct, format!("[{bulk}]").as_bytes()) < BLOCK);
 }
+
+/// Found by the pinned benign corpus: real browser user agents with the Indonesian locale
+/// (`; id;`) looked like a chained `id` command. Attacks in the User-Agent still block.
+#[test]
+fn user_agent_locale_tokens_are_not_commands() {
+    let w = Inspector::new();
+    let ua = |v: &str| request_score(&w, &[("User-Agent", v)], None, b"");
+    for benign in [
+        "Mozilla/5.0 (Linux; U; Android 4.4.2; id; SM-G900 Build/KOT49H) AppleWebKit/534.30 (KHTML, like Gecko) Version/4.0 UCBrowser/9.9.2.467 U3/0.8.0 Mobile Safari/534.30",
+        "UCWEB/2.0 (Symbian; U; S60 V3; id; NokiaE63) U2/1.0.0 UCBrowser/9.2.0.336 U2/1.0.0 Mobile",
+        "Mozilla/5.0 (BlackBerry; U; BlackBerry 9220; id) AppleWebKit/534.11+ (KHTML, like Gecko) Version/7.1.0.746 Mobile Safari/534.11+",
+        "Mozilla/5.0 (Linux; U; Android 9; pt-BR; SM-A105M) AppleWebKit/537.36",
+    ] {
+        assert!(ua(benign) < BLOCK, "{benign}");
+    }
+    for attack in [
+        "() { :; }; /bin/bash -c 'id'",
+        "Mozilla/5.0; id; uname -a",
+        "Mozilla/5.0 $(id)",
+    ] {
+        assert!(ua(attack) >= BLOCK, "{attack}");
+    }
+}
