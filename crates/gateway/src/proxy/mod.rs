@@ -94,14 +94,18 @@ pub async fn handle(
         .unwrap_or_else(|| "/".into());
 
     if any_contains(&state.allow, ip) {
-        return Ok(forward(&state, parts, body, ip, &id, None).await.0);
+        return Ok(forward(&state, parts, body, peer.ip(), ip, &id, None)
+            .await
+            .0);
     }
 
     // ---- custom rules (an `allow` rule bypasses inspection like the allow list) ----
     let country = state.geo_db.as_ref().and_then(|g| g.lookup(ip));
     let rule = state.rules.evaluate(ip, &parts, country);
     if matches!(rule.terminal, Some((RuleAction::Allow, _))) {
-        return Ok(forward(&state, parts, body, ip, &id, None).await.0);
+        return Ok(forward(&state, parts, body, peer.ip(), ip, &id, None)
+            .await
+            .0);
     }
     let limit = state.rate_limiter.check(ip, &parts);
     // business operations and logins (settled with the upstream status below)
@@ -439,8 +443,16 @@ pub async fn handle(
         }
     }
 
-    let (resp, status, leak) =
-        forward(&state, parts.clone_head(), body, ip, &id, Some(&assessment)).await;
+    let (resp, status, leak) = forward(
+        &state,
+        parts.clone_head(),
+        body,
+        peer.ip(),
+        ip,
+        &id,
+        Some(&assessment),
+    )
+    .await;
     op_ticket.complete(status);
     state.guard.observe_response(&event, status);
     state

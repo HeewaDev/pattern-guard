@@ -15,10 +15,10 @@ use hyper::{Request, Response, StatusCode, Uri};
 use pattern_guard::Assessment;
 
 use super::Body;
+use super::client_ip::forwarding_chain;
 use super::responses::{full, respond};
 use crate::config::{LeakAction, Mode};
 use crate::hardening::leaks::LeakInspector;
-use crate::ipnet::any_contains;
 use crate::state::State;
 use crate::util::header_str;
 
@@ -51,10 +51,12 @@ impl CloneHead for hyper::http::request::Parts {
     }
 }
 
+/// Forwards the request. `peer` is the TCP peer, `ip` the resolved client.
 pub(super) async fn forward(
     state: &State,
     parts: hyper::http::request::Parts,
     body: Bytes,
+    peer: IpAddr,
     ip: IpAddr,
     id: &str,
     assessment: Option<&Assessment>,
@@ -80,6 +82,8 @@ pub(super) async fn forward(
         }
     };
     let html = header_str(&parts.headers, "accept").is_some_and(|a| a.contains("text/html"));
+    // From the headers as received: `Connection` may name the client-IP header.
+    let chain = forwarding_chain(state, peer, &parts.headers);
     let mut headers = parts.headers;
     strip_hop_by_hop(&mut headers);
     // Never trust client-supplied copies of our own headers.
@@ -91,17 +95,24 @@ pub(super) async fn forward(
     for k in ours {
         headers.remove(k);
     }
-    let xff = match header_str(&headers, "x-forwarded-for") {
-        Some(prev) if any_contains(&state.trusted, ip) || !prev.is_empty() => {
-            format!("{prev}, {ip}")
-        }
-        _ => ip.to_string(),
-    };
+    // Client identity the upstream can trust: `X-Forwarded-For` is the client followed by
+    // the trusted proxies that relayed the request (never entries a client wrote), and
+    // `X-Real-IP` and the configured client-IP header carry the client.
+    let xff = chain
+        .iter()
+        .map(IpAddr::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     if let Ok(v) = HeaderValue::from_str(&xff) {
         headers.insert("x-forwarded-for", v);
     }
     if let Ok(v) = HeaderValue::from_str(&ip.to_string()) {
-        headers.insert("x-real-ip", v);
+        headers.insert("x-real-ip", v.clone());
+        if let Ok(name) = HeaderName::from_bytes(state.cfg.client_ip.header.as_bytes()) {
+            if name != "x-forwarded-for" {
+                headers.insert(name, v);
+            }
+        }
     }
     if !state.cfg.preserve_host {
         if let Ok(v) = HeaderValue::from_str(state.upstream_authority.as_str()) {
