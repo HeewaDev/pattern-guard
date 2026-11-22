@@ -30,6 +30,15 @@ pub(super) fn verify(state: &State, ip: IpAddr, query: &str) -> Response<Body> {
         get("c"),
     );
     match ok {
+        // `j=1`: the challenge page fetches the cookie itself, then re-sends a form
+        Some(cookie) if get("j") == "1" => {
+            state.metrics.challenges_passed.fetch_add(1, Relaxed);
+            let mut r = respond(StatusCode::NO_CONTENT, "text/plain", "");
+            if let Ok(v) = HeaderValue::from_str(&cookie) {
+                r.headers_mut().insert(header::SET_COOKIE, v);
+            }
+            r
+        }
         Some(cookie) => {
             state.metrics.challenges_passed.fetch_add(1, Relaxed);
             let mut r = respond(StatusCode::FOUND, "text/plain", "ok");

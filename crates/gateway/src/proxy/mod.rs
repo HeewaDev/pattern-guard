@@ -414,12 +414,22 @@ pub async fn handle(
                     .inventory
                     .record(parts.method.as_str(), &template, 403, true);
                 log_decision(&state, &parts, &ctx, 403);
-                let resp = if wants_html(&parts.headers) && parts.method == hyper::Method::GET {
-                    respond(
-                        StatusCode::FORBIDDEN,
-                        "text/html; charset=utf-8",
-                        state.challenger.page(ip, &path_q),
-                    )
+                let resp = if wants_html(&parts.headers) {
+                    // A browser: the proof-of-work page. A challenged form POST is sent again
+                    // once solved when it came from this origin, else the user returns to
+                    // the form (see challenge::resubmission).
+                    let page = if parts.method == hyper::Method::GET {
+                        state.challenger.page(ip, &path_q)
+                    } else if let Some(fields) =
+                        crate::challenge::resubmission(&parts.headers, &parts.method, &body)
+                    {
+                        state.challenger.page_resubmit(ip, &path_q, &fields)
+                    } else {
+                        state
+                            .challenger
+                            .page(ip, &crate::challenge::return_after_post(&parts.headers))
+                    };
+                    respond(StatusCode::FORBIDDEN, "text/html; charset=utf-8", page)
                 } else {
                     respond(
                         StatusCode::FORBIDDEN,
