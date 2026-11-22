@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use regex::{Regex, RegexSet, RegexSetBuilder};
 
+use crate::body;
 use crate::decode::{
     base64_variants, decode, decode_keep_case, fold_html_lookalikes, percent_decode, utf7_decode,
 };
@@ -17,6 +18,20 @@ use crate::ssrf::Ssrf;
 
 /// Indicators that are ignored in the URL path.
 const PATH_EXEMPT: &[&str] = &["dom_sink", "js_cookie_domain", "generic_event_handler"];
+
+/// Locations that carry URLs or addresses of the client itself, often internal ones
+/// (`http://localhost:3000` in development, `10.0.0.7` behind a proxy): no SSRF or
+/// remote-file-inclusion analysis there.
+const NO_URL_ANALYSIS: &[&str] = &[
+    "path",
+    "header:referer",
+    "header:origin",
+    "header:x-forwarded-for",
+    "header:x-real-ip",
+    "header:true-client-ip",
+    "header:x-client-ip",
+    "header:forwarded",
+];
 
 /// One suspicious value.
 #[derive(Debug, Clone)]
@@ -191,6 +206,14 @@ impl Inspector {
                 if location == "path" && PATH_EXEMPT.contains(&name) {
                     continue;
                 }
+                // the client's own address or origin (`Origin: http://localhost:3000`):
+                // URL indicators don't apply there
+                if matches!(class, Ssrf | RemoteFileInclusion)
+                    && location.starts_with("header:")
+                    && NO_URL_ANALYSIS.contains(&location)
+                {
+                    continue;
+                }
                 add(class, name, w);
             }
         }
@@ -219,7 +242,7 @@ impl Inspector {
             }
             // URLs and host names: SSRF targets and remote file inclusion.
             // (the Referer is set by browsers; `http://localhost` there is development)
-            if location != "path" && location != "header:referer" {
+            if !NO_URL_ANALYSIS.contains(&location) {
                 let param = location
                     .split_once(':')
                     .map(|(_, n)| n.rsplit('.').next().unwrap_or(n));
@@ -294,7 +317,12 @@ impl Inspector {
             let n = name.to_ascii_lowercase();
             match n.as_str() {
                 "user-agent" | "referer" | "x-forwarded-host" | "x-original-url"
-                | "x-rewrite-url" => push(self.inspect_value(&format!("header:{n}"), value, false)),
+                | "x-rewrite-url"
+                // applications log and reflect these (second-order SQLi, stored XSS)
+                | "x-forwarded-for" | "x-real-ip" | "true-client-ip" | "x-client-ip"
+                | "forwarded" | "origin" => {
+                    push(self.inspect_value(&format!("header:{n}"), value, false))
+                }
                 "cookie" => {
                     for part in value.split(';') {
                         let (k, v) = part.split_once('=').unwrap_or(("", part));
@@ -306,44 +334,86 @@ impl Inspector {
         }
         if !req.body.is_empty() {
             let ct = req.content_type.unwrap_or("").to_ascii_lowercase();
-            let text = String::from_utf8_lossy(req.body);
-            if ct.starts_with("application/x-www-form-urlencoded") {
-                for (k, v) in form_pairs(&text) {
-                    names.push(decode_name(k).to_ascii_lowercase());
-                    push(self.inspect_value("body-name", k, true));
-                    push(self.inspect_value(&format!("body:{}", decode_name(k)), v, true));
-                }
-            } else if ct.contains("json") {
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(v) => {
-                        if let Some(m) = v.as_object() {
-                            names.extend(m.keys().take(1000).map(|k| k.to_ascii_lowercase()));
-                        }
-                        self.walk_json(&v, "json", &mut out.findings, 0)
-                    }
-                    Err(_) => push(self.inspect_value("body", &text, false)),
-                }
-            } else if let Some(found) = ct
+            let multipart = ct
                 .starts_with("multipart/")
                 .then(|| req.content_type.and_then(multipart::boundary))
                 .flatten()
-                .and_then(|b| self.inspect_multipart(req.body, &b, &mut names))
-            {
-                for f in found {
-                    push(Some(f));
-                }
-            } else if ct.contains("xml")
-                || ct.starts_with("text/")
-                || ct.starts_with("multipart/")
-                || ct.is_empty()
-            {
-                push(self.inspect_value("body", &text, false));
+                .and_then(|b| self.inspect_multipart(req.body, &b, &mut names));
+            match multipart {
+                Some(found) => out.findings.extend(found),
+                None => self.inspect_body(req.body, &ct, &mut names, &mut out.findings),
             }
         }
         if let Some(f) = self.session_fixation(&names, req.headers) {
             out.findings.push(f);
         }
         out
+    }
+
+    /// A body that is not multipart: decoded to text the way the application reads it
+    /// (byte-order mark, declared charset, UTF-16 / UTF-32), then parsed by content type.
+    /// Without a content type, or with one this function doesn't know, the body is still
+    /// inspected: many frameworks parse JSON or form bodies whatever the declared type,
+    /// so skipping the body would let one header switch the WAF off.
+    fn inspect_body(&self, raw: &[u8], ct: &str, names: &mut Vec<String>, out: &mut Vec<Finding>) {
+        let body = body::decode(raw, ct);
+        if let Some((indicator, score)) = body.anomaly {
+            let charset = body::charset(ct).unwrap_or_default();
+            out.push(Finding {
+                class: ProtocolViolation,
+                score,
+                location: "body".to_string(),
+                indicators: vec![indicator],
+                sample: truncate(&charset, 160).to_string(),
+            });
+        }
+        let text = body.text.as_ref();
+        if ct.starts_with("application/x-www-form-urlencoded") {
+            for (k, v) in form_pairs(text) {
+                names.push(decode_name(k).to_ascii_lowercase());
+                out.extend(self.inspect_value("body-name", k, true));
+                out.extend(self.inspect_value(&format!("body:{}", decode_name(k)), v, true));
+            }
+        } else if ct.contains("json") {
+            if !self.inspect_json(text, names, out) {
+                out.extend(self.inspect_value("body", text, false));
+            }
+        } else if ct.contains("xml") || ct.starts_with("text/") || ct.starts_with("multipart/") {
+            out.extend(self.inspect_value("body", text, false));
+        } else if !body.transcoded && multipart::is_binary(raw) {
+            // a raw file upload (`PUT /shell.php`): only server code hidden in it
+            if let Some(indicator) = multipart::embedded_code(raw) {
+                out.push(Finding {
+                    class: MaliciousUpload,
+                    score: 8.0,
+                    location: "body".to_string(),
+                    indicators: vec![indicator],
+                    sample: String::new(),
+                });
+            }
+        } else {
+            let t = text.trim_start();
+            let json =
+                (t.starts_with('{') || t.starts_with('[')) && self.inspect_json(text, names, out);
+            if !json {
+                out.extend(self.inspect_value("body", text, false));
+            }
+        }
+    }
+
+    /// Walks `text` as JSON, collecting top-level keys for session-fixation detection.
+    /// `false` if it doesn't parse.
+    fn inspect_json(&self, text: &str, names: &mut Vec<String>, out: &mut Vec<Finding>) -> bool {
+        match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(v) => {
+                if let Some(m) = v.as_object() {
+                    names.extend(m.keys().take(1000).map(|k| k.to_ascii_lowercase()));
+                }
+                self.walk_json(&v, "json", out, 0);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Inspects a multipart body part by part: field names, file names (upload checks),
@@ -379,18 +449,31 @@ impl Inspector {
             out.extend(self.inspect_value("body-name", &p.name, false));
             let text = || String::from_utf8_lossy(p.body).into_owned();
             if let Some(file) = &p.filename {
-                out.extend(self.inspect_value(&format!("filename:{field}"), file, false));
-                let mut inds = multipart::filename_indicators(file);
-                // files a site never accepts by upload (wp-config.php, .bashrc, config.yml)
-                let stored = format!("/{}", multipart::normalize_filename(file));
-                if self
-                    .lexicons
-                    .scan("path", &stored)
-                    .iter()
-                    .any(|(_, n, _)| *n == "restricted_file")
-                {
-                    inds.push(("upload_restricted_file", 7.0));
+                let mut inds: Vec<(&'static str, f64)> = Vec::new();
+                // `filename*` is preferred, but a server may store `filename`: check both
+                for name in std::iter::once(file).chain(p.alt_filename.iter()) {
+                    out.extend(self.inspect_value(&format!("filename:{field}"), name, false));
+                    let mut found = multipart::filename_indicators(name);
+                    // files a site never accepts by upload (wp-config.php, .bashrc, config.yml)
+                    let stored = format!("/{}", multipart::normalize_filename(name));
+                    if self
+                        .lexicons
+                        .scan("path", &stored)
+                        .iter()
+                        .any(|(_, n, _)| *n == "restricted_file")
+                    {
+                        found.push(("upload_restricted_file", 7.0));
+                    }
+                    for f in found {
+                        if !inds.iter().any(|(n, _)| *n == f.0) {
+                            inds.push(f);
+                        }
+                    }
                 }
+                let shown = match &p.alt_filename {
+                    Some(alt) => format!("{file} / {alt}"),
+                    None => file.clone(),
+                };
                 if multipart::is_binary(p.body) {
                     if let Some(n) = multipart::embedded_code(p.body) {
                         inds.push((n, 8.0));
@@ -402,7 +485,7 @@ impl Inspector {
                     MaliciousUpload,
                     format!("filename:{field}"),
                     inds,
-                    file,
+                    &shown,
                 ));
             } else if p
                 .content_type

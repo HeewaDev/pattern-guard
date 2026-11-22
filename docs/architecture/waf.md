@@ -29,7 +29,8 @@ Suggested thresholds: log at ≥ 4, block at ≥ 7. These are the gateway defaul
 | Path | Responsibility |
 |---|---|
 | `inspect.rs` | `Inspector`: request walking, the per-value pipeline, scoring, multipart, session fixation, JSON walking |
-| `decode.rs` | Server-like decoding (`%XX` ×≤4, `%uXXXX`, HTML entities, `\uXXXX` / `\xHH`), base64 variants, UTF-7, look-alike bracket folding |
+| `decode.rs` | Server-like decoding (`%XX` ×≤4 with overlong UTF-8 folded to ASCII, `%uXXXX`, HTML entities, `\uXXXX` / `\xHH`), base64 variants, UTF-7, look-alike bracket folding |
+| `body.rs` | A body as text: byte-order marks, the declared charset, UTF-16 / UTF-32 transcoding (also undeclared, by RFC 4627 null-byte detection), `body_charset` for charsets that hide content (EBCDIC, UTF-7, unknown) |
 | `indicators.rs` | `AttackClass` and ~110 weighted regex indicators (`Indicator { class, name, weight, pattern }`) |
 | `lexicon.rs` | OWASP CRS phrase lists with Aho-Corasick, each with a scope (`Values`, `Path`, `Call`) |
 | `sql.rs` | SQL tokenizer and structural scoring: breakouts, whole-value expressions, function calls |
@@ -44,13 +45,16 @@ Suggested thresholds: log at ≥ 4, block at ≥ 7. These are the gateway defaul
 |---|---|---|---|
 | Path | `path` | no | Some indicators are exempt in the path (`dom_sink`, `js_cookie_domain`, `generic_event_handler`); no shell or SSRF analysis |
 | Query name / value | `query-name`, `query:<name>` | yes | Names are collected for session-fixation detection |
-| `User-Agent`, `Referer`, `X-Forwarded-Host`, `X-Original-URL`, `X-Rewrite-URL` | `header:<name>` | no | Full analysis, except SSRF is skipped for the Referer |
+| `User-Agent`, `Referer`, `X-Forwarded-Host`, `X-Original-URL`, `X-Rewrite-URL` | `header:<name>` | no | Full analysis |
+| `X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`, `X-Client-IP`, `Forwarded`, `Origin` | `header:<name>` | no | Full analysis: applications log and reflect them (second-order SQLi, stored XSS) |
+| | | | `Referer`, `Origin` and the client-address headers carry the client's own, often internal, addresses: no SSRF / RFI analysis or indicators there |
 | `Cookie` | `cookie:<name>` per pair | yes | |
 | Every other header | `header:<name>` | no | **Only** JNDI / Java indicators (`jndi_only`), so arbitrary headers can't cause false positives |
-| Form body | `body-name`, `body:<name>` | yes | `application/x-www-form-urlencoded` |
+| Form body | `body-name`, `body:<name>` | yes | `application/x-www-form-urlencoded`. Every non-multipart body is first decoded to text by `body.rs` |
 | JSON body | `json.<path>`, `json.<path>-key`, `json.items[2]` | no | Walked recursively: depth ≤ 32, ≤ 1 000 items per level. Invalid JSON is inspected as text |
 | Multipart body | `body:<field>`, `filename:<field>`, `json.<field>…`, `multipart` | no | See [Multipart](#multipart) |
-| XML, `text/*`, unknown, or no content type | `body` | no | The whole (truncated) body as one value |
+| XML, `text/*` | `body` | no | The whole (truncated) body as one value |
+| No or an unknown content type | `json…` or `body` | no | Inspected anyway (frameworks often parse bodies whatever the declared type): walked as JSON if it starts with `{` / `[` and parses, otherwise one value. Binary content (a raw upload) is only searched for embedded server code (`upload_embedded_php`: 8) |
 
 ## The per-value pipeline (`inspect_value_filtered`)
 
@@ -88,7 +92,7 @@ Scoring rules:
 |---|---|---|---|
 | Regex indicators | all | Signatures per class: tags and event handlers, traversal sequences, template syntax, JNDI lookups, XXE entities, Mongo operators, PHP tags and wrappers, Java serialisation, Node / Perl / EL code, prototype pollution | ~110, e.g. `script_tag`, `jndi_lookup` (see `indicators.rs`) |
 | Lexicons (CRS) | PathTraversal, CommandInjection, PhpInjection, JavaInjection | OS files (3, values), restricted files (7, path only), Unix shell words (4), PHP functions followed by `(` (5), Java classes (7) | `lfi_os_file`, `restricted_file`, `unix_shell`, `php_function_call`, `java_class` |
-| SQL tokenizer | SqlInjection | A quote breaking out of a string into SQL (7); numeric-context continuation (`1) or (1=1`); the whole value is a SQL expression (3–4); database functions (3, dangerous ones 5). Values with three plain words in a row are prose | `sql_string_breakout`, `sql_numeric_breakout`, `sql_expression`, `sql_known_function`, `sql_dangerous_function` |
+| SQL tokenizer | SqlInjection | A quote breaking out of a string into SQL (7); numeric-context continuation (`1) or (1=1`), also into a comparison on a column (`1 or username='admin'`, `0 or id in (`, `1 or name is not null`: 7); the whole value is a SQL expression (3–4); database functions (3, dangerous ones 5). Values with three plain words in a row are prose | `sql_string_breakout`, `sql_numeric_breakout`, `sql_column_breakout`, `sql_expression`, `sql_known_function`, `sql_dangerous_function` |
 | Shell | CommandInjection | Undoes quotes, `${IFS}`, `{a,b}`, `[x]` and empty expansions, splits on `; \n \| & ( ) { }`, scores command words by position and arguments; Windows `FOR` and `IF` | `shell_chained_command` (5), `shell_command_word`, `shell_command_args`, `windows_for_loop` (7), … |
 | URL / SSRF | Ssrf, RemoteFileInclusion | Decimal, hex and octal IPv4, IPv4-mapped IPv6, Unicode look-alikes; internal ranges and names; cloud metadata; parser confusion (several `@`, or a space, `&` or `#` right before the `@`; backslashes in the authority); remote scripts on RFI-typical parameters | `ssrf_cloud_metadata`, `ssrf_internal_address`, `ssrf_obfuscated_ip`, `url_parser_confusion`, `rfi_remote_script`, `rfi_known_parameter`, … |
 | Session fixation | SessionFixation | A framework session-id parameter name (`jsessionid`, `phpsessid`, …) without a same-site Referer: 8 | `session_id_parameter_without_referer`, `…_foreign_referer` |
