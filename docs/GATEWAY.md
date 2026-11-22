@@ -417,6 +417,17 @@ attacker-sized value:
 | Table | Cap | Per entry |
 |---|---|---|
 | Rate-limit buckets | 200 000 (least recently used evicted) | fixed: keyed by a keyed 64-bit hash of the IP, route or header value, never the value itself |
+| Decision-log queue (lines waiting for the disk) | 10 000 lines and `limits.decision_log_queue_bytes` (default 16 MiB, minimum 64 KiB) | one line, a few KiB at most (see below) |
+
+**Decision log under pressure.** The request path never waits for the disk: when the
+writer is 10 000 lines or `decision_log_queue_bytes` behind (a slow, full or hung disk),
+new lines are dropped and counted in `pattern_guard_decision_log_dropped_total`. Values a
+client controls are truncated before they are logged, so a ~400 KB request head can't
+turn into a ~400 KB line: `http.hostname` at 256 bytes, `http.url` at 8 KiB (the default
+`protocol.max_url_bytes`, so URLs the defaults accept are logged whole),
+`http.http_user_agent` at 1 KiB, each reason and reputation value at 512 bytes, WAF
+`location` and `sample` at 256 bytes. A truncated value ends in `…`; field names don't
+change.
 
 ## Limits of this version
 

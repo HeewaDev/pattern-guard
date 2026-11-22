@@ -19,6 +19,8 @@ pub struct Metrics {
     pub upstream_errors: AtomicU64,
     pub body_too_large: AtomicU64,
     pub connections_rejected: AtomicU64,
+    /// Decision-log lines dropped because the writer was too far behind.
+    pub decision_log_dropped: AtomicU64,
     pub crowdsec_ok: AtomicU64,
     pub duration_us_sum: AtomicU64,
     pub requests: AtomicU64,
@@ -108,6 +110,11 @@ impl Metrics {
                 "pattern_guard_connections_rejected_total",
                 "Connections over the per-IP limit.",
                 &self.connections_rejected,
+            ),
+            (
+                "pattern_guard_decision_log_dropped_total",
+                "Decision-log lines dropped because the writer fell behind (queue full by lines or bytes).",
+                &self.decision_log_dropped,
             ),
         ] {
             c(&mut s, name, help);

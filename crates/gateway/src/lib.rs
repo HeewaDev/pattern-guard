@@ -69,6 +69,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
     }
     let mut client = Client::builder(TokioExecutor::new());
     client.pool_idle_timeout(Duration::from_secs(60));
+    let metrics = Arc::new(Metrics::default());
     let state = State {
         challenger: Challenger::new(
             &cfg.challenge.secret,
@@ -78,8 +79,10 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         guard,
         waf: Inspector::new(),
         intel: Arc::new(IntelStore::default()),
-        metrics: Arc::new(Metrics::default()),
-        log: cfg.log.decisions.clone().map(EventLog::start),
+        log: cfg.log.decisions.clone().map(|path| {
+            EventLog::start(path, cfg.limits.decision_log_queue_bytes, metrics.clone())
+        }),
+        metrics,
         inventory: Inventory::default(),
         client: client.build_http(),
         upstream_scheme: up.scheme().cloned().ok_or("upstream needs a scheme")?,
