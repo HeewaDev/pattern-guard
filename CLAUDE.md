@@ -102,7 +102,7 @@ call chains with grep or by reading the code. Run `graphify update .` again afte
 - The WAF `RegexSet` uses a 16 MiB lazy-DFA cache. With less, it falls back to the PikeVM and runs ~60×
   slower. Random-looking values make it slow anyway, so `Inspector::indicator_matches` switches to
   one-regex-at-a-time matching for them (same matches, unit-tested), and a request inspects at most
-  4 096 values (`inspection_limit`). `inspect_bench` guards both, including fresh random values.
+  8 192 values (`inspection_limit`). `inspect_bench` guards both, including fresh random values.
 - No `unsafe`. A poisoned lock is recovered (`unwrap_or_else(PoisonError::into_inner)`),
   never unwrapped into a panic on the request path.
 

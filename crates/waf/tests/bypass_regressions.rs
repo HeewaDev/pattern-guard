@@ -178,3 +178,33 @@ fn both_upload_file_names_are_checked() {
     let benign = b"--X\r\nContent-Disposition: form-data; name=\"cv\"; filename=\"resume.pdf\"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf\r\n\r\nplain text cv\r\n--X--\r\n";
     assert!(request_score(&w, &[], ct, benign) < BLOCK);
 }
+
+/// JSON is walked to the end of the request's value budget, not 1 000 items per level;
+/// nesting too deep to walk is flagged.
+#[test]
+fn large_and_deep_json() {
+    let w = Inspector::new();
+    let ct = Some("application/json");
+    let mut arr = String::from("[");
+    for _ in 0..1001 {
+        arr.push_str("0,\"ok\",");
+    }
+    arr.push_str("\"<svg onload=alert(1)>\"]");
+    assert!(request_score(&w, &[], ct, arr.as_bytes()) >= BLOCK);
+    let mut obj = String::from("{");
+    for i in 0..1100 {
+        obj.push_str(&format!("\"a{i:04}\":0,"));
+    }
+    obj.push_str("\"zzzz\":\"' OR '1'='1' -- \"}");
+    assert!(request_score(&w, &[], ct, obj.as_bytes()) >= BLOCK);
+    let deep = format!("{}\"x\"{}", "[".repeat(70), "]".repeat(70));
+    assert!(request_score(&w, &[], ct, deep.as_bytes()) >= BLOCK);
+    // ordinary nesting and a bulk list of benign records stay clean
+    let normal = format!("{}\"x\"{}", "[".repeat(10), "]".repeat(10));
+    assert!(request_score(&w, &[], ct, normal.as_bytes()) < BLOCK);
+    let bulk: String = (0..1500)
+        .map(|i| format!("{{\"id\":{i},\"name\":\"item {i}\"}}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(request_score(&w, &[], ct, format!("[{bulk}]").as_bytes()) < BLOCK);
+}

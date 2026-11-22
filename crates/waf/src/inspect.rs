@@ -1,7 +1,9 @@
 //! Walks a request (path, query, headers, cookies, body) and scores every value.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::BuildHasher;
 use std::time::{Duration, Instant};
 
 use regex::{Regex, RegexSet, RegexSetBuilder};
@@ -18,14 +20,19 @@ use crate::shell::Shell;
 use crate::sql::Sql;
 use crate::ssrf::Ssrf;
 
-/// Values inspected per request at most. Past this the request gets an
+/// Values inspected per request at most (JSON strings inspected clean once are not
+/// counted again). Past this the request gets an
 /// `inspection_limit` finding (7), so padding can't push a payload past an uninspected
 /// limit, and an attacker can't buy unbounded work with one request.
-const MAX_VALUES: usize = 4096;
+const MAX_VALUES: usize = 8192;
 
 /// Time a request may spend in the combined indicator automaton before its remaining
 /// values are matched one regex at a time (see [`Inspector::indicator_matches`]).
 const SET_BUDGET: Duration = Duration::from_millis(2);
+
+/// JSON nested deeper than this is not walked; the request gets a `json_too_deep`
+/// finding (7) instead of being skipped silently.
+const MAX_JSON_DEPTH: usize = 64;
 
 /// Per-request inspection state.
 #[derive(Default)]
@@ -33,6 +40,12 @@ struct Scan {
     values: Cell<usize>,
     set_time: Cell<Duration>,
     limited: Cell<bool>,
+    too_deep: Cell<bool>,
+    /// Keyed hashes of JSON strings already inspected clean in this request: bulk JSON
+    /// repeats its keys (and many values) thousands of times, and a JSON string's result
+    /// doesn't depend on where it appears, so each is inspected once. The hash key is
+    /// random per process, so a collision can't be forged to skip a payload.
+    json_clean: RefCell<HashSet<u64>>,
 }
 
 /// Indicators that are ignored in the URL path.
@@ -91,6 +104,7 @@ pub struct HttpRequest<'a> {
 }
 
 pub struct Inspector {
+    hasher: RandomState,
     set: RegexSet,
     /// The same indicators one by one, for random-looking input (see `indicator_matches`).
     each: Vec<Regex>,
@@ -127,6 +141,7 @@ impl Inspector {
             .build()
             .expect("WAF patterns compile");
         Self {
+            hasher: RandomState::new(),
             set,
             each: ind
                 .iter()
@@ -412,6 +427,15 @@ impl Inspector {
         if let Some(f) = self.session_fixation(&names, req.headers) {
             out.findings.push(f);
         }
+        if scan.too_deep.get() {
+            out.findings.push(Finding {
+                class: ProtocolViolation,
+                score: 7.0,
+                location: "body".to_string(),
+                indicators: vec!["json_too_deep"],
+                sample: format!("JSON nested deeper than {MAX_JSON_DEPTH}"),
+            });
+        }
         if scan.limited.get() {
             out.findings.push(Finding {
                 class: ProtocolViolation,
@@ -640,26 +664,39 @@ impl Inspector {
         out: &mut Vec<Finding>,
         depth: usize,
     ) {
-        if depth > 32 {
+        // Every string and key is walked until the request's value budget (MAX_VALUES)
+        // runs out; a per-level cap used to skip item 1 001 onwards silently.
+        if depth > MAX_JSON_DEPTH {
+            scan.too_deep.set(true);
             return;
         }
+        let scalar = |x: &serde_json::Value| {
+            matches!(
+                x,
+                serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::Null
+            )
+        };
         match v {
-            serde_json::Value::String(s) => {
-                if let Some(f) = self.scan_value(scan, path, s, false) {
-                    out.push(f);
-                }
-            }
+            serde_json::Value::String(s) => self.scan_json_string(scan, path, s, out),
             serde_json::Value::Array(a) => {
-                for (i, x) in a.iter().enumerate().take(1000) {
-                    self.walk_json(scan, x, &format!("{path}[{i}]"), out, depth + 1);
+                for (i, x) in a.iter().enumerate() {
+                    if scan.limited.get() {
+                        break;
+                    }
+                    if !scalar(x) {
+                        self.walk_json(scan, x, &format!("{path}[{i}]"), out, depth + 1);
+                    }
                 }
             }
             serde_json::Value::Object(m) => {
-                for (k, x) in m.iter().take(1000) {
-                    if let Some(f) = self.scan_value(scan, &format!("{path}-key"), k, false) {
-                        out.push(f);
+                for (k, x) in m {
+                    if scan.limited.get() {
+                        break;
                     }
-                    self.walk_json(scan, x, &format!("{path}.{k}"), out, depth + 1);
+                    self.scan_json_string(scan, &format!("{path}-key"), k, out);
+                    if !scalar(x) {
+                        self.walk_json(scan, x, &format!("{path}.{k}"), out, depth + 1);
+                    }
                 }
             }
             _ => {}
@@ -669,6 +706,22 @@ impl Inspector {
 
 /// Long and made of many different characters: the shape that makes the combined
 /// indicator automaton slow (prose of the same length uses far fewer characters).
+impl Inspector {
+    /// One JSON key or string value, inspected once per request (see `Scan::json_clean`).
+    fn scan_json_string(&self, scan: &Scan, location: &str, s: &str, out: &mut Vec<Finding>) {
+        let h = self.hasher.hash_one(s);
+        if scan.json_clean.borrow().contains(&h) {
+            return;
+        }
+        match self.scan_value(scan, location, s, false) {
+            Some(f) => out.push(f),
+            None => {
+                scan.json_clean.borrow_mut().insert(h);
+            }
+        }
+    }
+}
+
 fn diverse(v: &str) -> bool {
     if v.len() < 256 {
         return false;
