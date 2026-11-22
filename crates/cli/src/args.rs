@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
 use pattern_guard::Config;
-use pattern_guard::logs::{LogFormat, LogRecord, parse_line};
+use pattern_guard::logs::{LogFormat, LogRecord, Ordered, ReplayOrder, parse_line};
 
 use crate::BoxErr;
 
@@ -63,32 +63,54 @@ pub(crate) fn open_log(path: &str) -> Result<Box<dyn BufRead>, BoxErr> {
     })
 }
 
-/// Streams records, auto-detecting the format from the first data line.
+/// Counts skipped lines and prints the first few.
+#[derive(Default)]
+struct Skipped(usize);
+
+impl Skipped {
+    fn note(&mut self, line_no: usize, why: &str) {
+        self.0 += 1;
+        if self.0 <= 5 {
+            eprintln!("pattern-guard: line {line_no}: {why} (skipped)");
+        }
+    }
+}
+
+/// Streams records in time order, auto-detecting the format from the first data line.
+/// Unparseable lines and records whose timestamps would corrupt the event-time replay
+/// (see [`ReplayOrder`]) are skipped and counted.
 pub(crate) fn for_each_record(
     path: &str,
     format: Option<LogFormat>,
     mut f: impl FnMut(LogRecord),
 ) -> Result<usize, BoxErr> {
     let mut format = format;
-    let mut bad = 0usize;
+    let mut skipped = Skipped::default();
+    let mut order = ReplayOrder::new();
+    let mut deliver = |o: Ordered<(usize, LogRecord)>, skipped: &mut Skipped| match o {
+        Ordered::Keep((_, r)) => f(r),
+        Ordered::Skip((n, _), why) => skipped.note(n, &why),
+    };
     for (n, line) in open_log(path)?.lines().enumerate() {
         let line = line?;
         let fmt = *format.get_or_insert_with(|| LogFormat::detect(&line));
         match parse_line(&line, fmt) {
-            Ok(Some(r)) => f(r),
-            Ok(None) => {}
-            Err(e) => {
-                bad += 1;
-                if bad <= 5 {
-                    eprintln!("pattern-guard: line {}: {e} (skipped)", n + 1);
+            Ok(Some(r)) => {
+                if let Some(o) = order.push(r.event.unix_secs(), (n + 1, r)) {
+                    deliver(o, &mut skipped);
                 }
             }
+            Ok(None) => {}
+            Err(e) => skipped.note(n + 1, &e),
         }
     }
-    if bad > 5 {
-        eprintln!("pattern-guard: {bad} unparseable lines skipped in total");
+    while let Some(o) = order.finish() {
+        deliver(o, &mut skipped);
     }
-    Ok(bad)
+    if skipped.0 > 5 {
+        eprintln!("pattern-guard: {} lines skipped in total", skipped.0);
+    }
+    Ok(skipped.0)
 }
 
 pub(crate) fn format_flag(f: &Flags) -> Result<Option<LogFormat>, BoxErr> {
