@@ -147,6 +147,19 @@ WAF bypasses found in an internal security review (regression tests in
 
 Gateway issues found in the same review:
 
+- **Client identity**: the `X-Forwarded-For` sent upstream is rebuilt from the resolved
+  client (`<client>` for a direct client, `<client>, <trusted hops>, <peer>` behind trusted
+  proxies), so entries a client forged no longer reach the application; a non-XFF
+  `client_ip.header` (e.g. `CF-Connecting-IP`) is set to the client. The client IP is
+  resolved from every line of `client_ip.header`, not only the first.
+- **Operations and logins**: `form:` / `json:` identifiers are read whatever the declared
+  Content-Type (charsets and UTF-16, multipart forms, JSON sniffing, form/JSON
+  cross-matching), so switching the Content-Type no longer evades login lockout, budgets or
+  replay protection. The body is read once per request in one streaming pass without
+  building a JSON tree (a 10 MiB body cost ~160 MiB per field).
+- **Budgets spent for a victim**: a per-account token is given back when the request is not
+  forwarded or the application answers 401 / 403, so anyone who knows a public identifier can
+  no longer exhaust another account's budget with requests that are blocked or refused.
 - **Encoded paths walked around policies**: rules, rate limits, operations, logins, traps,
   restricted extensions and `waf.exclude_paths` matched the raw path, while applications
   decode it. `/%61dmin`, `/ADMIN`, `//admin`, `/x/../admin`, `/dump%2Esql` and
