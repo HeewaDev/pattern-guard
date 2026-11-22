@@ -118,6 +118,20 @@ pub struct LimitsConfig {
     /// Seconds a client has to send complete request headers (slowloris protection).
     #[serde(default = "d_header_timeout")]
     pub header_read_timeout_secs: u64,
+    /// A request body must keep arriving: within every period of this many seconds, at
+    /// least `body_min_bytes_per_sec × body_read_timeout_secs` bytes (or the rest of the
+    /// body). Otherwise 408 and the connection is closed (slow-body / stalled-upload
+    /// protection).
+    #[serde(default = "d_body_timeout")]
+    pub body_read_timeout_secs: u64,
+    /// Minimum average body rate over each `body_read_timeout_secs` period. 0 = only
+    /// a stall of a whole period times out.
+    #[serde(default = "d_body_min_rate")]
+    pub body_min_bytes_per_sec: u64,
+    /// Request-body bytes buffered at once across all requests (0 = unlimited). A
+    /// request that would go over it gets 503. Never less than `max_body_bytes`.
+    #[serde(default = "d_buffered_bodies")]
+    pub max_buffered_body_bytes: usize,
     /// Bytes of decision-log lines that may wait in memory for a slow or stalled disk;
     /// further lines are dropped and counted.
     #[serde(default = "d_log_queue_bytes")]
@@ -135,6 +149,17 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         toml::from_str("").unwrap()
+    }
+}
+
+impl GatewayConfig {
+    /// The effective `limits.max_buffered_body_bytes`: `None` = unlimited, and never
+    /// below `max_body_bytes`, so one body of the largest accepted size always fits.
+    pub fn body_budget(&self) -> Option<usize> {
+        match self.limits.max_buffered_body_bytes {
+            0 => None,
+            b => Some(b.max(self.max_body_bytes)),
+        }
     }
 }
 
@@ -744,6 +769,15 @@ fn d_conn() -> u32 {
 fn d_header_timeout() -> u64 {
     10
 }
+fn d_body_timeout() -> u64 {
+    30
+}
+fn d_body_min_rate() -> u64 {
+    1024
+}
+fn d_buffered_bodies() -> usize {
+    256 * 1024 * 1024
+}
 fn d_log_queue_bytes() -> usize {
     16 * 1024 * 1024
 }
@@ -836,6 +870,9 @@ impl GatewayConfig {
                 "limits.decision_log_queue_bytes must be at least {MIN_LOG_QUEUE_BYTES}"
             ));
         }
+        if self.limits.body_read_timeout_secs == 0 {
+            return Err("limits.body_read_timeout_secs must be at least 1".into());
+        }
         if self.limits.max_bans == 0 || self.limits.max_intel_entries_per_source == 0 {
             return Err(
                 "limits.max_bans and limits.max_intel_entries_per_source must be at least 1".into(),
@@ -906,5 +943,17 @@ mod tests {
         );
         assert!(bad("max_bans = 0"));
         assert!(bad("max_intel_entries_per_source = 0"));
+        assert_eq!(
+            (
+                c.limits.body_read_timeout_secs,
+                c.limits.body_min_bytes_per_sec,
+                c.limits.max_buffered_body_bytes
+            ),
+            (30, 1024, 256 * 1024 * 1024)
+        );
+        assert!(bad("body_read_timeout_secs = 0"));
+        assert!(!bad(
+            "body_min_bytes_per_sec = 0\nmax_buffered_body_bytes = 0"
+        ));
     }
 }

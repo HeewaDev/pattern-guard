@@ -24,6 +24,13 @@ pub struct Metrics {
     /// Reputation entries evicted because their source was at its cap (shared with
     /// the `IntelStore`).
     pub intel_evicted: Arc<AtomicU64>,
+    /// Request-body bytes buffered right now. This is also the counter the
+    /// `limits.max_buffered_body_bytes` budget is enforced on (`server::read_body`).
+    pub buffered_body_bytes: AtomicU64,
+    /// Requests refused with 408: the body arrived too slowly or stalled.
+    pub rejected_body_timeout: AtomicU64,
+    /// Requests refused with 503: buffering the body would exceed the budget.
+    pub rejected_body_budget: AtomicU64,
     pub crowdsec_ok: AtomicU64,
     pub duration_us_sum: AtomicU64,
     pub requests: AtomicU64,
@@ -157,6 +164,26 @@ impl Metrics {
         for (k, v) in self.feeds.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             let _ = writeln!(s, "pattern_guard_feed_alerts_total{{source=\"{k}\"}} {v}");
         }
+        c(
+            &mut s,
+            "pattern_guard_requests_rejected_total",
+            "Requests refused by a connection-level limit before inspection, by reason.",
+        );
+        for (reason, v) in [
+            ("body_timeout", &self.rejected_body_timeout),
+            ("body_budget", &self.rejected_body_budget),
+        ] {
+            let _ = writeln!(
+                s,
+                "pattern_guard_requests_rejected_total{{reason=\"{reason}\"}} {}",
+                v.load(Relaxed)
+            );
+        }
+        let _ = writeln!(
+            s,
+            "# HELP pattern_guard_buffered_body_bytes Request-body bytes buffered right now.\n# TYPE pattern_guard_buffered_body_bytes gauge\npattern_guard_buffered_body_bytes {}",
+            self.buffered_body_bytes.load(Relaxed)
+        );
         let _ = writeln!(
             s,
             "# HELP pattern_guard_intel_entries Active reputation entries.\n# TYPE pattern_guard_intel_entries gauge\npattern_guard_intel_entries {intel_entries}"
