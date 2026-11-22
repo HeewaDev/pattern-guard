@@ -9,6 +9,8 @@ use regex::Regex;
 
 use crate::config::{RuleAction, RuleConfig};
 use crate::ipnet::{Cidr, any_contains};
+use crate::policy::path::PathView;
+use crate::util::form_decode;
 
 struct HeaderCond {
     name: String,
@@ -104,8 +106,9 @@ impl RuleSet {
 
     pub fn evaluate(&self, ip: IpAddr, parts: &Parts, country: Option<&str>) -> RuleOutcome {
         let mut out = RuleOutcome::default();
+        let path = PathView::new(parts.uri.path());
         for r in &self.rules {
-            if !r.matches(ip, parts, country) {
+            if !r.matches(ip, parts, &path, country) {
                 continue;
             }
             match r.action {
@@ -129,21 +132,34 @@ fn host_matches(pattern: &str, host: &str) -> bool {
 }
 
 impl Rule {
-    fn matches(&self, ip: IpAddr, parts: &Parts, country: Option<&str>) -> bool {
+    /// All conditions must hold. Path and query conditions of an exemption (`allow`,
+    /// `skip_waf`) must hold for the raw and the canonical request; for every other action
+    /// either is enough (see `policy::path`).
+    fn matches(&self, ip: IpAddr, parts: &Parts, path: &PathView, country: Option<&str>) -> bool {
         if !self.countries.is_empty()
             && !country.is_some_and(|c| self.countries.iter().any(|x| x == c))
         {
             return false;
         }
-        let path = parts.uri.path();
+        let exemption = matches!(self.action, RuleAction::Allow | RuleAction::SkipWaf);
         let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
         if let Some(p) = &self.path_prefix {
-            if !path.starts_with(p.as_str()) {
+            let hit = if exemption {
+                path.exempts_prefix(p)
+            } else {
+                path.protects_prefix(p)
+            };
+            if !hit {
                 return false;
             }
         }
         if let Some(re) = &self.path_re {
-            if !re.is_match(path) {
+            let hit = if exemption {
+                path.exempts_regex(re)
+            } else {
+                path.protects_regex(re)
+            };
+            if !hit {
                 return false;
             }
         }
@@ -174,7 +190,14 @@ impl Rule {
             }
         }
         if let Some(re) = &self.query_re {
-            if !re.is_match(parts.uri.query().unwrap_or("")) {
+            let raw = parts.uri.query().unwrap_or("");
+            let decoded = form_decode(raw);
+            let hit = if exemption {
+                re.is_match(raw) && re.is_match(&decoded)
+            } else {
+                re.is_match(raw) || re.is_match(&decoded)
+            };
+            if !hit {
                 return false;
             }
         }

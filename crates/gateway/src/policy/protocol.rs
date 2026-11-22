@@ -96,8 +96,8 @@ impl Protocol {
             return v(StatusCode::BAD_REQUEST, "missing Host header".into());
         }
         if !self.extensions.is_empty() {
-            let path = parts.uri.path().to_ascii_lowercase();
-            if let Some(e) = self.extensions.iter().find(|e| path.ends_with(e.as_str())) {
+            let path = crate::policy::path::PathView::new(parts.uri.path());
+            if let Some(e) = self.extensions.iter().find(|e| path.protects_suffix(e)) {
                 return v(StatusCode::FORBIDDEN, format!("restricted extension {e}"));
             }
         }

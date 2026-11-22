@@ -58,6 +58,19 @@ count towards automatic bans.
 `[[rules]]`, evaluated in file order. Every condition you set must match. The first
 terminal action wins; `log` and `skip_waf` keep evaluating.
 
+**How paths are matched (rules, rate limits, operations, logins, traps, restricted
+extensions, `waf.exclude_paths`).** Your application decodes the path before routing it
+(`/%61dmin` is `/admin`, `/a/../b` is `/b`, `//admin` is `/admin`, `/x/..;/admin` is `/admin`
+on Tomcat and Spring, `\` is `/` on IIS). So the gateway matches against both the raw path
+and a canonical one:
+- a **protection** (block / challenge / delay / log rules, rate limits, operations, logins,
+  traps, restricted extensions) applies when either form matches, ignoring upper and lower case;
+- an **exemption** (`allow` and `skip_waf` rules, `waf.exclude_paths`) applies only when both
+  forms match exactly. `/health/..;/app` is not exempted by `exclude_paths = ["/health"]`.
+
+The request is forwarded with its original path. Prefixes are plain string prefixes:
+`/health` also matches `/healthz`, so write `/health/` or use `path_regex` when that matters.
+
 | Condition | Meaning |
 |---|---|
 | `path` / `path_regex` | Path prefix / regex (query string excluded) |

@@ -109,6 +109,16 @@ WAF bypasses found in an internal security review (regression tests in
 - **Uploads**: with both `filename` and `filename*`, both names are checked.
 - Cost: a typical request takes ~19 µs instead of ~17.5 µs (`inspect_bench`).
 
+Gateway issues found in the same review:
+
+- **Encoded paths walked around policies**: rules, rate limits, operations, logins, traps,
+  restricted extensions and `waf.exclude_paths` matched the raw path, while applications
+  decode it. `/%61dmin`, `/ADMIN`, `//admin`, `/x/../admin`, `/dump%2Esql` and
+  `/health/..;/app` evaded a rule or reached an exemption. Paths are now matched raw and
+  canonical (`policy/path.rs`): protections apply when either form matches (ignoring
+  case), exemptions only when both match. Query-string rules match the raw and the decoded
+  query the same way.
+
 ### Fixed
 
 - **Gateway**: a request to `/.pattern-guard/verify` whose `r=` value had a non-ASCII byte

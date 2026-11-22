@@ -41,10 +41,11 @@ impl Bans {
 
     /// The trap prefix this path hits, if any.
     pub fn trap(&self, path: &str) -> Option<&str> {
+        let path = crate::policy::path::PathView::new(path);
         self.traps
             .paths
             .iter()
-            .find(|p| path.starts_with(p.as_str()))
+            .find(|p| path.protects_prefix(p))
             .map(String::as_str)
     }
 

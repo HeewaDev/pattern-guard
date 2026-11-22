@@ -969,3 +969,93 @@ async fn country_policy_and_country_rules() {
         .expect("needs a database");
     assert!(err.contains("[geo] database"), "{err}");
 }
+
+/// Paths the application decodes (`%61dmin`, `%2E`, `..;`, `//`, upper case) can't walk
+/// around protections, and can't move a request into an exemption (security review F1).
+#[tokio::test]
+async fn encoded_paths_cannot_walk_around_policies() {
+    let gw = start_gateway(
+        r#"
+[waf]
+exclude_paths = ["/health"]
+[protocol]
+restricted_extensions = [".sql"]
+[traps]
+paths = ["/wp-admin"]
+ban_secs = 1
+[[rules]]
+name = "no admin"
+path = "/admin"
+action = "block"
+[[rules]]
+name = "public static files"
+path = "/static/"
+action = "allow"
+"#,
+    )
+    .await;
+    let xss = "x=%3Cscript%3Ealert(1)%3C%2Fscript%3E";
+    for (n, path) in [
+        "/%61dmin/secret",
+        "/ADMIN/secret",
+        "//admin/secret",
+        "/x/../admin/secret",
+        "/admin;x=1/secret",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let ip = format!("203.0.113.{}", 30 + n);
+        let r = send(gw.addr, "GET", path, &[("x-forwarded-for", &ip)], "").await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {}", r.body);
+    }
+    for path in ["/dump%2Esql", "/dump.SQL", "/dump.sql;v=1"] {
+        let r = send(
+            gw.addr,
+            "GET",
+            path,
+            &[("x-forwarded-for", "203.0.113.40")],
+            "",
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {}", r.body);
+    }
+    // an exemption needs the raw and the canonical path: the WAF still sees these
+    for path in ["/health/..;/app", "/health/%2e%2e/app", "/static/../app"] {
+        let target = format!("{path}?{xss}");
+        let r = send(
+            gw.addr,
+            "GET",
+            &target,
+            &[("x-forwarded-for", "203.0.113.41")],
+            "",
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {}", r.body);
+    }
+    // real exemptions still work
+    let r = send(
+        gw.addr,
+        "GET",
+        &format!("/health/live?{xss}"),
+        &[("x-forwarded-for", "203.0.113.42")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    // a trap hit through an encoded path still bans
+    let r = send(
+        gw.addr,
+        "GET",
+        "/%77p-admin/",
+        &[("x-forwarded-for", "203.0.113.43")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    assert!(
+        r.body.contains("request_id") || r.body.contains("blocked"),
+        "{}",
+        r.body
+    );
+}

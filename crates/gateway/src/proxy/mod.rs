@@ -35,6 +35,7 @@ use crate::challenge::VERIFY_PATH;
 use crate::config::{LimitAction, Mode, OperationAction, RuleAction};
 use crate::intel::IntelAction;
 use crate::ipnet::any_contains;
+use crate::policy::path::PathView;
 use crate::state::State;
 use crate::util::header_str;
 
@@ -143,7 +144,7 @@ pub async fn handle(
             .waf
             .exclude_paths
             .iter()
-            .any(|p| parts.uri.path().starts_with(p.as_str()))
+            .any(|p| PathView::new(parts.uri.path()).exempts_prefix(p))
     {
         let headers: Vec<(String, String)> = parts
             .headers

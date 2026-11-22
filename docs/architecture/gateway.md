@@ -23,6 +23,7 @@ learning layers.
 | `proxy/verify.rs` | `/.pattern-guard/verify`: checks a proof-of-work solution, sets the clearance cookie |
 | `proxy/responses.rs` | Block page, 429 with `Retry-After`, error responses, header helpers |
 | `proxy/decision_log.rs` | Decision-log JSON line and the rate-limited console line |
+| `policy/path.rs` | `PathView`: raw and canonical path; protections match either, exemptions need both |
 | `policy/rules.rs` | `[[rules]]`: ordered custom rules (allow / block / challenge / delay / log / skip_waf) |
 | `policy/rate_limit.rs` | `[[rate_limits]]`: token buckets per IP, IP + route, or header value |
 | `policy/operations.rs` | `[[operations]]` and `[[logins]]`: per-account budgets, allowed sources, replay protection, login failure tracking |
