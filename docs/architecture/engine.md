@@ -60,7 +60,9 @@ Event
  │ 8. trusted actor    → risk = 0, reason "trusted"
  │    else cooldown    → risk raised to the block threshold, reason "cooldown"
  │         reasons     = rule name (if it dominates) + top 3 contributions > 0.25 log-odds
- │ 9. decision = risk_to_decision(risk)
+ │    a block from shared evidence only → Challenge, reason "shared_evidence_only"
+ │         (see "Shared evidence" below)
+ │ 9. decision = risk_to_decision(risk), or Challenge after the cap above
  │10. if risk ≥ block threshold: add a strike; enough strikes in cooldown_secs → cooldown
  ▼
 Assessment
@@ -147,6 +149,29 @@ window per actor on event time, with O(1) incremental counts and a memory cap pe
 `analyzer` maps each statistic to a risk, combined by `risk_combine` (`max`, or
 `weighted_sum` = 1 − Π(1 − r)). In `hybrid` mode (the default) the final risk is
 `max(model, rules)`. With no rule configured, the rules path is skipped entirely.
+
+## Shared evidence
+
+Some inputs describe what *other* clients did, or what every legitimate first contact
+looks like (`SHARED_EVIDENCE` in `guard.rs`): `actor_new`, `cold_write`, the network's and
+the client key's failure and new-arrival signals (`subnet_*`, `client_fail_ratio`,
+`client_new_actor_share` and their surge interactions). They raise the risk, but a request
+that would block **only because of them** is challenged instead:
+
+- the model's risk is recomputed without their positive contributions; if that "own" risk
+  (or the rules' risk) is below the block threshold, the decision is `Challenge`;
+- cooldown strikes still count, but a cooldown remembers whether the actor's own behaviour
+  reached the block threshold: if not, it challenges instead of blocking.
+
+Why: with no TLS fingerprint the client key is the user agent, so an attacker using a
+popular browser's user agent made that browser's users score as abusive (blocked, then
+banned by the gateway), and a password manager's or app's first login (a cold write) was
+blocked. Route concentration and surges (`client_route_share`, `surge_x_*`) are not in the
+set: they are how distributed floods are caught, and innocent users don't share them.
+
+Measured with `realworld_eval` (seeds 7, 8, 9, built-in model): legitimate requests
+**blocked** 0.13 / 0.16 / 0.17 % → 0.03 / 0.06 / 0.04 % (now challenged); stopped,
+detection and every attack's blocked-or-challenged rate unchanged.
 
 ## Concurrency
 

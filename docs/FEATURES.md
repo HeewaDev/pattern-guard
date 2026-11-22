@@ -134,7 +134,7 @@ re-verified line by line.
 
 | # | Item | Status |
 |---|---|---|
-| 3.1 | Behaviour ML on synthetic mixed traffic (incl. unseen attacks) | 🧪 ~0.3% FP / ~98.5% detection (`tools/eval/src/bin/realworld_eval.rs`) |
+| 3.1 | Behaviour ML on synthetic mixed traffic (incl. unseen attacks) | 🧪 0.44–0.54 % stopped (0.03–0.06 % blocked) / 98.4–98.7 % detection, incl. unseen first-contact clients (`tools/eval/src/bin/realworld_eval.rs`) |
 | 3.2a | WAF, own corpus (`crates/waf/tests/corpus.rs`, tuned against) | 🧪 76/77 attacks blocked, 0/62 tricky benign blocked |
 | 3.2b | WAF, PayloadsAllTheThings payload lists (MIT, 4 437 values, development; `{FILE}` templates given a target) + benign: 4 000 names, 10 000 English words, 1 989 user agents, 1 730 code lines from the Rust book; pinned by `scripts/fetch_eval_data.sh` | 🧪 82.4 % of attacks blocked (traversal 99.9 %, SQLi 95 %, SSTI 94 %, LFI 66 %, XSS 58 %, NoSQL 58 %, command injection 55 %) · **1 of 17 719** benign blocked (a `curl … \| sh` command line). Earlier figures (92.5 % / 0 of 19 215) used lists that were not recorded |
 | 3.2c | WAF hold-out, never tuned on: SecLists / fuzzdb, 10 173 values (`scripts/eval_waf.sh`) | 🧪 96.2 %: commix command injection 99.2 % (the list is many variants of a few templates), XSS 89.3 %, LFI 84.0 % (34.7 % before the whole-value OS path rule), SQLi 75.0 % (72.9 % before the 2026-11 SQL rules) — **SQLi is the gap** |
