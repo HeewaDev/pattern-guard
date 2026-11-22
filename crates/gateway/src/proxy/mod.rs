@@ -371,7 +371,11 @@ pub async fn handle(
         }
     }
 
-    let template = pattern_guard::normalize::normalize_path(&path_q).template;
+    // Requests refused by `[protocol]` (oversized, malformed) aren't API routes: they stay
+    // out of the inventory, so they can't fill it with attacker-sized templates.
+    let template = violation
+        .is_none()
+        .then(|| pattern_guard::normalize::normalize_path(&path_q).template);
     let ctx = LogCtx {
         id: &id,
         ip,
@@ -393,9 +397,11 @@ pub async fn handle(
                 let respond = verdict.respond();
                 let status = respond.status().as_u16();
                 state.guard.observe_response(&event, status);
-                state
-                    .inventory
-                    .record(parts.method.as_str(), &template, status, true);
+                if let Some(t) = &template {
+                    state
+                        .inventory
+                        .record(parts.method.as_str(), t, status, true);
+                }
                 log_decision(&state, &parts, &ctx, status);
                 return Ok(match respond {
                     Respond::BlockPage => block_page(&parts.headers, &id),
@@ -410,9 +416,9 @@ pub async fn handle(
             Action::Challenge => {
                 // Neutral for the behavioural engine: a human who meets a challenge must
                 // not look like a client collecting failures.
-                state
-                    .inventory
-                    .record(parts.method.as_str(), &template, 403, true);
+                if let Some(t) = &template {
+                    state.inventory.record(parts.method.as_str(), t, 403, true);
+                }
                 log_decision(&state, &parts, &ctx, 403);
                 let resp = if wants_html(&parts.headers) {
                     // A browser: the proof-of-work page. A challenged form POST is sent again
@@ -465,9 +471,11 @@ pub async fn handle(
     .await;
     op_ticket.complete(status);
     state.guard.observe_response(&event, status);
-    state
-        .inventory
-        .record(parts.method.as_str(), &template, status, false);
+    if let Some(t) = &template {
+        state
+            .inventory
+            .record(parts.method.as_str(), t, status, false);
+    }
     if let Some((signature, blocked)) = leak {
         let mut leak_reasons = verdict.reasons().to_vec();
         leak_reasons.push(format!("data_leak:{signature}"));

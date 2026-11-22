@@ -260,3 +260,34 @@ async fn decision_log_queue_is_bounded_by_bytes() {
     assert_eq!(lines as u64 + dropped, n as u64);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------- inventory
+
+/// Templates of requests refused by `[protocol]` (a 62 KB path → 414) used to be
+/// recorded, and a valid 8 KB path made an 8 KB route key (up to 10 000 of them).
+#[tokio::test]
+async fn inventory_skips_protocol_rejects_and_caps_templates() {
+    let (gw, state) = start_gateway("").await;
+    let seg = "/abcdefghijklmnopqrstuv"; // 23 bytes, kept as is in the template
+    let mut s = TcpStream::connect(gw).await.unwrap();
+    // 62 KB path: over protocol.max_url_bytes
+    let head = format!("GET /huge{} HTTP/1.1\r\nhost: x\r\n\r\n", seg.repeat(2700));
+    assert_eq!(roundtrip(&mut s, &head, b"").await, 414);
+    // 7 KB path: accepted
+    let head = format!("GET /long{} HTTP/1.1\r\nhost: x\r\n\r\n", seg.repeat(300));
+    assert_eq!(roundtrip(&mut s, &head, b"").await, 200);
+    let json = state.inventory.to_json();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        v["count"], 1,
+        "only the accepted request is recorded: {json:.200}"
+    );
+    let route = v["routes"][0]["route"].as_str().unwrap();
+    assert!(route.starts_with("GET /long/abcdef"), "{route:.100}");
+    assert!(route.ends_with('…'));
+    assert!(
+        json.len() < 2048,
+        "/inventory is {} bytes for one route",
+        json.len()
+    );
+}
