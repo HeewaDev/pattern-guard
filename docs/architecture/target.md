@@ -1,6 +1,6 @@
 # Target architecture and file structure
 
-> **Status: proposal (2026-11).** Nothing on this page is implemented yet. It records where
+> **Status: proposal (2026-11).** Steps marked ✅ in the migration plan are done; the rest is not implemented yet. It records where
 > the structure should go and in which order. Each step below is meant to be one
 > behaviour-preserving commit.
 
@@ -297,9 +297,9 @@ before and after.
 
 | Step | Change | Size | Fixes | Unblocks |
 |---|---|---|---|---|
-| 1 | Hygiene: `version.workspace = true` for the gateway, the stale comments, `util.rs` | S | F7, F11 | — |
+| 1 | ✅ Hygiene: `version.workspace = true` for the gateway, the stale comments, `util.rs` (also fixed a panic in the verify path's decoder) | S | F7, F11 | — |
 | 2 | Repository: `deny.toml` + CI job, stable-toolchain job, `fuzz/` with five targets, the eval-data fetch script | S–M | F10 | M1 |
-| 3 | `lib.rs` → `server.rs` + `admin.rs` | S | F6 | M3 shutdown |
+| 3 | ✅ `lib.rs` → `server.rs` + `admin.rs` | S | F6 | M3 shutdown |
 | 4 | `Layer`, `Signal`, `Verdict` in `proxy/verdict.rs`, replacing the `raise` closure and the status special cases, with tie-break tests | M | F1, F2 | — |
 | 5 | Move the layer evaluation out of `handle` into `pipeline/` | M | F1 | M3 `ext_authz`, M4 / M5 layers |
 | 6 | WAF `Location` + applicability; the gateway uses `location.param()` | M | F2 | M2 exclusions |

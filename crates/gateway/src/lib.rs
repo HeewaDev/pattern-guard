@@ -5,6 +5,7 @@
 //! inspection → behavioural ML → one decision → block / proof-of-work challenge / delay /
 //! forward. `mode = "detect"` logs the same decisions without enforcing them.
 
+mod admin;
 pub mod challenge;
 pub mod config;
 pub mod geo;
@@ -14,20 +15,20 @@ pub mod ipnet;
 pub mod observability;
 pub mod policy;
 pub mod proxy;
+mod server;
 pub mod state;
 pub mod util;
 
+pub use server::serve;
+
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::net::SocketAddr;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
-use hyper::{Response, StatusCode};
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::rt::TokioExecutor;
 use pattern_guard::Guard;
 use pattern_guard::waf::Inspector;
 use tokio::net::TcpListener;
@@ -35,7 +36,7 @@ use tokio::net::TcpListener;
 use crate::challenge::Challenger;
 use crate::config::GatewayConfig;
 use crate::intel::IntelStore;
-use crate::ipnet::{Cidr, any_contains, normalize};
+use crate::ipnet::Cidr;
 use crate::observability::eventlog::EventLog;
 use crate::observability::inventory::Inventory;
 use crate::observability::metrics::Metrics;
@@ -131,152 +132,9 @@ pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Resul
         }
     });
     if let Some(l) = admin {
-        tokio::spawn(serve_admin(state.clone(), l));
+        tokio::spawn(admin::serve_admin(state.clone(), l));
     }
     Ok(())
-}
-
-struct ConnGuard {
-    state: Arc<State>,
-    ip: IpAddr,
-}
-
-impl Drop for ConnGuard {
-    fn drop(&mut self) {
-        let mut g = self.state.conns.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = g.get_mut(&self.ip) {
-            *c -= 1;
-            if *c == 0 {
-                g.remove(&self.ip);
-            }
-        }
-    }
-}
-
-/// Accept loop for the protected listener. Runs until the listener fails.
-pub async fn serve(state: Arc<State>, listener: TcpListener) {
-    loop {
-        let (stream, peer) = match listener.accept().await {
-            Ok(x) => x,
-            Err(e) => {
-                eprintln!("pattern-guard-gateway: accept error: {e}");
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-        };
-        let pip = normalize(peer.ip());
-        let limit = state.cfg.limits.max_connections_per_ip;
-        let guard = if limit > 0 && !any_contains(&state.trusted, pip) {
-            let mut g = state.conns.lock().unwrap_or_else(|e| e.into_inner());
-            let c = g.entry(pip).or_default();
-            if *c >= limit {
-                state.metrics.connections_rejected.fetch_add(1, Relaxed);
-                continue; // drop the stream
-            }
-            *c += 1;
-            Some(ConnGuard {
-                state: state.clone(),
-                ip: pip,
-            })
-        } else {
-            None
-        };
-        let st = state.clone();
-        let header_timeout = Duration::from_secs(state.cfg.limits.header_read_timeout_secs.max(1));
-        tokio::spawn(async move {
-            let _guard = guard;
-            let svc = service_fn(move |req| proxy::handle(st.clone(), peer, req));
-            let mut b = http1::Builder::new();
-            b.timer(TokioTimer::new())
-                .header_read_timeout(header_timeout)
-                .keep_alive(true);
-            let _ = b.serve_connection(TokioIo::new(stream), svc).await;
-        });
-    }
-}
-
-fn bans_json(state: &State) -> String {
-    let now = std::time::Instant::now();
-    let items: Vec<_> = state
-        .intel
-        .list(policy::bans::SOURCE)
-        .into_iter()
-        .map(|(ip, e)| {
-            serde_json::json!({
-                "ip": ip,
-                "reason": e.reason,
-                "expires_in_secs": e.expires.map(|x| x.saturating_duration_since(now).as_secs()),
-            })
-        })
-        .collect();
-    serde_json::json!({ "bans": items }).to_string()
-}
-
-fn unban(state: &State, query: &str) -> (&'static str, String, StatusCode) {
-    let ip = query
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("ip="))
-        .and_then(Cidr::parse);
-    match ip {
-        Some(c) => {
-            state.intel.remove(c, policy::bans::SOURCE);
-            (
-                "application/json",
-                serde_json::json!({ "unbanned": c.to_string() }).to_string(),
-                StatusCode::OK,
-            )
-        }
-        None => (
-            "text/plain",
-            "missing or invalid ?ip=".to_string(),
-            StatusCode::BAD_REQUEST,
-        ),
-    }
-}
-
-async fn serve_admin(state: Arc<State>, listener: TcpListener) {
-    loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
-        };
-        let st = state.clone();
-        tokio::spawn(async move {
-            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                let st = st.clone();
-                async move {
-                    let (ct, body, status) = match req.uri().path() {
-                        "/bans" => ("application/json", bans_json(&st), StatusCode::OK),
-                        "/bans/unban" if req.method() == hyper::Method::POST => {
-                            unban(&st, req.uri().query().unwrap_or(""))
-                        }
-                        "/bans/unban" => (
-                            "text/plain",
-                            "use POST /bans/unban?ip=<address>".to_string(),
-                            StatusCode::METHOD_NOT_ALLOWED,
-                        ),
-                        "/metrics" => (
-                            "text/plain; version=0.0.4",
-                            st.metrics.render(st.intel.len()),
-                            StatusCode::OK,
-                        ),
-                        "/healthz" => ("text/plain", "ok".to_string(), StatusCode::OK),
-                        "/inventory" => {
-                            ("application/json", st.inventory.to_json(), StatusCode::OK)
-                        }
-                        _ => ("text/plain", "not found".to_string(), StatusCode::NOT_FOUND),
-                    };
-                    let mut r = Response::new(proxy::full(body));
-                    *r.status_mut() = status;
-                    r.headers_mut()
-                        .insert(hyper::header::CONTENT_TYPE, ct.parse().unwrap());
-                    Ok::<_, std::convert::Infallible>(r)
-                }
-            });
-            let _ = http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), svc)
-                .await;
-        });
-    }
 }
 
 /// Binds listeners from the config and runs until Ctrl-C.
