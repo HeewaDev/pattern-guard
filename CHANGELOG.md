@@ -84,6 +84,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The workspace now has two members. CI runs fmt, clippy, tests and bench compilation for
   both.
 
+### Security
+
+WAF bypasses found in an internal security review (regression tests in
+`crates/waf/tests/bypass_regressions.rs`):
+
+- **Unknown content types**: a body with a content type outside form / JSON / multipart /
+  XML / `text/*` was not inspected at all, so one header switched the WAF off for the
+  body. It is now inspected (walked as JSON when it is JSON); binary bodies are searched
+  for embedded server code.
+- **Charsets**: UTF-16 / UTF-32 bodies (declared, with a byte-order mark, or detected by
+  RFC 4627 null bytes) are transcoded before inspection; they used to be read as UTF-8
+  garbage. A charset that hides content (EBCDIC such as `ibm037`, UTF-7, unknown labels)
+  scores 7 (`body_charset`, class `protocol`).
+- **SQL injection** from a numeric context into a comparison on a column (`1 OR
+  username='admin'`, `0 OR id IN (SELECT …)`, `1 OR name IS NOT NULL`) scored 0; it now
+  scores 7 (`sql_column_breakout`).
+- **Overlong UTF-8** percent-encoding (`%c0%ae`, `%e0%80%af`) is folded to the ASCII it
+  encodes, so `../` traversal hidden that way is seen.
+- **Headers**: `X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`, `X-Client-IP`,
+  `Forwarded` and `Origin` get full inspection (they were checked for JNDI only). In these
+  headers and in `Referer`, SSRF / RFI indicators no longer apply, so a development
+  `http://localhost:3000` origin or referer is no longer logged as SSRF.
+- **Uploads**: with both `filename` and `filename*`, both names are checked.
+- Cost: a typical request takes ~19 µs instead of ~17.5 µs (`inspect_bench`).
+
 ### Fixed
 
 - **Gateway**: a request to `/.pattern-guard/verify` whose `r=` value had a non-ASCII byte

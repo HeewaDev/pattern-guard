@@ -1,0 +1,180 @@
+//! Regression tests for WAF bypasses found in the 2026-11 security review. Each class
+//! has attacks that must now block (score ≥ 7) and benign look-alikes that must not.
+
+use pattern_guard_waf::{HttpRequest, Inspector};
+
+const BLOCK: f64 = 7.0;
+
+fn request_score(w: &Inspector, headers: &[(&str, &str)], ct: Option<&str>, body: &[u8]) -> f64 {
+    let headers: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    w.inspect(&HttpRequest {
+        path_and_query: "/api",
+        headers: &headers,
+        content_type: ct,
+        body,
+    })
+    .max_score()
+}
+
+fn value_score(w: &Inspector, v: &str) -> f64 {
+    w.inspect_value("query:id", v, true)
+        .map_or(0.0, |f| f.score)
+}
+
+fn utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// A numeric context broken out into a comparison on a column.
+#[test]
+fn sql_numeric_context_with_a_column_comparison() {
+    let w = Inspector::new();
+    for attack in [
+        "1 OR username='admin'",
+        "1 OR id=5",
+        "-1 OR is_admin=true",
+        "5 OR email LIKE '%@%'",
+        "1 OR username IS NOT NULL",
+        "1) OR (role='admin'",
+        "0 OR id IN (SELECT id FROM users)",
+        "1 || role<>'user'",
+    ] {
+        assert!(value_score(&w, attack) >= BLOCK, "{attack}");
+    }
+    for benign in [
+        "50 or 60 people attended",
+        "1 or 2 tickets",
+        "10 or more items",
+        "2 or kids on top",
+        "3 and people in town",
+        "1 and up",
+        "100 or so",
+        "4 or 5 like this",
+    ] {
+        assert!(value_score(&w, benign) < BLOCK, "{benign}");
+    }
+}
+
+/// UTF-16 / UTF-32 bodies are transcoded before inspection; charsets that hide content
+/// (EBCDIC, UTF-7) are flagged.
+#[test]
+fn wide_and_hiding_charsets() {
+    let w = Inspector::new();
+    let attack = r#"{"comment":"<script>alert(1)</script>"}"#;
+    let utf16 = utf16le(attack);
+    let with_bom = [&[0xFF, 0xFE][..], &utf16].concat();
+    for (ct, body) in [
+        (Some("application/json; charset=utf-16"), &utf16),
+        (Some("text/plain; charset=utf-16le"), &utf16),
+        (Some("application/json"), &with_bom),
+        (Some("application/json"), &utf16), // undeclared: RFC 4627 null-byte detection
+        (None, &utf16),
+    ] {
+        assert!(request_score(&w, &[], ct, body) >= BLOCK, "{ct:?}");
+    }
+    let ebcdic = b"\x89\x84\x7e\xf1"; // "id=1" in IBM037
+    assert!(
+        request_score(
+            &w,
+            &[],
+            Some("application/x-www-form-urlencoded; charset=ibm037"),
+            ebcdic
+        ) >= BLOCK
+    );
+    let benign = utf16le(r#"{"name":"O'Brien","note":"see you at 5"}"#);
+    assert!(request_score(&w, &[], Some("application/json; charset=utf-16"), &benign) < BLOCK);
+    assert!(
+        request_score(
+            &w,
+            &[],
+            Some("application/x-www-form-urlencoded; charset=ISO-8859-1"),
+            b"name=O%27Brien"
+        ) < BLOCK
+    );
+}
+
+/// A body with no or an unknown content type is still inspected.
+#[test]
+fn unknown_content_types_are_inspected() {
+    let w = Inspector::new();
+    let json = br#"{"c":"<script>alert(1)</script>"}"#;
+    for ct in [
+        "application/octet-stream",
+        "application/x-yaml",
+        "application/graphql",
+        "application/x-protobuf",
+    ] {
+        assert!(request_score(&w, &[], Some(ct), json) >= BLOCK, "{ct}");
+    }
+    let form = b"id=1' UNION SELECT username,password FROM users-- ";
+    assert!(request_score(&w, &[], Some("application/octet-stream"), form) >= BLOCK);
+    // a raw upload of a web shell inside binary content
+    let polyglot = b"GIF89a\x01\x00\x01\x00\x00\x00\x00<?php system($_GET['c']); ?>";
+    assert!(request_score(&w, &[], Some("application/octet-stream"), polyglot) >= BLOCK);
+
+    let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10";
+    assert!(request_score(&w, &[], Some("application/octet-stream"), png) < BLOCK);
+    let yaml = b"name: O'Brien\nage: 30\nnote: select a plan from the list\n";
+    assert!(request_score(&w, &[], Some("application/x-yaml"), yaml) < BLOCK);
+    let graphql = b"query { user(id: 1) { name email } }";
+    assert!(request_score(&w, &[], Some("application/graphql"), graphql) < BLOCK);
+}
+
+/// Overlong UTF-8 percent-encoding decodes to the ASCII it hides.
+#[test]
+fn overlong_utf8_traversal() {
+    let w = Inspector::new();
+    for attack in [
+        "%e0%80%ae%e0%80%ae%e0%80%af%e0%80%ae%e0%80%ae%e0%80%afetc%e0%80%afpasswd",
+        "%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%afetc%c0%afpasswd",
+    ] {
+        assert!(value_score(&w, attack) >= BLOCK, "{attack}");
+    }
+    assert!(value_score(&w, "caf%C3%A9 cr%C3%A8me") < BLOCK);
+}
+
+/// Client-address headers and Origin get full analysis, without URL analysis.
+#[test]
+fn client_address_headers_and_origin() {
+    let w = Inspector::new();
+    for (h, v) in [
+        (
+            "X-Forwarded-For",
+            "1' UNION SELECT username,password FROM users-- ",
+        ),
+        ("X-Real-IP", "1' OR '1'='1"),
+        ("Origin", "<script>alert(1)</script>"),
+        ("Forwarded", "for=\"<svg onload=alert(1)>\""),
+    ] {
+        assert!(request_score(&w, &[(h, v)], None, b"") >= BLOCK, "{h}: {v}");
+    }
+    for (h, v) in [
+        ("X-Forwarded-For", "203.0.113.7, 10.0.0.1, 192.168.1.5"),
+        ("X-Forwarded-For", "2001:db8::1"),
+        ("X-Real-IP", "127.0.0.1"),
+        ("Origin", "http://localhost:3000"),
+        ("Origin", "https://shop.example.com"),
+        ("Origin", "null"),
+        ("Forwarded", "for=192.0.2.60;proto=http;by=203.0.113.43"),
+        ("Forwarded", "for=\"[2001:db8:cafe::17]:4711\""),
+        ("True-Client-IP", "198.51.100.23"),
+    ] {
+        assert!(request_score(&w, &[(h, v)], None, b"") < 4.0, "{h}: {v}");
+    }
+}
+
+/// With both `filename` and `filename*`, both names are checked.
+#[test]
+fn both_upload_file_names_are_checked() {
+    let w = Inspector::new();
+    let ct = Some("multipart/form-data; boundary=X");
+    let attack = b"--X\r\nContent-Disposition: form-data; name=\"f\"; filename=\"shell.php\"; filename*=UTF-8''ok.txt\r\n\r\njust some data\r\n--X--\r\n";
+    assert!(request_score(&w, &[], ct, attack) >= BLOCK);
+    let attack = b"--X\r\nContent-Disposition: form-data; name=\"f\"; filename=\"ok.txt\"; filename*=UTF-8''shell%2Ephp\r\n\r\njust some data\r\n--X--\r\n";
+    assert!(request_score(&w, &[], ct, attack) >= BLOCK);
+    let benign = b"--X\r\nContent-Disposition: form-data; name=\"cv\"; filename=\"resume.pdf\"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf\r\n\r\nplain text cv\r\n--X--\r\n";
+    assert!(request_score(&w, &[], ct, benign) < BLOCK);
+}

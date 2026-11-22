@@ -224,7 +224,46 @@ pub(crate) fn percent_decode(s: &str, form: bool) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8_lossy(&fold_overlong(out)).into_owned()
+}
+
+/// Overlong UTF-8 for ASCII (`%c0%ae` and `%e0%80%ae` are `.`, `%c0%af` is `/`) is
+/// invalid, but permissive servers and path canonicalisers decode it. Folding it to the
+/// ASCII character lets the traversal indicators see `../`. Valid UTF-8 is untouched.
+fn fold_overlong(b: Vec<u8>) -> Vec<u8> {
+    if !b.iter().any(|&x| matches!(x, 0xC0 | 0xC1 | 0xE0 | 0xF0)) {
+        return b;
+    }
+    let cont = |i: usize| b.get(i).is_some_and(|&x| x & 0xC0 == 0x80);
+    let low = |i: usize| b[i] & 0x3F;
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            0xC0 | 0xC1 if cont(i + 1) => {
+                out.push(((b[i] & 0x1F) << 6) | low(i + 1));
+                i += 2;
+            }
+            0xE0 if cont(i + 1) && cont(i + 2) && b[i + 1] < 0x82 => {
+                out.push((low(i + 1) << 6) | low(i + 2));
+                i += 3;
+            }
+            0xF0 if cont(i + 1)
+                && cont(i + 2)
+                && cont(i + 3)
+                && b[i + 1] == 0x80
+                && b[i + 2] < 0x82 =>
+            {
+                out.push((low(i + 2) << 6) | low(i + 3));
+                i += 4;
+            }
+            x => {
+                out.push(x);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 fn html_entities(s: &str) -> String {
@@ -408,6 +447,18 @@ mod tests {
             "plain words are skipped"
         );
         assert!(base64_variants("short").is_empty());
+    }
+
+    #[test]
+    fn overlong_utf8_folds_to_ascii() {
+        assert_eq!(percent_decode("%c0%ae%c0%ae%c0%af", false), "../");
+        assert_eq!(percent_decode("%e0%80%ae%e0%80%ae%e0%80%af", false), "../");
+        assert_eq!(percent_decode("%f0%80%80%ae%c1%9c", false), ".\\");
+        // valid UTF-8 is unchanged
+        assert_eq!(
+            percent_decode("caf%c3%a9 %e2%82%ac %f0%9f%98%80", false),
+            "café € 😀"
+        );
     }
 
     #[test]

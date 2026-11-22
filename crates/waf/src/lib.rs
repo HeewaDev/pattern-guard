@@ -10,6 +10,7 @@
 //!
 //! Suggested thresholds: log ≥ 4, block ≥ 7.
 
+mod body;
 mod decode;
 mod indicators;
 mod inspect;

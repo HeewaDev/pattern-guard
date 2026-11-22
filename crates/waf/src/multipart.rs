@@ -5,6 +5,8 @@
 pub(crate) struct Part<'a> {
     pub name: String,
     pub filename: Option<String>,
+    /// `filename` when `filename*` was preferred and differs: a server may store either.
+    pub alt_filename: Option<String>,
     pub content_type: Option<String>,
     pub body: &'a [u8],
 }
@@ -80,6 +82,7 @@ pub(crate) fn parse<'a>(body: &'a [u8], boundary: &str) -> Option<Multipart<'a>>
         let mut part = Part {
             name: String::new(),
             filename: None,
+            alt_filename: None,
             content_type: None,
             body: content,
         };
@@ -112,7 +115,14 @@ pub(crate) fn parse<'a>(body: &'a [u8], boundary: &str) -> Option<Multipart<'a>>
                     if let Some(n) = param(&ps, "name") {
                         part.name = n;
                     }
-                    if let Some(f) = param(&ps, "filename*").or_else(|| param(&ps, "filename")) {
+                    let star = param(&ps, "filename*");
+                    let plain = param(&ps, "filename");
+                    if let (Some(s), Some(p)) = (&star, &plain) {
+                        if s != p {
+                            part.alt_filename = Some(p.clone());
+                        }
+                    }
+                    if let Some(f) = star.or(plain) {
                         part.filename = Some(f);
                     }
                 }
@@ -179,7 +189,7 @@ fn is_token_byte(b: u8) -> bool {
 /// quotes and backslash escapes. The flag says whether a value contains characters
 /// parsers disagree on (`;` `=` `"` `\` inside quotes): a classic way to make the WAF
 /// and the application see different field or file names.
-fn params(v: &str) -> (Vec<(String, String)>, bool) {
+pub(crate) fn params(v: &str) -> (Vec<(String, String)>, bool) {
     let mut out = Vec::new();
     let mut confusing = false;
     let b: Vec<char> = v.chars().collect();
@@ -253,7 +263,7 @@ fn ends_with_entity(s: &str) -> bool {
     }
 }
 
-fn param(ps: &[(String, String)], key: &str) -> Option<String> {
+pub(crate) fn param(ps: &[(String, String)], key: &str) -> Option<String> {
     ps.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
 }
 

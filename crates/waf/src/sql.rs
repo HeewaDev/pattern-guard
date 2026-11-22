@@ -12,6 +12,8 @@
 
 use std::collections::HashSet;
 
+use regex::Regex;
+
 /// Functions attackers call to fingerprint, delay, read files or exfiltrate.
 const DANGEROUS_FUNCTIONS: &[&str] = &[
     "sleep",
@@ -346,6 +348,7 @@ pub(crate) struct Sql {
     functions: HashSet<&'static str>,
     statements: HashSet<&'static str>,
     keywords: HashSet<&'static str>,
+    column_breakout: Regex,
 }
 
 impl Sql {
@@ -355,6 +358,19 @@ impl Sql {
             functions: FUNCTIONS.iter().copied().collect(),
             statements: STATEMENTS.iter().copied().collect(),
             keywords: KEYWORDS.iter().copied().collect(),
+            // `1 or username='admin'` · `1) or (role='x'` · `-1 or is_admin=true`
+            // · `5 or email like '%'` · `0 or id in (select` · `1 or name is not null`:
+            // a number, a logic operator, then a comparison on a column. The token
+            // rules don't take bare words as operands because English is full of
+            // them; this shape needs a real comparison right after the word.
+            column_breakout: Regex::new(concat!(
+                r"^\s*[-+]?\d+(?:\.\d+)?\)*\s*(?:(?:or|and|xor)\s|\|\||&&)[\s(]*",
+                r"[a-z_][a-z0-9_$.]*",
+                r"(?:\s*(?:<=>|<>|!=|<=|>=|=|<|>)\s*\S",
+                r"|\s+(?:not\s+)?(?:like|rlike|regexp|in|between)\s*['\x22(\d-]",
+                r"|\s+is\s+(?:not\s+)?(?:null|true|false)\b)",
+            ))
+            .expect("column breakout pattern compiles"),
         }
     }
 
@@ -407,6 +423,8 @@ impl Sql {
         // `1) or (1=1`, `1 and sleep(5)`
         if let Some(w) = numeric_breakout(&toks) {
             push("sql_numeric_breakout", w);
+        } else if self.column_breakout.is_match(value) {
+            push("sql_column_breakout", 7.0);
         }
         out
     }
