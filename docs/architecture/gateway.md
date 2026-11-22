@@ -79,7 +79,7 @@ The stages below are in code order.
 | # | Stage | Detail |
 |---|---|---|
 | 1 | Request id | `hex(unix_secs)-hex(counter)`. Returned on block pages and forwarded as `x-pattern-guard-request-id` |
-| 2 | Client IP | `client_ip`: the peer, or, when the peer is in `trusted_proxies`, the right-most entry in `client_ip.header` that is not itself trusted. An unparsable entry falls back to the peer |
+| 2 | Client IP | `client_ip`: the peer, or, when the peer is in `trusted_proxies`, the right-most entry in `client_ip.header` that is not itself trusted, reading every line of the header in order. An unparsable entry, or a chain of trusted entries only, falls back to the peer |
 | 3 | Verify path | A request to `/.pattern-guard/verify?...` (any method) goes to `verify` **before anything else**: no body read, no layers, not even the deny list. A clearance never lifts a Block, so a banned client gains nothing here |
 | 4 | Body | Buffered up to `max_body_bytes` (default 10 MiB) with `http_body_util::Limited`. Over the limit → **413** |
 | 5 | Allow list | `access.allow` → forward immediately: no ML, WAF, operations or logging |
@@ -144,7 +144,7 @@ Request to the upstream:
 1. URI rebuilt from `upstream` + the original path and query. A bad target → 400.
 2. Hop-by-hop headers removed (`Connection`, plus every header that `Connection` lists, `TE`, `Upgrade`, …).
 3. Every incoming `x-pattern-guard-*` header removed, so clients can't forge scores.
-4. `X-Forwarded-For` appended with the client IP. `X-Real-IP` set. `Host` rewritten
+4. `X-Forwarded-For` rebuilt from the resolved client, never appended to what the client sent: `<client>` for a direct client, `<client>, <trusted hops…>, <peer>` behind trusted proxies. A non-XFF `client_ip.header` (e.g. `CF-Connecting-IP`) is set to the client. `X-Real-IP` set. `Host` rewritten
    to the upstream unless `preserve_host`.
 5. With `forward_scores`: `x-pattern-guard-request-id`, `-bot-score`, `-risk`.
 6. Pooled hyper client (idle timeout 60 s), `upstream_timeout_secs` (default 30). On timeout → **504**,
@@ -212,7 +212,7 @@ Ticket)`. The ticket carries what can only be settled once the upstream's status
 |---|---|---|---|
 | Source not in `allowed_ips` | `source_not_allowed` | 403 | — |
 | `require_account` without the identifier | `account_missing` | 403 | — |
-| Account token bucket empty | `account_limit` | 429 + Retry-After | — |
+| Account token bucket empty | `account_limit` | 429 + Retry-After | the token is reserved now; given back if the request is never forwarded or the upstream answers 401 / 403 |
 | `unique` value already used or in flight | `replay` | 409 | marked in flight now; **kept** after a 2xx, **released** otherwise; released on `Drop` if never forwarded |
 | Account over `max_failures` | `account_locked` | 429 + Retry-After (rest of the window) | failure statuses count per account; a 2xx resets it |
 | IP over `max_accounts_per_ip` failing accounts | `credential_stuffing` | 429 + Retry-After | failing accounts per IP within `window_secs`; an account already tried is still allowed |
