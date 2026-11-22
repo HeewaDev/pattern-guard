@@ -1,0 +1,57 @@
+# Fuzz targets (cargo-fuzz, nightly). Not part of the main workspace.
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run waf_inspect fuzz/corpus/waf_inspect fuzz/seeds/waf_inspect
+# CI: .github/workflows/fuzz.yml (nightly schedule, short runs on relevant PRs).
+
+[package]
+name = "pattern-guard-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pattern-guard = { path = "../crates/engine" }
+pattern-guard-waf = { path = "../crates/waf" }
+pattern-guard-gateway = { path = "../crates/gateway" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "waf_inspect"
+path = "fuzz_targets/waf_inspect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "waf_multipart"
+path = "fuzz_targets/waf_multipart.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "waf_value"
+path = "fuzz_targets/waf_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "engine_log_line"
+path = "fuzz_targets/engine_log_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
