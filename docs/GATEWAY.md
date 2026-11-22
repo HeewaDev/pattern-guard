@@ -173,6 +173,21 @@ unique = "json:transaction_id"              # each transaction accepted once
 The deciding layer is `operation`; the decision log reason names the operation, the
 check and a short account hash, e.g. `operation:checkout:account_limit account=fa8c06dd`.
 
+**Identifiers in the body** (`form:` and `json:`, for operations and logins) are read
+the way applications read them, not by the declared Content-Type alone, so an attacker
+can't hide an account by switching it:
+- the text is decoded first (byte-order mark, `charset`, UTF-16 / UTF-32);
+- `multipart/*` bodies are read as form fields (file parts are skipped);
+- URL-encoded bodies are read as form fields, then as JSON if they look like JSON;
+- any other body is read as JSON when the Content-Type says JSON or the body starts
+  with `{` or `[`, otherwise as form fields;
+- `form:name` also matches a top-level JSON field `name`, and `json:name` (one segment)
+  a form field `name`, since Laravel, Rails, Express and others merge both.
+
+A repeated form field keeps its first value, a repeated JSON key its last. The whole
+body is read, once per request and in one pass for every matching entry, without being
+built in memory: only the values on the configured paths are kept.
+
 These checks are a safety net, not a replacement for verifying payments in your
 application: confirm every payment server-to-server with your provider (amount,
 currency, order) and store each transaction id once.
@@ -199,6 +214,10 @@ max_failures = 5
 max_accounts_per_ip = 10
 window_secs = 900
 ```
+
+`account` takes the same sources as for operations, and body fields are read the same
+way, whatever the declared Content-Type (see [Business operations](#business-operations)).
+User names are compared without regard to case.
 
 ## Bans and honeypot traps
 

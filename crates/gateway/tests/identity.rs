@@ -65,10 +65,13 @@ async fn start_upstream() -> SocketAddr {
     addr
 }
 
-/// A gateway in prevent mode with `extra` config; no trusted proxy unless `extra` sets one.
+/// A gateway in prevent mode with `extra` config; no trusted proxy unless `extra` sets
+/// one. Behavioural delays are not slept (these test clients send no User-Agent).
 async fn start_gateway(extra: &str) -> (SocketAddr, Arc<State>) {
     let up = start_upstream().await;
-    let toml = format!("upstream = \"http://{up}\"\nmax_body_bytes = 100000\n{extra}\n");
+    let toml = format!(
+        "upstream = \"http://{up}\"\nmax_body_bytes = 100000\ndelay_max_secs = 0.0\n{extra}\n"
+    );
     let cfg = GatewayConfig::from_toml_str(&toml).unwrap();
     let state = pattern_guard_gateway::build_state(cfg).unwrap();
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -232,4 +235,77 @@ async fn every_forwarded_for_line_counts_right_to_left() {
     // the right-most untrusted entry is in the last line
     let r = raw(gw, &req("203.0.113.7", "9.9.9.9")).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+}
+
+/// Distinct client IPs (behind the trusted 127.0.0.1), so the behavioural engine sees
+/// no single client collecting failures.
+fn from(n: u32) -> String {
+    format!("198.51.100.{n}")
+}
+
+#[tokio::test]
+async fn login_failures_count_whatever_the_content_type() {
+    let (gw, _) = start_gateway(
+        r#"
+[client_ip]
+trusted_proxies = ["127.0.0.1"]
+[[logins]]
+name = "api login"
+path = "/signin"
+account = "json:email"
+max_failures = 2
+action = "block"
+[[logins]]
+name = "form login"
+path = "/denied"
+account = "form:username"
+max_failures = 2
+action = "block"
+"#,
+    )
+    .await;
+    // JSON declared as text/plain, which the application parses anyway
+    let json = r#"{"email": "victim@example.com", "password": "guess"}"#;
+    for (n, ct) in [(1, "text/plain"), (2, "application/octet-stream")] {
+        let ip = from(n);
+        let h = [("content-type", ct), ("x-forwarded-for", ip.as_str())];
+        let r = send(gw, "POST", "/signin", &h, json).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
+    }
+    let ip = from(3);
+    let h = [
+        ("content-type", "application/json"),
+        ("x-forwarded-for", ip.as_str()),
+    ];
+    let r = send(gw, "POST", "/signin", &h, json).await;
+    assert_eq!(
+        r.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "locked: {}",
+        r.body
+    );
+
+    // a form login answered with multipart instead of URL-encoded
+    let mp = "--b\r\nContent-Disposition: form-data; name=\"username\"\r\n\r\nalice\r\n--b--\r\n";
+    for n in 4..=5 {
+        let ip = from(n);
+        let h = [
+            ("content-type", "multipart/form-data; boundary=b"),
+            ("x-forwarded-for", ip.as_str()),
+        ];
+        let r = send(gw, "POST", "/denied", &h, mp).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
+    }
+    let ip = from(6);
+    let h = [
+        ("content-type", "application/x-www-form-urlencoded"),
+        ("x-forwarded-for", ip.as_str()),
+    ];
+    let r = send(gw, "POST", "/denied", &h, "username=alice&password=x").await;
+    assert_eq!(
+        r.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "locked: {}",
+        r.body
+    );
 }
