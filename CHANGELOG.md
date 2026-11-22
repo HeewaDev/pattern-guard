@@ -202,6 +202,27 @@ Gateway issues found in the same review:
 
 ### Changed
 
+- **Gateway limits** (security review H5, H1, H2, M4):
+  - new `[limits]` keys: `body_read_timeout_secs` (30) and `body_min_bytes_per_sec` (1024):
+    a body that stops keeping up gets 408; `max_buffered_body_bytes` (256 MiB): a global
+    budget for buffered bodies, over it 503 + `Retry-After`; `max_requests_in_flight_per_ip`
+    (256, per resolved client IP, also behind trusted proxies): over it 429; `max_bans`
+    (100 000) and `max_intel_entries_per_source` (500 000): the reputation store is capped
+    per source and evicts the entry closest to expiry; IPv6 bans sharing a /64 are merged;
+    `decision_log_queue_bytes` (16 MiB).
+  - a `Content-Length` over `max_body_bytes` is refused before reading; broken or abandoned
+    bodies get 400 instead of 413; all gateway refusals send `Connection: close`.
+  - decision-log values a client controls are truncated (field names unchanged); at most 16
+    WAF findings per line, `pattern_guard.waf_omitted` counts the rest.
+  - rate-limit buckets are keyed by a keyed 64-bit hash; requests refused by `[protocol]` are
+    not recorded in the inventory, templates are cut at 512 bytes, `/inventory` is serialised
+    outside its lock; `/bans` lists merged bans as `prefix/64`, soonest-expiring first.
+  - metrics: `pattern_guard_requests_rejected_total{reason}`,
+    `pattern_guard_buffered_body_bytes`, `pattern_guard_decision_log_dropped_total`,
+    `pattern_guard_intel_evicted_total`.
+  - measured: 40 stalled 10 MiB uploads +405 MiB growing → capped by the budget; 2 M bans
+    +937 MiB → 100 000 entries (+47 MiB); 1 000 huge API keys +297 → +6 MiB; a 300 KB Host
+    with a stalled log writer +301 → +11 MiB; a 31 KB cookie's log line 247 KB → 3.5 KB.
 - `pattern_guard::features::Prepared` gains `actor`, `client`, `ip`, `write`, `read` and
   `Prepared::new`; `FeatureEngine::observe_request` / `observe_response` take `&Prepared`
   instead of `&Event`. `normalize::is_probe_path` scans the first 2 KiB of a path. Log
