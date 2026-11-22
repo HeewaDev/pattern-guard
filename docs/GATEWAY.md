@@ -395,7 +395,7 @@ software on your server can absorb more traffic than its uplink carries.
 |---|---|
 | `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries, CrowdSec status, decision time |
 | `/healthz` | `ok` |
-| `/inventory` | API discovery: every route template seen (`GET /api/items/{n}`), with volume, block count, status codes, first/last seen |
+| `/inventory` | API discovery: every route template seen (`GET /api/items/{n}`), with volume, block count, status codes, first/last seen. At most 10 000 routes; templates longer than 512 bytes are cut (ending in `…`); requests refused by `[protocol]` are not recorded |
 | `/bans` | Active automatic and trap bans: IP, reason, seconds left |
 | `POST /bans/unban?ip=…` | Lift a ban |
 
@@ -417,6 +417,7 @@ attacker-sized value:
 | Table | Cap | Per entry |
 |---|---|---|
 | Rate-limit buckets | 200 000 (least recently used evicted) | fixed: keyed by a keyed 64-bit hash of the IP, route or header value, never the value itself |
+| API inventory | 10 000 routes (new routes are ignored once full) | method + template, cut at 512 bytes; `[protocol]` rejects are not recorded; `/inventory` copies the table under its lock and serialises it afterwards |
 | Decision-log queue (lines waiting for the disk) | 10 000 lines and `limits.decision_log_queue_bytes` (default 16 MiB, minimum 64 KiB) | one line, a few KiB at most (see below) |
 
 **Decision log under pressure.** The request path never waits for the disk: when the
