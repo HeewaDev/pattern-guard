@@ -384,7 +384,31 @@ against a live Wazuh manager:
 
 * `limits.max_connections_per_ip`: concurrent connections per client IP (trusted proxies exempt).
 * `limits.header_read_timeout_secs`: clients that trickle headers (slowloris) are dropped.
-* `max_body_bytes`: larger bodies get 413 before any work is done.
+* `max_body_bytes`: larger bodies get 413 before any work is done (a `Content-Length`
+  over the limit is refused before the body is read).
+* `limits.body_read_timeout_secs` (default 30) and `limits.body_min_bytes_per_sec`
+  (default 1024): request bodies are buffered for inspection, so they must keep arriving.
+  Within every 30-second period at least 30 KiB (or the rest of the body) must come in,
+  otherwise the client gets **408** and the connection is closed. This stops bodies
+  trickled a few bytes at a time and uploads that stop just before the last byte, each of
+  which used to hold a buffer and a connection forever. The defaults never touch real
+  clients: 1 KiB/s is well below a GPRS uplink, a 30-second gap is far longer than any
+  live connection pauses, and a large upload over a slow link is fine as long as it keeps
+  moving (the rule is per period, not a deadline for the whole body). Set
+  `body_min_bytes_per_sec = 0` to cut off only stalls.
+* `limits.max_buffered_body_bytes` (default 256 MiB, 0 = unlimited, never less than
+  `max_body_bytes`): request-body bytes buffered at once by all requests together. Bytes
+  are reserved as they arrive and released when the request ends, so a stalled upload
+  holds only what it has sent. A request whose body would go over the budget gets **503**
+  with `Retry-After: 1`. 256 MiB is 25 maximum-size (10 MiB) bodies arriving at the same
+  moment, or tens of thousands of typical API bodies; raise it with `max_body_bytes` if
+  your site takes many large uploads at once. `pattern_guard_buffered_body_bytes` shows the
+  current use. Without it, 40 connections each withholding the last byte of a 10 MiB body
+  held 405 MiB.
+
+Refusals are counted in `pattern_guard_requests_rejected_total{reason="body_timeout" |
+"body_budget"}` (and 413s in `pattern_guard_body_too_large_total`). They happen before
+inspection, so they are not in the decision log.
 
 Volumetric L3/L4 floods must be absorbed upstream (ISP / CDN / cloud scrubbing). No
 software on your server can absorb more traffic than its uplink carries.
@@ -423,6 +447,7 @@ attacker-sized value:
 
 | Table | Cap | Per entry |
 |---|---|---|
+| Request bodies being buffered | `limits.max_buffered_body_bytes` in total (default 256 MiB), `max_body_bytes` each | the body bytes received so far |
 | Rate-limit buckets | 200 000 (least recently used evicted) | fixed: keyed by a keyed 64-bit hash of the IP, route or header value, never the value itself |
 | Reputation store: gateway bans (traps, repeat offenders) | `limits.max_bans` (default 100 000); the ban closest to expiry is dropped; IPv6 bans of one `/64` merged after 16 | ~350 bytes; 100 000 bans plus the offender history ≈ 50 MiB |
 | Reputation store: each external source (every CrowdSec origin, Suricata, Wazuh) | `limits.max_intel_entries_per_source` (default 500 000); the source's entry closest to expiry is dropped, entries without expiry last | ~350 bytes (≈ 170 MiB for a full source) |
@@ -455,7 +480,8 @@ linear scan; keep CrowdSec range decisions to a few thousand.
 ## Limits of this version
 
 * HTTP/1.1 only towards clients and upstream; no WebSocket upgrade passthrough yet.
-* Request bodies are buffered (up to `max_body_bytes`) for inspection; responses are streamed.
+* Request bodies are buffered (up to `max_body_bytes` each, `limits.max_buffered_body_bytes`
+  in total) for inspection; responses are streamed.
 * CrowdSec local API over `http://` only (it normally runs on localhost).
 * Single process: reputation, clearances and ML state are per instance (set `challenge.secret`
   so clearances work across instances behind a load balancer).

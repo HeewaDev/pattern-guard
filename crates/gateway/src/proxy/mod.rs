@@ -16,7 +16,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use pattern_guard::waf::{Finding, HttpRequest};
@@ -75,16 +74,11 @@ pub async fn handle(
         return Ok(verify(&state, ip, parts.uri.query().unwrap_or("")));
     }
 
-    let body = match Limited::new(body, state.cfg.max_body_bytes).collect().await {
-        Ok(b) => b.to_bytes(),
-        Err(_) => {
-            state.metrics.body_too_large.fetch_add(1, Relaxed);
-            return Ok(respond(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "text/plain",
-                "request body too large",
-            ));
-        }
+    // 413 / 408 (too slow) / 503 (body budget) / 400; the reservation is held until the
+    // request is done, i.e. as long as the buffered body.
+    let (body, _body_reservation) = match crate::server::read_body(&state, body).await {
+        Ok(b) => b,
+        Err(refusal) => return Ok(*refusal),
     };
 
     let path_q = parts
