@@ -1,6 +1,6 @@
 [package]
 name = "pattern-guard-gateway"
-version = "0.1.0"
+version.workspace = true
 description = "Reverse proxy protecting web apps with Pattern-Guard: WAF, behavioural ML, proof-of-work bot challenge, CrowdSec/Suricata/Wazuh intelligence"
 edition.workspace = true
 rust-version.workspace = true
