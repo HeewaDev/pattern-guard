@@ -1,7 +1,12 @@
 //! Token-bucket rate limits per route and key (IP, IP + route template, or a header
 //! such as an API key). Every matching limit consumes a token; the most severe
 //! exceeded limit decides.
+//!
+//! Buckets are keyed by a keyed 64-bit hash of the key, never by the key itself: a
+//! client controls header values (up to hyper's ~400 KB request head), and 200 000
+//! buckets keyed by whole values could hold tens of GiB.
 
+use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -50,7 +55,11 @@ pub struct LimitHit {
 
 pub struct RateLimiter {
     limits: Vec<Limit>,
-    buckets: Mutex<LruCache<(usize, String), Bucket>>,
+    /// (limit index, hash of the key) → bucket.
+    buckets: Mutex<LruCache<(usize, u64), Bucket>>,
+    /// SipHash with a random per-process key, so clients can't craft colliding keys
+    /// to share (and drain) someone else's bucket.
+    hasher: RandomState,
 }
 
 fn severity(a: LimitAction) -> u8 {
@@ -96,7 +105,40 @@ impl RateLimiter {
         Ok(Self {
             limits,
             buckets: Mutex::new(LruCache::new(NonZeroUsize::new(MAX_BUCKETS).unwrap())),
+            hasher: RandomState::new(),
         })
+    }
+
+    /// The bucket key of limit `l` for this request: a 64-bit hash, so a bucket costs
+    /// the same whatever the size of the value it is keyed by. The leading tag keeps an
+    /// IP and a header value with the same text apart.
+    fn key(&self, l: &Limit, ip: IpAddr, parts: &Parts, path: &PathView) -> u64 {
+        let mut h = self.hasher.build_hasher();
+        match &l.key {
+            Key::Ip => (0u8, ip).hash(&mut h),
+            Key::IpRoute => (
+                1u8,
+                ip,
+                parts.method.as_str(),
+                pattern_guard::normalize::normalize_path(path.canonical()).template,
+            )
+                .hash(&mut h),
+            Key::Header(name) => match parts.headers.get(name).and_then(|v| v.to_str().ok()) {
+                Some(v) => (2u8, v).hash(&mut h),
+                None => (0u8, ip).hash(&mut h),
+            },
+        }
+        h.finish()
+    }
+
+    fn applies(l: &Limit, parts: &Parts, path: &PathView) -> bool {
+        !(l.path_prefix
+            .as_deref()
+            .is_some_and(|p| !path.protects_prefix(p))
+            || l.path_re
+                .as_ref()
+                .is_some_and(|re| !path.protects_regex(re))
+            || (!l.methods.is_empty() && !l.methods.iter().any(|m| m == parts.method.as_str())))
     }
 
     pub fn check(&self, ip: IpAddr, parts: &Parts) -> Option<LimitHit> {
@@ -108,31 +150,22 @@ impl RateLimiter {
             return None;
         }
         let path = PathView::new(parts.uri.path());
+        // Hash before taking the lock: hashing a large header value must not hold up
+        // every other request.
+        let keys: Vec<(usize, u64)> = self
+            .limits
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| Self::applies(l, parts, &path))
+            .map(|(i, l)| (i, self.key(l, ip, parts, &path)))
+            .collect();
+        if keys.is_empty() {
+            return None;
+        }
         let mut worst: Option<LimitHit> = None;
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        for (i, l) in self.limits.iter().enumerate() {
-            if l.path_prefix
-                .as_deref()
-                .is_some_and(|p| !path.protects_prefix(p))
-                || l.path_re
-                    .as_ref()
-                    .is_some_and(|re| !path.protects_regex(re))
-                || (!l.methods.is_empty() && !l.methods.iter().any(|m| m == parts.method.as_str()))
-            {
-                continue;
-            }
-            let key = match &l.key {
-                Key::Ip => ip.to_string(),
-                Key::IpRoute => format!(
-                    "{ip} {} {}",
-                    parts.method,
-                    pattern_guard::normalize::normalize_path(path.canonical()).template
-                ),
-                Key::Header(h) => match parts.headers.get(h).and_then(|v| v.to_str().ok()) {
-                    Some(v) => format!("h:{v}"),
-                    None => ip.to_string(),
-                },
-            };
+        for (i, key) in keys {
+            let l = &self.limits[i];
             let b = buckets.get_or_insert_mut((i, key), || Bucket {
                 tokens: l.capacity,
                 at: now,
