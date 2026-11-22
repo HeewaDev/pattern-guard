@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{LoginConfig, OperationAction, OperationConfig};
 use crate::ipnet::{Cidr, any_contains};
+use crate::policy::path::PathView;
 use crate::util::form_decode;
 
 const MAX_ENTRIES: usize = 200_000;
@@ -160,9 +161,11 @@ impl Route {
     }
 
     fn matches(&self, parts: &Parts) -> bool {
-        let path = parts.uri.path();
-        self.prefix.as_deref().is_none_or(|p| path.starts_with(p))
-            && self.re.as_ref().is_none_or(|re| re.is_match(path))
+        let path = PathView::new(parts.uri.path());
+        self.prefix
+            .as_deref()
+            .is_none_or(|p| path.protects_prefix(p))
+            && self.re.as_ref().is_none_or(|re| path.protects_regex(re))
             && (self.methods.is_empty() || self.methods.iter().any(|m| m == parts.method.as_str()))
     }
 }

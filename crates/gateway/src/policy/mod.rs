@@ -3,6 +3,7 @@
 
 pub mod bans;
 pub mod operations;
+pub mod path;
 pub mod protocol;
 pub mod rate_limit;
 pub mod rules;

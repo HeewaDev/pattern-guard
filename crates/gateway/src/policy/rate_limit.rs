@@ -12,6 +12,7 @@ use lru::LruCache;
 use regex::Regex;
 
 use crate::config::{LimitAction, RateLimitConfig};
+use crate::policy::path::PathView;
 
 const MAX_BUCKETS: usize = 200_000;
 
@@ -106,14 +107,16 @@ impl RateLimiter {
         if self.limits.is_empty() {
             return None;
         }
-        let path = parts.uri.path();
+        let path = PathView::new(parts.uri.path());
         let mut worst: Option<LimitHit> = None;
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
         for (i, l) in self.limits.iter().enumerate() {
             if l.path_prefix
                 .as_deref()
-                .is_some_and(|p| !path.starts_with(p))
-                || l.path_re.as_ref().is_some_and(|re| !re.is_match(path))
+                .is_some_and(|p| !path.protects_prefix(p))
+                || l.path_re
+                    .as_ref()
+                    .is_some_and(|re| !path.protects_regex(re))
                 || (!l.methods.is_empty() && !l.methods.iter().any(|m| m == parts.method.as_str()))
             {
                 continue;
@@ -123,7 +126,7 @@ impl RateLimiter {
                 Key::IpRoute => format!(
                     "{ip} {} {}",
                     parts.method,
-                    pattern_guard::normalize::normalize_path(path).template
+                    pattern_guard::normalize::normalize_path(path.canonical()).template
                 ),
                 Key::Header(h) => match parts.headers.get(h).and_then(|v| v.to_str().ok()) {
                     Some(v) => format!("h:{v}"),
