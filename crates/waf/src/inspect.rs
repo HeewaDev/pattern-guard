@@ -10,7 +10,8 @@ use regex::{Regex, RegexSet, RegexSetBuilder};
 
 use crate::body;
 use crate::decode::{
-    base64_variants, decode, decode_keep_case, fold_html_lookalikes, percent_decode, utf7_decode,
+    base64_variants, decode, decode_keep_case, fold_html_lookalikes, fold_path_lookalikes,
+    percent_decode, utf7_decode,
 };
 use crate::indicators::AttackClass::{self, *};
 use crate::indicators::indicators;
@@ -265,6 +266,10 @@ impl Inspector {
         if let Some(folded) = fold_html_lookalikes(&decoded) {
             variants.push(folded);
         }
+        // look-alike dots and slashes and `0x2e`-style hex folded to a path (`．．∕`)
+        if let Some(folded) = fold_path_lookalikes(&decoded) {
+            variants.push(folded);
+        }
         // browsers drop tabs and newlines inside URL schemes (`ja&tab;vascript:`)
         let squeezed: String = kept_case
             .chars()
@@ -305,6 +310,11 @@ impl Inspector {
                     continue;
                 }
                 add(class, name, w);
+                // a header never holds shell command substitution legitimately
+                // (Shellshock-era payloads in User-Agent, Referer, X-Forwarded-For)
+                if name.starts_with("backtick_command") && location.starts_with("header:") {
+                    add(CommandInjection, "header_command_substitution", 4.0);
+                }
             }
         }
         if let Some(t) = started {
@@ -318,6 +328,12 @@ impl Inspector {
                 // other headers: only header-safe classes (Log4Shell, Java)
                 if !jndi_only || class == JavaInjection {
                     add(class, name, w);
+                    // the whole value is the path of an OS file (`/etc/passwd`,
+                    // `.ssh/id_rsa`, `c:\boot.ini`): a file-read attempt. In prose the same
+                    // path comes with words around it and stays at the list's weight.
+                    if name == "lfi_os_file" && path_value(v) {
+                        add(PathTraversal, "lfi_path_value", 4.0);
+                    }
                 }
             }
         }
@@ -355,7 +371,19 @@ impl Inspector {
                 add(PathTraversal, "null_byte", 7.0);
             }
             let lower_raw = raw.to_ascii_lowercase();
-            if [
+            // A traversal that only appears once the dots are decoded (`%2e`, double
+            // encoding, overlong UTF-8, `%u` or look-alike characters, `0x2e`, entities) was
+            // disguised on purpose: browsers and HTTP libraries never encode `.`, only `/`
+            // and `\` (`..%2F`, which is why that alone stays weak). Base64 decodings are
+            // left out: random tokens can contain `../` by chance.
+            let plain = lower_raw.replace("%2f", "/").replace("%5c", "\\");
+            let plain_traversal = plain.contains("../") || plain.contains("..\\");
+            let decoded_traversal = variants[..n_plain]
+                .iter()
+                .any(|v| v.contains("../") || v.contains("..\\"));
+            if decoded_traversal && !plain_traversal {
+                add(PathTraversal, "disguised_traversal", 5.0);
+            } else if [
                 "%2e%2e", "%252e", "..%2f", "..%5c", "%c0%ae", "%c0%af", ".%2e", "%2e.",
             ]
             .iter()
@@ -734,6 +762,23 @@ impl Inspector {
             }
         }
     }
+}
+
+/// A value that is one file path and nothing else: no whitespace, starting like an
+/// absolute, home, relative or drive path, or a `file:` URL.
+fn path_value(v: &str) -> bool {
+    let v = v.trim();
+    let b = v.as_bytes();
+    v.len() >= 4
+        && !v.chars().any(char::is_whitespace)
+        && (v.starts_with('/')
+            || v.starts_with('\\')
+            || v.starts_with("~/")
+            || v.starts_with("./")
+            || v.starts_with("../")
+            || v.starts_with('.')
+            || v.starts_with("file:")
+            || (b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')))
 }
 
 fn diverse(v: &str) -> bool {

@@ -134,7 +134,8 @@ impl Ssrf {
                     push("rfi_trailing_question_mark", 4.0);
                 }
                 if let Some(p) = param {
-                    if RFI_PARAMS.contains(&p) {
+                    // parameter names are case-insensitive in PHP (`_CONF[path]`)
+                    if RFI_PARAMS.contains(&p.to_ascii_lowercase().as_str()) {
                         push("rfi_known_parameter", 7.0);
                     }
                 }
