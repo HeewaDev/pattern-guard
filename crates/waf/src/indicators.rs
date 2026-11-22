@@ -77,6 +77,39 @@ pub(crate) fn indicators() -> Vec<Indicator> {
         format!(r#"\[\s*\${MONGO_OPS}\s*\]|"\${MONGO_OPS}"\s*:|^\${MONGO_OPS}$"#).into_boxed_str(),
     );
     vec![
+        // SQL shapes that are attacks as a whole value (fragments appended to a query)
+        // or attack-only on their own. Values are decoded and lower-cased.
+        i(
+            SqlInjection,
+            "sql_time_delay",
+            7.0,
+            r"\bwaitfor\s+delay\s*['\x22]|\bpg_sleep\s*\(|\bselect\s+pg_sleep\b|\bbenchmark\s*\(\s*\d",
+        ),
+        i(
+            SqlInjection,
+            "sql_order_by_column",
+            7.0,
+            r"^\s*[)'\x22]*\s*(order|group)\s+by\s+\d+\s*(asc|desc)?\s*(--|#|;|,|/\*|$)",
+        ),
+        i(
+            SqlInjection,
+            "sql_having_tautology",
+            7.0,
+            r"\bhaving\s+\(?\s*\d+\s*=\s*\d+",
+        ),
+        // MySQL reads `1.e(` as a float followed by a call: a known filter evasion
+        i(
+            SqlInjection,
+            "sql_scientific_notation",
+            6.0,
+            r"\b\d+\.e\s*[(.]\s*[a-z(]",
+        ),
+        i(
+            SqlInjection,
+            "sql_catalog_value",
+            2.0,
+            r"^\s*(information_schema|pg_catalog|pg_shadow|mysql\.user|sysobjects|syscolumns|tempdb|msdb|sqlite_master)(\.[a-z_]+)?\s*$",
+        ),
         // ---- SQL injection ----
         i(
             SqlInjection,
