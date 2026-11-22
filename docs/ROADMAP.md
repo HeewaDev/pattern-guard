@@ -30,7 +30,7 @@ Rust binary.
 | Area | State |
 |---|---|
 | Behavioural ML | ~0.3 % legit stopped / ~98.5 % attacks stopped on synthetic traffic incl. unseen attacks |
-| WAF | 92.5 % on PayloadsAllTheThings, 0 / 19 215 benign blocked; hold-out: command injection 100 %, XSS 87–97 %, SQLi 59 %, LFI 35 %; **OWASP CRS regression tests: 53.4 % blocked** (11.8 % before WAF 2.0) |
+| WAF | 57.6 % on the pinned PayloadsAllTheThings lists (SQLi 91 %, traversal / LFI 38–39 %), 1 / 17 719 benign blocked; hold-out: command injection 99 %, XSS 89 %, SQLi 73 %, LFI 35 %; **OWASP CRS regression tests: 53.4 % blocked** (11.8 % before WAF 2.0). Datasets: `scripts/fetch_eval_data.sh` |
 | Gateway | proxy, detect/prevent, PoW challenge (real browser verified), CrowdSec, Suricata/Wazuh feeds, metrics, decision log, API inventory |
 | Performance | ~28k req/s, p99 ≈ 3.4 ms (4 vCPU shared) |
 | Real-world proof | **none yet** |
@@ -41,9 +41,9 @@ Rust binary.
 |---|---|---|
 | Legit requests **blocked**, real shadow traffic | unknown | ≤ 0.05 % |
 | Legit requests challenged, real shadow traffic | unknown | ≤ 0.5 % |
-| WAF hold-out detection (SecLists/fuzzdb, never tuned on), per class | 35–100 % | ≥ 85 % every class |
+| WAF hold-out detection (SecLists/fuzzdb, never tuned on), per class | 35–99 % | ≥ 85 % every class |
 | WAF on OWASP CRS PL1 attack tests (930–944) | 63.5 % | ≥ 80 % |
-| WAF benign false blocks (19k benign corpus + real logs) | 0 % (corpus) | ≤ 0.01 % |
+| WAF benign false blocks (pinned 17.7k benign corpus + real logs) | 0.006 % (corpus) | ≤ 0.01 % |
 | Behaviour ML detection on unseen simulated attacks (avg per type) | ~93 % | ≥ 95 % |
 | Throughput per 8 vCPU, full inspection | ~28k (4 vCPU shared) | ≥ 100k req/s, p99 ≤ 5 ms |
 | Time from `git clone` to protected app | one `docker compose up` (build ~5 min) | ≤ 10 min (Docker) |

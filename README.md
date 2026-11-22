@@ -55,11 +55,15 @@ The full feature list, compared against open-appsec and Imperva, is in
 | Test | Result |
 |---|---|
 | Behavioural ML, 1 h simulated mixed traffic, including attacks it never trained on | ~0.3 % of legitimate requests stopped, ~98.5 % of attack requests stopped |
-| WAF, PayloadsAllTheThings attack lists vs 19 215 benign values (names, words, docs with code, user agents) | 92.5 % of attacks blocked, **0** benign blocked |
-| WAF hold-out lists never tuned on (SecLists / fuzzdb) | command injection (commix) 100 %, XSS 87–97 %, SQLi 59 %, file inclusion 35 %. File inclusion and SQLi are the gaps to close |
+| WAF, PayloadsAllTheThings payload lists (4 451) vs 17 719 benign values (names, English words, user agents, code lines from docs) | 57.6 % of attacks blocked: SSTI 94 %, SQLi 91 %, NoSQL 58 %, XSS 58 %, command injection 55 %, file inclusion 39 %, traversal 38 % · **1** benign value blocked (a `curl … \| sh` command line) |
+| WAF hold-out lists never tuned on (SecLists / fuzzdb, 10 173 payloads) | command injection (commix) 99 %, XSS 89 %, SQLi 73 %, file inclusion 35 %. File inclusion and traversal are the gaps to close |
 | WAF on the OWASP CRS regression tests (3 730 attack requests) | **53.4 % blocked** (rules at paranoia level 1: 63.5 %), up from 11.8 %. RFI (19 %), PHP (30 %) and RCE (35 %) are the weakest classes; see [RESEARCH.md](docs/RESEARCH.md). These tests are now used for development, so they are no longer a hold-out |
 | Proof-of-work challenge in real Chromium | solved in 142 ms, clearance cookie set; curl without JS stays blocked |
 | Gateway throughput, full inspection | ~28 000 req/s, p99 ≈ 3.4 ms (4 vCPU shared with client and upstream) |
+
+WAF figures are reproducible: `scripts/fetch_eval_data.sh` downloads the datasets at pinned
+commits (checksummed) and `scripts/eval_waf.sh` runs every evaluation. Earlier figures (92.5 %
+of attacks, 0 of 19 215 benign values) came from lists that were not recorded.
 
 Treat these as evidence that the mechanisms work, not as real-world accuracy guarantees.
 Run detect mode on your own traffic before enforcing.
