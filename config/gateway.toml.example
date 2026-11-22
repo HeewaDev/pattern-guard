@@ -26,6 +26,7 @@ header = "x-forwarded-for"
 
 [limits]
 max_connections_per_ip = 256
+max_requests_in_flight_per_ip = 256    # per client IP after trusted_proxies (works behind a CDN); else 429
 header_read_timeout_secs = 10          # slowloris protection
 body_read_timeout_secs = 30            # a body must bring body_min_bytes_per_sec × this many bytes
 body_min_bytes_per_sec = 1024          #   in every period, else 408 (0 = only a stall times out)

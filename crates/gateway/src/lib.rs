@@ -105,6 +105,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         geo_db,
         geo_policy: geo::GeoPolicy::new(&cfg.geo),
         conns: Mutex::new(HashMap::new()),
+        in_flight: Mutex::new(HashMap::new()),
         req_counter: AtomicU64::new(0),
         console_second: AtomicU64::new(0),
         console_suppressed: AtomicU64::new(0),

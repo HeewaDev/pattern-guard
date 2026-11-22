@@ -115,6 +115,11 @@ pub struct LimitsConfig {
     /// Concurrent connections per client IP (0 = unlimited). Not applied to trusted proxies.
     #[serde(default = "d_conn")]
     pub max_connections_per_ip: u32,
+    /// Requests in progress per client IP *after* `client_ip.trusted_proxies` (so it also
+    /// applies behind a CDN or load balancer); more get 429. 0 = unlimited. The allow list
+    /// is exempt.
+    #[serde(default = "d_conn")]
+    pub max_requests_in_flight_per_ip: u32,
     /// Seconds a client has to send complete request headers (slowloris protection).
     #[serde(default = "d_header_timeout")]
     pub header_read_timeout_secs: u64,
@@ -952,6 +957,8 @@ mod tests {
             (30, 1024, 256 * 1024 * 1024)
         );
         assert!(bad("body_read_timeout_secs = 0"));
+        assert_eq!(c.limits.max_requests_in_flight_per_ip, 256);
+        assert!(!bad("max_requests_in_flight_per_ip = 0"));
         assert!(!bad(
             "body_min_bytes_per_sec = 0\nmax_buffered_body_bytes = 0"
         ));

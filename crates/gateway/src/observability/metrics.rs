@@ -31,6 +31,9 @@ pub struct Metrics {
     pub rejected_body_timeout: AtomicU64,
     /// Requests refused with 503: buffering the body would exceed the budget.
     pub rejected_body_budget: AtomicU64,
+    /// Requests refused with 429: the client already had `limits.max_requests_in_flight_per_ip`
+    /// requests in progress.
+    pub rejected_in_flight: AtomicU64,
     pub crowdsec_ok: AtomicU64,
     pub duration_us_sum: AtomicU64,
     pub requests: AtomicU64,
@@ -172,6 +175,7 @@ impl Metrics {
         for (reason, v) in [
             ("body_timeout", &self.rejected_body_timeout),
             ("body_budget", &self.rejected_body_budget),
+            ("in_flight_per_ip", &self.rejected_in_flight),
         ] {
             let _ = writeln!(
                 s,
