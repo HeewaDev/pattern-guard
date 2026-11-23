@@ -18,19 +18,24 @@ requests in categories 930–944).
 
 | CRS category | Attack tests | Blocked before WAF 2.0 | Blocked now (score ≥ 7) |
 |---|---|---|---|
-| 930 local file inclusion | 67 | 23.9 % | 50.7 % |
-| 931 remote file inclusion | 37 | 10.8 % | 18.9 % |
+| 930 local file inclusion | 67 | 23.9 % | 61.2 % |
+| 931 remote file inclusion | 37 | 10.8 % | 27.0 % |
 | 932 remote code execution | 793 | 9.1 % | 34.9 % |
-| 933 PHP injection | 327 | 1.8 % | 30.0 % |
+| 933 PHP injection | 327 | 1.8 % | 30.3 % |
 | 934 generic (SSRF, SSTI, Node, prototype pollution) | 240 | 7.5 % | 69.6 % |
 | 941 XSS | 209 | 34.9 % | 60.8 % |
-| 942 SQL injection | 871 | 20.0 % | 42.8 % |
+| 942 SQL injection | 871 | 20.0 % | 45.7 % |
 | 943 session fixation | 43 | 4.7 % | 95.3 % |
 | 944 Java (deserialisation, Log4Shell, class names) | 1 143 | 6.6 % | 75.8 % |
-| **All attack categories** | **3 730** | **11.8 %** | **53.4 %** |
+| **All attack categories** | **3 730** | **11.8 %** | **54.3 %** |
 
-Rules at paranoia level 1, the CRS default: 63.5 % of 2 082 attack tests blocked.
-Multipart attacks (922): 100 % of 27; protocol enforcement (920): 16 %.
+Rules at paranoia level 1, the CRS default: 64.5 % of 2 082 attack tests blocked.
+Multipart attacks (922): 100 % of 27; protocol enforcement (920): 22.1 %.
+
+"Blocked now" was last measured on 2026-11-23 with `scripts/eval_waf.sh` on the data that
+`scripts/fetch_eval_data.sh` pins (CRS commit 2de4afc). The 53.4 % in the WAF 2.0 CHANGELOG
+entry is the figure when WAF 2.0 landed; later SQL, file-inclusion and PHP rules raised it to
+54.3 %, the figure the README and FEATURES.md give.
 
 **Since WAF 2.0 these tests are a development set.** The detectors added in WAF 2.0 (CRS
 word lists, base64 / UTF-7 decoding, Java, SQL tokenizer, XSS evasions, shell and URL
