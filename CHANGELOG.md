@@ -86,6 +86,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **WAF padding bypass** (high): each value was cut at 8 KiB and the gateway inspected only
+  the first `inspect_body_bytes` (64 KiB) of a body, but forwarded all of it, and nothing
+  recorded that part went unread. A payload behind 9 000 junk characters in a form or
+  JSON field, or behind 64 KiB of padding in the body, scored 0. Multipart bodies past 256
+  parts were cut the same way. Now:
+  - values longer than 8 KiB are inspected in overlapping 8 KiB windows up to
+    `Inspector::max_value_len` (64 KiB, or `inspect_body_bytes` if larger in the gateway);
+  - the gateway hands the inspector the whole body. A body of parameters past
+    `inspect_body_bytes`, a longer value, or more than 256 multipart parts gives an
+    `inspection_limit` finding (7, class `protocol`), which blocks in prevent mode;
+  - multipart bodies are parsed whole: fields after a large file are inspected, files
+    don't count against `inspect_body_bytes`, and every binary file (multipart or raw)
+    is searched whole for server code (it used to stop at the first 64 KiB of the body);
+  - raw file uploads (`image/*`, `audio/*`, `video/*`, `application/octet-stream`, PDF,
+    archives, `text/csv`, `application/vnd.*` other than JSON / XML) larger than
+    `inspect_body_bytes` aren't flagged; their first `inspect_body_bytes` are still
+    inspected;
+  - new key `[waf] flag_oversize` (default `true`). **Migration:** if your application
+    accepts bodies of parameters larger than 64 KiB (bulk JSON APIs, large rich-text
+    posts), raise `inspect_body_bytes` for them, or set `flag_oversize = false` to keep
+    the old behaviour (only the first `inspect_body_bytes` inspected, the rest unseen).
+  New library fields `Inspector::max_body_len` and `Inspector::flag_oversize`;
+  `max_value_len` now defaults to 64 KiB (was 8 KiB).
+
 - **Dependencies** (found by the new `cargo-deny` CI job): `lru` 0.12.5 → 0.19.1
   (RUSTSEC-2026-0002, an unsound `IterMut`, and RUSTSEC-2026-0253, a use-after-free if a
   key's `Drop` panics during `pop()`; Pattern-Guard's keys are integers, strings and IP

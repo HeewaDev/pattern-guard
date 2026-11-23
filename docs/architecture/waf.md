@@ -59,7 +59,8 @@ Suggested thresholds: log at ≥ 4, block at ≥ 7. These are the gateway defaul
 ## The per-value pipeline (`inspect_value_filtered`)
 
 ```
-raw ─► truncate (8 KiB) ─► decode: URL ×≤4 · %uXXXX · HTML entities · JS escapes · lowercase · collapse whitespace
+raw ─► cut at max_value_len (64 KiB; longer → inspection_limit) ─► 8 KiB windows, 1 KiB overlap, each:
+     ─► decode: URL ×≤4 · %uXXXX · HTML entities · JS escapes · lowercase · collapse whitespace
      │
      ├─ variants:  [comments removed] [comments → space] [Log4j lookups resolved ×≤3] [decoded]
      │             + UTF-7 decoding (if it decodes) + look-alike brackets folded (＜ « ‹ ¼ → <)
@@ -102,7 +103,9 @@ Scoring rules:
 
 ## Multipart
 
-`multipart::parse` enforces 256 parts and 8 KiB of headers per part, and records **structural
+`multipart::parse` takes the whole body (the delimiter is found with a substring searcher, so a
+multi-megabyte upload is cheap), enforces 256 parts (more → `inspection_limit`) and 8 KiB of headers
+per part, and records **structural
 anomalies** that parsers disagree on: duplicate `Content-Disposition`, invalid or malformed
 header names, parameter evasions (quotes, encodings), part charsets, `_charset_` fields,
 `Content-Transfer-Encoding`. These anomalies are scored as `ProtocolViolation` at location `multipart`.
@@ -141,8 +144,13 @@ A body that fails to parse as multipart falls back to whole-body inspection.
 - The number of distinct variants drives the cost: each one is another matching pass. Decoders that run
   only when a trigger is present (base64 needs ≥ 12 base64 characters including a digit or upper-case
   letter; UTF-7 needs `+…-`) keep the common case cheap.
-- Input caps: 8 KiB per value, the body window set by the caller (gateway: 64 KiB), JSON depth and width,
-  multipart part count and header size, base64 candidates ≤ 16 KiB.
+- Input caps: `max_value_len` per value (64 KiB, inspected in 8 KiB windows that each count as a value),
+  `max_body_len` of a body of parameters (gateway: `inspect_body_bytes`, 64 KiB; multipart fields count,
+  files don't), JSON depth, 8 192 values, multipart part count and header size, base64 candidates ≤ 16 KiB.
+  Input past a cap gives an `inspection_limit` finding (7) when `flag_oversize` is on (the default), so
+  padding can't hide a payload. Raw file uploads (`image/*`, `application/octet-stream`, PDF, archives,
+  `text/csv`, …) past `max_body_len` are exempt: their head is inspected and binary ones are searched
+  whole for server code.
 
 ## Testing
 

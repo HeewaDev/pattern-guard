@@ -303,6 +303,67 @@ async fn multipart_uploads_are_inspected_per_part() {
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
 }
 
+/// Padding a body past `inspect_body_bytes` used to hide a payload behind it: the rest was
+/// forwarded uninspected. Now it gets an `inspection_limit` finding, and fields after a
+/// large file upload are inspected.
+#[tokio::test]
+async fn padded_bodies_cannot_hide_payloads() {
+    let gw = start_gateway("[waf]\ninspect_body_bytes = 4096").await;
+    let json = [("content-type", "application/json")];
+    let form = [("content-type", "application/x-www-form-urlencoded")];
+    let ct = [("content-type", "multipart/form-data; boundary=XyZ")];
+    let upload = |content: &str, after: &str| {
+        format!(
+            "--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\n\
+             Content-Type: text/plain\r\n\r\n{content}\r\n\
+             --XyZ\r\nContent-Disposition: form-data; name=\"comment\"\r\n\r\n{after}\r\n--XyZ--\r\n"
+        )
+    };
+    let sqli = "' UNION SELECT username,password FROM users--";
+    let pad = "a".repeat(10_000);
+    // clean requests first: blocked requests raise the client's behavioural risk.
+    // A file larger than `inspect_body_bytes` is fine: files don't count.
+    let r = send(
+        gw.addr,
+        "POST",
+        "/upload",
+        &ct,
+        &upload(&"note ".repeat(10_000), "Thanks, O'Brien"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "large upload: {}", r.body);
+    let r = send(gw.addr, "POST", "/api", &json, r#"{"name":"O'Brien"}"#).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    // a payload behind padding
+    let body = format!(r#"{{"pad":"{pad}","q":"{sqli}"}}"#);
+    let r = send(gw.addr, "POST", "/api", &json, &body).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "padded JSON: {}", r.body);
+    let body = format!("pad={pad}&q={}", sqli.replace(' ', "+"));
+    let r = send(gw.addr, "POST", "/api", &form, &body).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "padded form: {}", r.body);
+    // a payload in a field after a large file
+    let r = send(
+        gw.addr,
+        "POST",
+        "/upload",
+        &ct,
+        &upload(&"note ".repeat(10_000), sqli),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "field after a file: {}",
+        r.body
+    );
+
+    // `flag_oversize = false`: only the first `inspect_body_bytes` are inspected
+    let gw = start_gateway("[waf]\ninspect_body_bytes = 4096\nflag_oversize = false").await;
+    let body = format!(r#"{{"pad":"{pad}","q":"{sqli}"}}"#);
+    let r = send(gw.addr, "POST", "/api", &json, &body).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+}
+
 #[tokio::test]
 async fn business_operations_and_logins_are_protected() {
     let gw = start_gateway(

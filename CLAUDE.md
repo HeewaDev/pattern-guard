@@ -85,8 +85,9 @@ call chains with grep or by reading the code. Run `graphify update .` again afte
 ## Invariants (do not break without an explicit decision)
 
 - **Bounded memory.** Every table keyed by actor, IP, route, account or value is an LRU
-  with a cap. Inputs are truncated: WAF values at 8 KiB, JSON depth 32 × 1 000 items, 256 multipart
-  parts, and inspected bodies at `inspect_body_bytes`. New state must be bounded too.
+  with a cap. Inputs are capped: WAF values at 64 KiB (inspected in 8 KiB windows), JSON depth 64,
+  8 192 values per request, 256 multipart parts, and bodies of parameters at `inspect_body_bytes`.
+  Input past a cap is flagged `inspection_limit`, never skipped silently. New state must be bounded too.
 - **The request path never waits on slow I/O it doesn't need.** The decision log uses
   `try_send` and drops lines under pressure. Console output is limited to one line per second.
 - **Client identity.** Only `client_ip.trusted_proxies` may set the client-IP header,

@@ -39,7 +39,9 @@ max_intel_entries_per_source = 500000  # per CrowdSec origin / Suricata / Wazuh
 enabled = true
 block_score = 7.0                      # 0–10
 log_score = 4.0
-inspect_body_bytes = 65536
+inspect_body_bytes = 65536             # fields of a multipart body count, its files don't
+flag_oversize = true                   # a longer body or value gets an `inspection_limit`
+                                       # finding (7) instead of passing uninspected
 exclude_paths = ["/healthz"]
 exclude_params = []                    # e.g. ["html_body"] for rich-text editors; a name
                                        # is excluded in every location and on every path

@@ -1,6 +1,10 @@
 //! `multipart/form-data` parsing (RFC 7578): splits a body into parts with their field
 //! names, file names and content types, and reports structural evasions (OWASP CRS 922).
 
+use std::sync::OnceLock;
+
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
+
 /// One part of a multipart body.
 pub(crate) struct Part<'a> {
     pub name: String,
@@ -15,6 +19,8 @@ pub(crate) struct Part<'a> {
 pub(crate) struct Multipart<'a> {
     pub parts: Vec<Part<'a>>,
     pub anomalies: Vec<(&'static str, f64)>,
+    /// More than `MAX_PARTS` parts: the rest were not parsed.
+    pub truncated: bool,
 }
 
 const MAX_PARTS: usize = 256;
@@ -51,13 +57,18 @@ pub(crate) fn parse<'a>(body: &'a [u8], boundary: &str) -> Option<Multipart<'a>>
     let mut out = Multipart {
         parts: Vec::new(),
         anomalies: Vec::new(),
+        truncated: false,
     };
+    // the body can be megabytes (file uploads): find the delimiter with a substring
+    // searcher, not byte by byte
+    let delims = AhoCorasick::new([delim]).ok()?;
+    let find_delim = |from: usize| delims.find(&body[from..]).map(|m| m.start() + from);
     let push = |a: &mut Vec<(&'static str, f64)>, name: &'static str, w: f64| {
         if !a.iter().any(|(n, _)| *n == name) {
             a.push((name, w));
         }
     };
-    let mut pos = find(body, delim, 0)?;
+    let mut pos = find_delim(0)?;
     loop {
         let mut start = pos + delim.len();
         if body[start..].starts_with(b"--") {
@@ -68,7 +79,7 @@ pub(crate) fn parse<'a>(body: &'a [u8], boundary: &str) -> Option<Multipart<'a>>
             Some(nl) => start = nl + 1,
             None => break,
         }
-        let end = find(body, delim, start).unwrap_or(body.len());
+        let end = find_delim(start).unwrap_or(body.len());
         let raw = &body[start..end];
         // strip the line break that belongs to the next delimiter
         let raw = raw
@@ -153,7 +164,12 @@ pub(crate) fn parse<'a>(body: &'a [u8], boundary: &str) -> Option<Multipart<'a>>
             }
         }
         out.parts.push(part);
-        if out.parts.len() >= MAX_PARTS || end >= body.len() {
+        if end >= body.len() {
+            break;
+        }
+        if out.parts.len() >= MAX_PARTS {
+            // parts past the cap would go to the application uninspected
+            out.truncated = !body[end + delim.len()..].starts_with(b"--");
             break;
         }
         pos = end;
@@ -374,11 +390,15 @@ pub(crate) fn embedded_code(content: &[u8]) -> Option<&'static str> {
         (b"<%@", "upload_embedded_server_code"),
         (b"<%=", "upload_embedded_server_code"),
     ];
-    let lower: Vec<u8> = content.iter().map(|b| b.to_ascii_lowercase()).collect();
-    markers
-        .iter()
-        .find(|(m, _)| find(&lower, m, 0).is_some())
-        .map(|(_, n)| *n)
+    // the whole file, which can be megabytes: one case-insensitive pass, no copy
+    static MARKERS: OnceLock<AhoCorasick> = OnceLock::new();
+    let ac = MARKERS.get_or_init(|| {
+        AhoCorasickBuilder::new()
+            .ascii_case_insensitive(true)
+            .build(markers.iter().map(|(m, _)| m))
+            .expect("upload markers compile")
+    });
+    ac.find(content).map(|m| markers[m.pattern().as_usize()].1)
 }
 
 #[cfg(test)]

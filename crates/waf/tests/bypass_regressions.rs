@@ -341,3 +341,234 @@ fn sql_fragments_time_probes_and_lookalike_quotes() {
         assert!(value_score(&w, benign) < BLOCK, "{benign}");
     }
 }
+
+/// Pseudo-random bytes (a fixed LCG), for file uploads and base64 images.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed;
+    (0..n)
+        .map(|_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (x >> 33) as u8
+        })
+        .collect()
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    bytes
+        .chunks(3)
+        .flat_map(|c| {
+            let n = (c[0] as u32) << 16
+                | (*c.get(1).unwrap_or(&0) as u32) << 8
+                | *c.get(2).unwrap_or(&0) as u32;
+            (0..4).map(move |i| A[(n >> (18 - 6 * i)) as usize & 63] as char)
+        })
+        .collect()
+}
+
+/// Ordinary prose of about `n` bytes: apostrophes, punctuation, numbers, code in docs.
+fn prose(n: usize) -> String {
+    let sentences = [
+        "Mr O'Brien said the meeting is at 10:30, or 11 if the train's late.",
+        "Use `let x = map.get(&key).unwrap_or(0);` when the key may be missing.",
+        "Prices start at $5 (or 4.50 with a coupon) - see the FAQ for details.",
+        "She asked: \"Is it 1 or 2 tickets?\" and we said 50 or 60 people attended.",
+        "Select the size you'd like from the menu, then press Order to continue.",
+        "The script runs every night; logs go to /var/log/app and rotate weekly.",
+        "We've updated our terms & conditions: you can read them on the website.",
+    ];
+    let mut s = String::new();
+    let mut i = 0;
+    while s.len() < n {
+        s.push_str(sentences[i % sentences.len()]);
+        s.push(if i % 5 == 4 { '\n' } else { ' ' });
+        i += 1;
+    }
+    s
+}
+
+fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> (String, Vec<u8>) {
+    let b = "----pgboundary7MA4YWxk";
+    let mut body = Vec::new();
+    for (name, file, content) in parts {
+        body.extend_from_slice(format!("--{b}\r\n").as_bytes());
+        let disposition = match file {
+            Some(f) => format!("form-data; name=\"{name}\"; filename=\"{f}\""),
+            None => format!("form-data; name=\"{name}\""),
+        };
+        body.extend_from_slice(format!("Content-Disposition: {disposition}\r\n").as_bytes());
+        if file.is_some() {
+            body.extend_from_slice(b"Content-Type: application/octet-stream\r\n");
+        }
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(content);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{b}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={b}"), body)
+}
+
+const SQLI: &str = "' UNION SELECT username,password FROM users--";
+
+/// Padding a value past 8 KiB, or a body past the inspected size, used to hide a payload
+/// behind it: the rest was never inspected and reached the application.
+#[test]
+fn padding_cannot_push_a_payload_past_inspection() {
+    let w = Inspector::new();
+    let form = "application/x-www-form-urlencoded";
+    let json = "application/json";
+    // one long value: payload after 9 000 bytes, across a window boundary, deep inside
+    for pad in [9000, 8150, 8190, 30_000, 60_000] {
+        let f = format!("q={}{}", "a".repeat(pad), SQLI.replace(' ', "+"));
+        assert!(
+            request_score(&w, &[], Some(form), f.as_bytes()) >= BLOCK,
+            "form {pad}"
+        );
+        let j = format!("{{\"q\":\"{}{SQLI}\"}}", "a".repeat(pad));
+        assert!(
+            request_score(&w, &[], Some(json), j.as_bytes()) >= BLOCK,
+            "json {pad}"
+        );
+    }
+    let xss = format!(
+        "{{\"bio\":\"{}<script>alert(document.cookie)</script>\"}}",
+        prose(30_000)
+    );
+    assert!(
+        request_score(&w, &[], Some(json), xss.as_bytes()) >= BLOCK,
+        "xss in prose"
+    );
+    let cookie = format!("sid={}{}", "a".repeat(9000), SQLI);
+    assert!(
+        request_score(&w, &[("cookie", &cookie)], None, b"") >= BLOCK,
+        "cookie"
+    );
+    // a value longer than the inspected length: the rest can't be seen, so it's flagged
+    let huge = format!("{}{SQLI}", "a".repeat(70_000));
+    assert!(value_score(&w, &huge) >= BLOCK, "value past max_value_len");
+    // a body longer than the inspected size: flagged
+    let big = format!("{{\"pad\":\"{}\",\"q\":\"{SQLI}\"}}", "b".repeat(70_000));
+    assert!(
+        request_score(&w, &[], Some(json), big.as_bytes()) >= BLOCK,
+        "json body"
+    );
+    let big = format!("pad={}&q={}", "b".repeat(70_000), SQLI.replace(' ', "+"));
+    assert!(
+        request_score(&w, &[], Some(form), big.as_bytes()) >= BLOCK,
+        "form body"
+    );
+    // multipart: a field after a large file is inspected; past 256 parts is flagged
+    let file = noise(200_000, 1);
+    let (ct, body) = multipart(&[
+        ("photo", Some("a.jpg"), &file),
+        ("q", None, SQLI.as_bytes()),
+    ]);
+    assert!(
+        request_score(&w, &[], Some(&ct), &body) >= BLOCK,
+        "field after a file"
+    );
+    let mut many: Vec<(&str, Option<&str>, &[u8])> = vec![("f", None, b"x"); 300];
+    many.push(("q", None, SQLI.as_bytes()));
+    let (ct, body) = multipart(&many);
+    assert!(
+        request_score(&w, &[], Some(&ct), &body) >= BLOCK,
+        "past 256 parts"
+    );
+    // a body of parameters is flagged whatever its declared flavour; a raw binary file
+    // is checked whole for server code
+    let big = format!("{{\"pad\":\"{}\",\"q\":\"{SQLI}\"}}", "b".repeat(70_000));
+    for ct in [Some("application/vnd.api+json"), Some("text/plain"), None] {
+        assert!(
+            request_score(&w, &[], ct, big.as_bytes()) >= BLOCK,
+            "{ct:?}"
+        );
+    }
+    let mut raw = noise(150_000, 3);
+    raw.extend_from_slice(b"<?php eval($_POST['x']);");
+    assert!(
+        request_score(&w, &[], Some("image/png"), &raw) >= BLOCK,
+        "raw polyglot"
+    );
+    // server code in an image, far into the file
+    let mut polyglot = noise(150_000, 2);
+    polyglot.extend_from_slice(b"<?PHP system($_GET['c']); ?>");
+    let (ct, body) = multipart(&[("photo", Some("a.jpg"), &polyglot)]);
+    assert!(
+        request_score(&w, &[], Some(&ct), &body) >= BLOCK,
+        "php deep in an image"
+    );
+}
+
+/// Long legitimate input stays clean: articles, base64 images, large uploads.
+#[test]
+fn long_benign_values_and_uploads_stay_clean() {
+    let w = Inspector::new();
+    let json = "application/json";
+    for n in [9000, 20_000, 60_000] {
+        let article = format!("{{\"title\":\"Notes\",\"body\":{:?}}}", prose(n));
+        assert!(
+            request_score(&w, &[], Some(json), article.as_bytes()) < BLOCK,
+            "prose {n}"
+        );
+        let form = format!("comment={}", prose(n).replace(' ', "+"));
+        let ct = Some("application/x-www-form-urlencoded");
+        assert!(
+            request_score(&w, &[], ct, form.as_bytes()) < BLOCK,
+            "form prose {n}"
+        );
+    }
+    for seed in 1..6 {
+        let image = format!(
+            "{{\"avatar\":\"data:image/png;base64,{}\"}}",
+            base64(&noise(40_000, seed))
+        );
+        assert!(
+            request_score(&w, &[], Some(json), image.as_bytes()) < BLOCK,
+            "image {seed}"
+        );
+        let file = noise(500_000, seed);
+        let (ct, body) = multipart(&[
+            ("title", None, b"Holiday in O'Brien's cottage"),
+            ("photo", Some("IMG_0042.jpg"), &file),
+            ("caption", None, prose(2000).as_bytes()),
+        ]);
+        assert!(
+            request_score(&w, &[], Some(&ct), &body) < BLOCK,
+            "upload {seed}"
+        );
+    }
+    // raw file uploads (`PUT /files/x`) larger than the inspected size
+    let png = noise(300_000, 9);
+    assert!(
+        request_score(&w, &[], Some("image/png"), &png) < BLOCK,
+        "raw image"
+    );
+    let octets = Some("application/octet-stream");
+    assert!(request_score(&w, &[], octets, &png) < BLOCK, "raw octets");
+    let csv: String = (0..20_000)
+        .map(|i| format!("{i},O'Brien,42.50\n"))
+        .collect();
+    assert!(
+        request_score(&w, &[], Some("text/csv"), csv.as_bytes()) < BLOCK,
+        "csv"
+    );
+    let text_file = prose(200_000);
+    let (ct, body) = multipart(&[("doc", Some("notes.txt"), text_file.as_bytes())]);
+    assert!(
+        request_score(&w, &[], Some(&ct), &body) < BLOCK,
+        "large text file"
+    );
+}
+
+/// `flag_oversize = false` keeps the old behaviour: the inspected prefix only.
+#[test]
+fn oversize_flag_can_be_turned_off() {
+    let mut w = Inspector::new();
+    w.flag_oversize = false;
+    let big = format!("{{\"pad\":\"{}\",\"q\":\"{SQLI}\"}}", "b".repeat(70_000));
+    assert!(request_score(&w, &[], Some("application/json"), big.as_bytes()) < BLOCK);
+    w.max_body_len = 1 << 20;
+    assert!(request_score(&w, &[], Some("application/json"), big.as_bytes()) >= BLOCK);
+}

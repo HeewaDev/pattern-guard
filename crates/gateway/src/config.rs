@@ -181,9 +181,15 @@ pub struct WafConfig {
     pub block_score: f64,
     #[serde(default = "d_log_score")]
     pub log_score: f64,
-    /// Body bytes inspected (the full body is still forwarded).
+    /// Body bytes inspected (the full body is still forwarded). A multipart body is
+    /// parsed whole: its fields count against this, its files don't.
     #[serde(default = "d_inspect_body")]
     pub inspect_body_bytes: usize,
+    /// A body or value too long to inspect whole gets an `inspection_limit` finding
+    /// (score 7, so blocked in prevent mode at the default `block_score`). `false`
+    /// inspects only the first `inspect_body_bytes` and lets the rest through unseen.
+    #[serde(default = "d_true")]
+    pub flag_oversize: bool,
     /// Path prefixes not inspected.
     #[serde(default)]
     pub exclude_paths: Vec<String>,
@@ -863,6 +869,13 @@ impl GatewayConfig {
             || self.waf.log_score > self.waf.block_score
         {
             return Err("waf: need 0 ≤ log_score ≤ block_score ≤ 10".into());
+        }
+        if self.waf.enabled && self.waf.flag_oversize && self.waf.inspect_body_bytes < 1024 {
+            return Err(
+                "waf.inspect_body_bytes must be at least 1024 with waf.flag_oversize = true \
+                 (every larger body would be flagged)"
+                    .into(),
+            );
         }
         if self.bans.threshold == 0
             || self.bans.escalation < 1.0

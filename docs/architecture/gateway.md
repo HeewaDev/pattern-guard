@@ -86,7 +86,7 @@ The stages below are in code order.
 | 6 | Rules | Country lookup (if a GeoDb is loaded), then `rules.evaluate`. The first terminal rule wins, `log` rules accumulate, `skip_waf` sets a flag. A terminal `allow` → forward immediately |
 | 7 | Gatekeeper checks | `rate_limiter.check`, `operations.check` (returns a hit and a **ticket**), `protocol.check`, `bans.trap`. A trap hit calls `bans.ban_now` straight away |
 | 8 | Behavioural ML | `guard.assess(event)` with actor `ip:<addr>`, method, path + query, server time, IP, UA and fingerprint header. **This runs on every request from here on**, including ones blocked below |
-| 9 | WAF | Unless `waf.enabled = false`, a `skip_waf` rule, or an `exclude_paths` prefix: `waf.inspect` over path, query, headers, cookies and the first `inspect_body_bytes` (64 KiB) of the body. Findings below `log_score` (4) or on an `exclude_params` name are dropped |
+| 9 | WAF | Unless `waf.enabled = false`, a `skip_waf` rule, or an `exclude_paths` prefix: `waf.inspect` over path, query, headers, cookies and the body. The inspector keeps to `inspect_body_bytes` (64 KiB) of parameters (multipart files don't count) and flags the rest as `inspection_limit` (7) unless `flag_oversize = false`. Findings below `log_score` (4) or on an `exclude_params` name are dropped |
 | 10 | Reputation | `intel.lookup(ip)` (the strongest live entry) and `access.deny` |
 | 11 | Fuse | See [Fusion](#fusion) |
 | 12 | Adjust | Challenge with `challenge.enabled = false` → Block. A valid clearance cookie turns Challenge or Delay (never Block) into Allow |

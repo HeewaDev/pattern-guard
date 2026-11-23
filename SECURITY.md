@@ -31,8 +31,9 @@ In scope:
 Known and documented limits are not vulnerabilities by themselves. See
 [docs/GATEWAY.md](docs/GATEWAY.md#limits-of-this-version) and
 [docs/architecture/gateway.md](docs/architecture/gateway.md). Examples: the admin port has no
-authentication (bind it to loopback or a private network), and only the first
-`waf.inspect_body_bytes` of a body are inspected. Individual payloads that score just
+authentication (bind it to loopback or a private network), and with
+`waf.flag_oversize = false` only the first `waf.inspect_body_bytes` of a body are inspected.
+Individual payloads that score just
 under the threshold are better filed as regular detection issues.
 
 ## Supported versions

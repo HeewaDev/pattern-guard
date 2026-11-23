@@ -368,6 +368,17 @@ against a live Wazuh manager:
 ## WAF tuning
 
 * `block_score` (default 7) / `log_score` (4): each attack class is scored 0–10.
+* `inspect_body_bytes` (default 65 536): body bytes inspected. In a multipart body the
+  fields count and the files don't, so large uploads are fine.
+* `flag_oversize` (default `true`): a body of parameters longer than `inspect_body_bytes`,
+  a value longer than 64 KiB (or `inspect_body_bytes`, if larger), or more than 256
+  multipart parts gets an `inspection_limit` finding (7, so blocked in prevent mode).
+  Without it, padding a request past the limit hides a payload behind it. Raw file
+  uploads (`image/*`, `audio/*`, `video/*`, `application/octet-stream`, PDF, archives,
+  `text/csv`, `application/vnd.*` other than JSON / XML) are not flagged. If an API takes
+  larger JSON or form bodies, raise `inspect_body_bytes` (CPU grows with it: roughly
+  0.4 ms per 8 KiB of random-looking text, far less for ordinary text) or exempt the
+  route with a `skip_waf` rule. `false` restores the old behaviour.
 * `exclude_paths`: path prefixes skipped entirely (health checks, webhooks you verify by signature).
 * `exclude_params`: field names whose values are not inspected (rich-text editors, code snippets).
   Applies to query, form, JSON and multipart fields, and to upload file names (`filename:<field>`).

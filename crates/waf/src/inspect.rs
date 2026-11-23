@@ -27,6 +27,15 @@ use crate::ssrf::Ssrf;
 /// limit, and an attacker can't buy unbounded work with one request.
 const MAX_VALUES: usize = 8192;
 
+/// Values longer than this are inspected in overlapping windows of this size (up to
+/// `Inspector::max_value_len`): decoding and the analysers stay as fast per byte as on
+/// short values, and a payload behind padding is still inspected.
+const WINDOW: usize = 8 * 1024;
+
+/// Bytes shared by neighbouring windows, so a payload shorter than this that straddles a
+/// window boundary is whole in one of them.
+const OVERLAP: usize = 1024;
+
 /// Time a request may spend in the combined indicator automaton before its remaining
 /// values are matched one regex at a time (see [`Inspector::indicator_matches`]).
 const SET_BUDGET: Duration = Duration::from_millis(2);
@@ -42,6 +51,9 @@ struct Scan {
     set_time: Cell<Duration>,
     limited: Cell<bool>,
     too_deep: Cell<bool>,
+    /// A value longer than `max_value_len` or a body longer than `max_body_len`: the rest
+    /// was not inspected.
+    oversize: Cell<Option<&'static str>>,
     /// Keyed hashes of JSON strings already inspected clean in this request: bulk JSON
     /// repeats its keys (and many values) thousands of times, and a JSON string's result
     /// doesn't depend on where it appears, so each is inspected once. The hash key is
@@ -121,8 +133,20 @@ pub struct Inspector {
     ssrf: Ssrf,
     /// Findings below this score are dropped.
     pub min_score: f64,
-    /// Longest value inspected (bytes); longer values are truncated.
+    /// Longest value inspected (bytes). Values longer than 8 KiB are inspected in
+    /// overlapping windows up to this length; the rest of a longer value is not
+    /// inspected, and the request gets an `inspection_limit` finding (see `flag_oversize`).
+    /// Text file uploads are inspected up to this length without that finding.
     pub max_value_len: usize,
+    /// Body bytes inspected. Past this, a body that is not multipart is not inspected
+    /// further and the request gets an `inspection_limit` finding (see `flag_oversize`).
+    /// A multipart body is parsed whole: every field is inspected until the fields
+    /// (not the files) reach this size, and every file is checked for server code.
+    pub max_body_len: usize,
+    /// Report input that was not inspected because of `max_value_len` or `max_body_len`
+    /// as an `inspection_limit` finding (score 7). Without it, padding a value or a body
+    /// past a limit hides a payload behind it.
+    pub flag_oversize: bool,
 }
 
 impl Default for Inspector {
@@ -172,14 +196,33 @@ impl Inspector {
             lookups: Regex::new(r"\$\{\s*(?:lower|upper|::-|[a-z]*:[^:}$]*:-)\s*:?([^}$]*)\}")
                 .unwrap(),
             min_score: 3.0,
-            max_value_len: 8192,
+            max_value_len: 64 * 1024,
+            max_body_len: 64 * 1024,
+            flag_oversize: true,
         }
     }
 
     /// Scores one value. `form` = `+` means space (query strings, form bodies).
     /// Returns the strongest finding, if any reaches `min_score`.
+    /// A value longer than `max_value_len` without a stronger finding gives the
+    /// `inspection_limit` finding (when `flag_oversize` is on).
     pub fn inspect_value(&self, location: &str, raw: &str, form: bool) -> Option<Finding> {
-        self.inspect_value_filtered(&Scan::default(), location, raw, form, false)
+        let scan = Scan::default();
+        let found = self.inspect_value_filtered(&scan, location, raw, form, false);
+        if !self.flag_oversize || scan.oversize.get().is_none() {
+            return found;
+        }
+        let limit = Finding {
+            class: ProtocolViolation,
+            score: 7.0,
+            location: location.to_string(),
+            indicators: vec!["inspection_limit"],
+            sample: format!("value longer than {} bytes", self.max_value_len),
+        };
+        match found {
+            Some(f) if f.score >= limit.score => Some(f),
+            _ => Some(limit),
+        }
     }
 
     /// `inspect_value` within one request's budget.
@@ -205,7 +248,35 @@ impl Inspector {
         }
     }
 
+    /// Scores a value up to `max_value_len`, in overlapping windows when it is long, and
+    /// returns the strongest finding. A longer value marks the request as oversize.
     fn inspect_value_filtered(
+        &self,
+        scan: &Scan,
+        location: &str,
+        raw: &str,
+        form: bool,
+        jndi_only: bool,
+    ) -> Option<Finding> {
+        let inspected = truncate(raw, self.max_value_len);
+        if inspected.len() < raw.len() {
+            scan.oversize.set(Some("value"));
+        }
+        windows(inspected)
+            .into_iter()
+            .filter_map(|w| self.score_window(scan, location, w, form, jndi_only))
+            .max_by(|a, b| a.score.total_cmp(&b.score))
+    }
+
+    /// File content: inspected up to `max_value_len`; a longer file is not oversize (files
+    /// are stored, not parsed as parameters, and uploads are often large).
+    fn scan_file_text(&self, scan: &Scan, location: &str, text: &str) -> Option<Finding> {
+        self.scan_value(scan, location, truncate(text, self.max_value_len), false)
+    }
+
+    /// Scores one value of at most about `WINDOW` bytes; each counts against the
+    /// request's value budget.
+    fn score_window(
         &self,
         scan: &Scan,
         location: &str,
@@ -222,7 +293,6 @@ impl Inspector {
             return None;
         }
         scan.values.set(n + 1);
-        let raw = truncate(raw, self.max_value_len);
         // User-Agent locale tokens: `; id;` is Indonesian in UC Browser and BlackBerry
         // agents, not a chained `id` command
         let ua_cleaned;
@@ -463,7 +533,35 @@ impl Inspector {
                 .and_then(|b| self.inspect_multipart(&scan, req.body, &b, &mut names));
             match multipart {
                 Some(found) => out.findings.extend(found),
-                None => self.inspect_body(&scan, req.body, &ct, &mut names, &mut out.findings),
+                None if req.body.len() <= self.max_body_len => {
+                    self.inspect_body(&scan, req.body, &ct, &mut names, &mut out.findings)
+                }
+                None => {
+                    let head = &req.body[..self.max_body_len];
+                    self.inspect_body(&scan, head, &ct, &mut names, &mut out.findings);
+                    if file_type(&ct) {
+                        // a raw file upload (`PUT` of an image, PDF, CSV): applications
+                        // store it rather than parse parameters from it, so the rest isn't
+                        // flagged; a binary file is checked whole for server code
+                        let code = multipart::is_binary(req.body)
+                            .then(|| multipart::embedded_code(req.body))
+                            .flatten();
+                        if let (Some(indicator), false) = (
+                            code,
+                            out.findings.iter().any(|f| f.class == MaliciousUpload),
+                        ) {
+                            out.findings.push(Finding {
+                                class: MaliciousUpload,
+                                score: 8.0,
+                                location: "body".to_string(),
+                                indicators: vec![indicator],
+                                sample: String::new(),
+                            });
+                        }
+                    } else {
+                        scan.oversize.set(Some("body"));
+                    }
+                }
             }
         }
         if let Some(f) = self.session_fixation(&names, req.headers) {
@@ -476,6 +574,25 @@ impl Inspector {
                 location: "body".to_string(),
                 indicators: vec!["json_too_deep"],
                 sample: format!("JSON nested deeper than {MAX_JSON_DEPTH}"),
+            });
+        }
+        if let (true, Some(what)) = (self.flag_oversize, scan.oversize.get()) {
+            let (location, sample) = match what {
+                "body" => (
+                    "body",
+                    format!("body longer than {} bytes", self.max_body_len),
+                ),
+                _ => (
+                    "request",
+                    format!("value longer than {} bytes", self.max_value_len),
+                ),
+            };
+            out.findings.push(Finding {
+                class: ProtocolViolation,
+                score: 7.0,
+                location: location.to_string(),
+                indicators: vec!["inspection_limit"],
+                sample,
             });
         }
         if scan.limited.get() {
@@ -580,6 +697,9 @@ impl Inspector {
         names: &mut Vec<String>,
     ) -> Option<Vec<Finding>> {
         let m = multipart::parse(body, boundary)?;
+        if m.truncated {
+            scan.oversize.set(Some("body"));
+        }
         let mut out = Vec::new();
         let finding = |class, location: String, inds: Vec<(&'static str, f64)>, sample: &str| {
             let score: f64 = inds.iter().map(|(_, w)| w).sum::<f64>().min(10.0);
@@ -597,7 +717,17 @@ impl Inspector {
             m.anomalies.clone(),
             "",
         ));
+        let mut field_bytes = 0usize;
         for p in &m.parts {
+            // fields (not files) count against the body budget; past it, the remaining
+            // fields are not inspected and the request is oversize
+            if p.filename.is_none() {
+                field_bytes += p.body.len();
+                if field_bytes > self.max_body_len {
+                    scan.oversize.set(Some("body"));
+                    break;
+                }
+            }
             let field = truncate(&p.name, 64);
             names.push(field.to_ascii_lowercase());
             out.extend(self.scan_value(scan, "body-name", &p.name, false));
@@ -633,7 +763,7 @@ impl Inspector {
                         inds.push((n, 8.0));
                     }
                 } else {
-                    out.extend(self.scan_value(scan, &format!("body:{field}"), &text(), false));
+                    out.extend(self.scan_file_text(scan, &format!("body:{field}"), &text()));
                 }
                 out.extend(finding(
                     MaliciousUpload,
@@ -803,11 +933,62 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
+    &s[..floor_char(s, max)]
+}
+
+/// Content types of files rather than parameters (lower case). A JSON or XML flavour
+/// (`application/vnd.api+json`) is parameters.
+fn file_type(ct: &str) -> bool {
+    let t = ct.split(';').next().unwrap_or("").trim();
+    if t.contains("json") || t.contains("xml") {
+        return false;
     }
-    &s[..end]
+    ["image/", "audio/", "video/", "font/", "application/vnd."]
+        .iter()
+        .any(|p| t.starts_with(p))
+        || [
+            "application/octet-stream",
+            "application/pdf",
+            "application/zip",
+            "application/gzip",
+            "application/x-gzip",
+            "application/x-tar",
+            "application/x-7z-compressed",
+            "application/wasm",
+            "text/csv",
+        ]
+        .contains(&t)
+}
+
+/// `s` cut into windows of at most `WINDOW` bytes that overlap by up to `OVERLAP` bytes.
+/// A later window starts after a whitespace in the overlap when there is one, so it
+/// begins at a word rather than in the middle of one.
+fn windows(s: &str) -> Vec<&str> {
+    if s.len() <= WINDOW {
+        return vec![s];
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    loop {
+        let end = floor_char(s, (start + WINDOW).min(s.len()));
+        out.push(&s[start..end]);
+        if end >= s.len() {
+            return out;
+        }
+        let mut next = floor_char(s, end - OVERLAP);
+        if let Some((i, c)) = s[next..end].char_indices().find(|(_, c)| c.is_whitespace()) {
+            next += i + c.len_utf8();
+        }
+        // always make progress, whatever the characters
+        start = if next > start { next } else { end };
+    }
+}
+
+fn floor_char(s: &str, mut i: usize) -> usize {
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 fn form_pairs(s: &str) -> impl Iterator<Item = (&str, &str)> {
@@ -824,6 +1005,28 @@ fn decode_name(k: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_cover_every_byte_with_overlap() {
+        let ascii = "word ".repeat(10_000);
+        let dense = "x".repeat(50_000);
+        let multibyte = "Grüße, 日本語のテキスト。".repeat(2_000);
+        for s in [ascii.as_str(), dense.as_str(), multibyte.as_str()] {
+            let w = windows(s);
+            assert!(w.len() > 1);
+            let mut covered = 0;
+            for win in &w {
+                assert!(win.len() <= WINDOW && !win.is_empty());
+                // byte offset of this window inside `s` (slices of `s`)
+                let start = win.as_ptr() as usize - s.as_ptr() as usize;
+                assert!(start <= covered, "gap before byte {start}");
+                assert!(covered - start <= OVERLAP, "overlap {}", covered - start);
+                covered = start + win.len();
+            }
+            assert_eq!(covered, s.len());
+        }
+        assert_eq!(windows("short"), vec!["short"]);
+    }
 
     #[test]
     fn both_indicator_engines_find_the_same_matches() {

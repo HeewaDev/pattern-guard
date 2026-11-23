@@ -77,7 +77,14 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
             cfg.challenge.ttl_secs,
         ),
         guard,
-        waf: Inspector::new(),
+        waf: {
+            let mut w = Inspector::new();
+            w.max_body_len = cfg.waf.inspect_body_bytes;
+            // a body inspected up to this size may be one value of this size
+            w.max_value_len = w.max_value_len.max(cfg.waf.inspect_body_bytes);
+            w.flag_oversize = cfg.waf.flag_oversize;
+            w
+        },
         intel: Arc::new(
             IntelStore::new(cfg.limits.max_intel_entries_per_source)
                 .with_source_cap(policy::bans::SOURCE, cfg.limits.max_bans)

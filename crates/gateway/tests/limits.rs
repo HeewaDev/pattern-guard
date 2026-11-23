@@ -136,7 +136,9 @@ async fn start_upload(gw: SocketAddr, len: usize, part: &[u8]) -> TcpStream {
 /// `start_upload` with extra header lines (each ending in `\r\n`).
 async fn start_upload_with(gw: SocketAddr, extra: &str, len: usize, part: &[u8]) -> TcpStream {
     let mut s = TcpStream::connect(gw).await.unwrap();
-    let head = format!("POST /upload HTTP/1.1\r\nhost: x\r\n{extra}content-length: {len}\r\n\r\n");
+    let head = format!(
+        "POST /upload HTTP/1.1\r\nhost: x\r\ncontent-type: application/octet-stream\r\n{extra}content-length: {len}\r\n\r\n"
+    );
     s.write_all(head.as_bytes()).await.unwrap();
     s.write_all(part).await.unwrap();
     s
@@ -209,7 +211,7 @@ async fn stalled_body_gets_408_and_fast_bodies_pass() {
     let body = vec![b'x'; 1_500_000];
     let mut s = TcpStream::connect(gw).await.unwrap();
     let head = format!(
-        "POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n",
+        "POST /upload HTTP/1.1\r\nhost: x\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\n\r\n",
         body.len()
     );
     assert_eq!(roundtrip(&mut s, &head, &body).await, 200);
@@ -252,7 +254,9 @@ async fn buffered_bodies_share_a_budget() {
     })
     .await;
     let mut d = TcpStream::connect(gw).await.unwrap();
-    let head = format!("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {mib}\r\n\r\n");
+    let head = format!(
+        "POST /upload HTTP/1.1\r\nhost: x\r\ncontent-type: application/octet-stream\r\ncontent-length: {mib}\r\n\r\n"
+    );
     assert_eq!(roundtrip(&mut d, &head, &vec![b'b'; mib]).await, 200);
     assert_eq!(state.metrics.buffered_body_bytes.load(Relaxed), 0);
 }

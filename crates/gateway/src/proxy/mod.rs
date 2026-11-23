@@ -153,14 +153,15 @@ pub async fn handle(
                     .map(|v| (k.as_str().to_string(), v.to_string()))
             })
             .collect();
-        let inspect_len = body.len().min(state.cfg.waf.inspect_body_bytes);
+        // the whole body: the inspector keeps to `inspect_body_bytes` itself, flags
+        // what it couldn't inspect, and still finds fields after large file uploads
         state
             .waf
             .inspect(&HttpRequest {
                 path_and_query: &path_q,
                 headers: &headers,
                 content_type: header_str(&parts.headers, "content-type"),
-                body: &body[..inspect_len],
+                body: &body,
             })
             .findings
             .into_iter()

@@ -189,7 +189,9 @@ Runtime: tokio multi-threaded; hyper 1 HTTP/1.1 server and pooled client.
   to loopback or a private network.
 * **Resource limits:**
   - Body size is limited.
-  - Each WAF value is truncated (8 KiB), and only the first `inspect_body_bytes` of the
-    body are inspected.
+  - WAF values longer than 8 KiB are inspected in overlapping windows up to 64 KiB, and
+    bodies of parameters up to `inspect_body_bytes`. Anything longer gets an
+    `inspection_limit` finding instead of passing unseen (`waf.flag_oversize`); raw file
+    uploads are exempt.
   - JSON walking stops at depth 32 and 1 000 items per level.
   - Every engine table has an LRU cap.

@@ -88,6 +88,31 @@ fn bench_random(c: &mut Criterion) {
             })
         });
     }
+    // A full 64 KiB body (the gateway's default `inspect_body_bytes`) of random text, as
+    // one value (inspected in 8 KiB windows) and as eight values: both cost the same
+    // per byte, so a long value buys an attacker no extra work.
+    for (name, parts) in [("one value", 1usize), ("eight values", 8)] {
+        let bodies: Vec<String> = (0..8)
+            .map(|_| {
+                (0..parts)
+                    .map(|p| format!("f{p}={}", random(64 * 1024 / parts - 8)))
+                    .collect::<Vec<_>>()
+                    .join("&")
+            })
+            .collect();
+        let mut i = 0;
+        c.bench_function(&format!("64 KiB random form body, {name}, fresh"), |b| {
+            b.iter(|| {
+                i = (i + 1) % bodies.len();
+                black_box(w.inspect(&HttpRequest {
+                    path_and_query: "/submit",
+                    headers: &[],
+                    content_type: Some("application/x-www-form-urlencoded"),
+                    body: bodies[i].as_bytes(),
+                }))
+            })
+        });
+    }
 }
 
 criterion_group!(benches, bench, bench_random);
