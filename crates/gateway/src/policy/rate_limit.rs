@@ -132,13 +132,11 @@ impl RateLimiter {
     }
 
     fn applies(l: &Limit, parts: &Parts, path: &PathView) -> bool {
-        !(l.path_prefix
+        l.path_prefix
             .as_deref()
-            .is_some_and(|p| !path.protects_prefix(p))
-            || l.path_re
-                .as_ref()
-                .is_some_and(|re| !path.protects_regex(re))
-            || (!l.methods.is_empty() && !l.methods.iter().any(|m| m == parts.method.as_str())))
+            .is_none_or(|p| path.protects_prefix(p))
+            && l.path_re.as_ref().is_none_or(|re| path.protects_regex(re))
+            && (l.methods.is_empty() || l.methods.iter().any(|m| m == parts.method.as_str()))
     }
 
     pub fn check(&self, ip: IpAddr, parts: &Parts) -> Option<LimitHit> {
