@@ -869,7 +869,11 @@ mod tests {
     #[test]
     fn too_many_values_are_flagged_not_skipped_silently() {
         let w = Inspector::new();
-        let query: String = (0..MAX_VALUES).map(|i| format!("a{i}=1&")).collect();
+        let mut query = String::new();
+        for i in 0..MAX_VALUES {
+            use std::fmt::Write as _;
+            let _ = write!(query, "a{i}=1&");
+        }
         let target = format!("/?{query}x=%3Cscript%3Ealert(1)%3C%2Fscript%3E");
         let r = w.inspect(&HttpRequest {
             path_and_query: &target,

@@ -445,7 +445,7 @@ impl<'de, 'n, 'a> DeserializeSeed<'de> for Key<'n, 'a> {
     }
 }
 
-impl<'de, 'n, 'a> Visitor<'de> for Key<'n, 'a> {
+impl<'n, 'a> Visitor<'_> for Key<'n, 'a> {
     type Value = Option<&'n PathNode<'a>>;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
