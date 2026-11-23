@@ -133,6 +133,9 @@ pub(super) async fn forward(
             }
         }
     }
+    if let Some(a) = &state.origin_auth {
+        a.apply(&mut headers);
+    }
     let mut req = Request::new(Full::new(body));
     *req.method_mut() = parts.method;
     *req.uri_mut() = uri;
@@ -144,6 +147,9 @@ pub(super) async fn forward(
             let status = resp.status().as_u16();
             let (mut rp, b) = resp.into_parts();
             strip_hop_by_hop(&mut rp.headers);
+            if let Some(a) = &state.origin_auth {
+                a.strip(&mut rp.headers);
+            }
             state.security_headers.apply(&mut rp.headers);
             match state
                 .leaks

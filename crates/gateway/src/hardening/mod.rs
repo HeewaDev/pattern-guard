@@ -1,4 +1,5 @@
-//! Response hardening: security headers (and, in a later module, data-leak blocking).
+//! Hardening: security headers, data-leak blocking, origin authentication.
 
 pub mod headers;
 pub mod leaks;
+pub mod origin_auth;

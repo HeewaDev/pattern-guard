@@ -15,7 +15,9 @@ internet ─► TLS terminator (Caddy / nginx / HAProxy / cloud LB / CDN)
 The gateway speaks HTTP/1.1. Put TLS, HTTP/2/3 and certificates in the terminator in front
 of it, and list that hop in `client_ip.trusted_proxies`. Your app should only accept
 traffic from the gateway (bind it to localhost, or firewall it), otherwise attackers can
-go around the gateway.
+go around the gateway. Where the app has to stay reachable some other way, turn on
+`[origin_auth]` and have the app refuse requests without the gateway's secret header
+(see [GATEWAY.md](GATEWAY.md#origin-authentication)).
 
 ## 0. Docker (quickest)
 

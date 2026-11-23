@@ -44,6 +44,21 @@ async fn start_upstream() -> SocketAddr {
                         *r.status_mut() = StatusCode::UNAUTHORIZED;
                         return Ok::<_, Infallible>(r);
                     }
+                    if req.uri().path().starts_with("/echo-origin") {
+                        // an app that echoes the origin secret (a debug page would)
+                        let seen = req
+                            .headers()
+                            .get_all("x-origin-auth")
+                            .iter()
+                            .map(|v| v.to_str().unwrap_or("?").to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let mut r = Response::new(Full::new(Bytes::from(format!("origin={seen}"))));
+                        if let Ok(v) = seen.parse() {
+                            r.headers_mut().insert("x-origin-auth", v);
+                        }
+                        return Ok::<_, Infallible>(r);
+                    }
                     if req.uri().path().starts_with("/leak") {
                         // an app that leaks a database error, padded to `?pad=N` bytes
                         let pad: usize = req
@@ -362,6 +377,35 @@ async fn padded_bodies_cannot_hide_payloads() {
     let body = format!(r#"{{"pad":"{pad}","q":"{sqli}"}}"#);
     let r = send(gw.addr, "POST", "/api", &json, &body).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+}
+
+/// `[origin_auth]`: every upstream request carries the secret (a client's copy is
+/// replaced), and a response that echoes it doesn't reveal it to the client.
+#[tokio::test]
+async fn origin_auth_secret_reaches_upstream_only() {
+    let secret = "0123456789abcdef0123456789abcdef";
+    let gw = start_gateway(&format!(
+        "[origin_auth]\nenabled = true\nsecret = \"{secret}\""
+    ))
+    .await;
+    let r = send(
+        gw.addr,
+        "GET",
+        "/echo-origin",
+        &[("x-origin-auth", "forged")],
+        "",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(
+        r.body,
+        format!("origin={secret}"),
+        "only the gateway's copy arrives"
+    );
+    assert!(r.headers.get("x-origin-auth").is_none(), "echo stripped");
+    // without a client copy too
+    let r = send(gw.addr, "GET", "/echo-origin?q=hello", &[], "").await;
+    assert_eq!(r.body, format!("origin={secret}"));
 }
 
 #[tokio::test]

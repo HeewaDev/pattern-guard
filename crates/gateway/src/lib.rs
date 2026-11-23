@@ -109,6 +109,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         protocol: policy::protocol::Protocol::new(cfg.protocol.clone()),
         security_headers: hardening::headers::SecurityHeaders::new(&cfg.response_headers)?,
         leaks: hardening::leaks::LeakInspector::new(&cfg.response_inspection),
+        origin_auth: hardening::origin_auth::OriginAuth::new(&cfg.origin_auth)?,
         geo_db,
         geo_policy: geo::GeoPolicy::new(&cfg.geo),
         conns: Mutex::new(HashMap::new()),

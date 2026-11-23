@@ -44,6 +44,7 @@ pub struct State {
     pub protocol: crate::policy::protocol::Protocol,
     pub security_headers: crate::hardening::headers::SecurityHeaders,
     pub leaks: Option<crate::hardening::leaks::LeakInspector>,
+    pub origin_auth: Option<crate::hardening::origin_auth::OriginAuth>,
     pub geo_db: Option<crate::geo::GeoDb>,
     pub geo_policy: crate::geo::GeoPolicy,
     /// Open connections per peer address (`limits.max_connections_per_ip`).

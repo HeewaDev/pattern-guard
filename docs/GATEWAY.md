@@ -288,6 +288,47 @@ its proper status:
 HSTS, CSP, Permissions-Policy and COOP are opt-in. Fingerprinting headers (`Server`,
 `X-Powered-By`, `X-AspNet-Version`, …) are removed. Set a value to `""` to disable it.
 
+## Origin authentication
+
+If attackers can reach your application without going through the gateway, every
+protection here is bypassed. The strongest fix is the network: bind the application
+to localhost or a private network, or firewall it so only the gateway can connect.
+When that isn't possible (a cloud load balancer, a shared network, a public IP you
+can't close), `[origin_auth]` adds a secret header to every request the gateway
+forwards, and the application, or the web server in front of it, refuses requests
+without it:
+
+```toml
+[origin_auth]
+enabled = true
+header = "x-origin-auth"                     # default
+secret_env = "PATTERN_GUARD_ORIGIN_SECRET"   # or secret = "...", at least 32 characters
+```
+
+* A copy of the header sent by a client is replaced, so clients can't forge it.
+* The header is removed from responses, so an application that echoes request headers
+  (debug or error pages) doesn't reveal the secret.
+* Reserved names are refused (`authorization`, `cookie`, `host`, `x-forwarded-for`,
+  `x-pattern-guard-*`, the client-IP header, …): the secret must not replace a header
+  your application already uses.
+* A missing `secret_env` variable stops start-up.
+
+Check it upstream. In application code, compare with a constant-time function
+(`hmac.compare_digest`, `crypto.timingSafeEqual`, `subtle::ConstantTimeEq`). In nginx:
+
+```nginx
+map $http_x_origin_auth $from_gateway { default 0; "<the secret>" 1; }
+server {
+    if ($from_gateway = 0) { return 403; }
+    ...
+}
+```
+
+Generate the secret with `openssl rand -hex 32` and rotate it like any other credential:
+it is only as private as the gateway's environment and the network between the
+gateway and the application. Prefer a private network for that hop: the header travels in
+plain HTTP.
+
 ## Data-leak blocking
 
 `[response_inspection]` (opt-in) scans uncompressed text responses for things that

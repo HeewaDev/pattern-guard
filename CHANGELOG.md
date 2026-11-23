@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Origin authentication** (`[origin_auth]`): a secret header (default `x-origin-auth`,
+  secret from `secret_env` or `secret`, at least 32 characters) on every request the
+  gateway forwards, so the application can refuse requests that went around the gateway.
+  A client's copy is replaced; the header is removed from responses. Off by default.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values

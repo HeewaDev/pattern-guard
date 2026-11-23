@@ -93,6 +93,37 @@ pub struct GatewayConfig {
     /// Country-based access control from an IP-to-country CSV.
     #[serde(default)]
     pub geo: GeoConfig,
+    /// A secret header added to every upstream request, so the application can refuse
+    /// requests that did not come through the gateway.
+    #[serde(default)]
+    pub origin_auth: OriginAuthConfig,
+}
+
+/// See docs/GATEWAY.md#origin-authentication.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginAuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Header that carries the secret to the upstream.
+    #[serde(default = "d_origin_header")]
+    pub header: String,
+    /// Environment variable holding the secret (preferred: keeps it out of the file).
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    /// The secret itself (at least 32 characters). Prefer `secret_env`.
+    #[serde(default)]
+    pub secret: Option<String>,
+}
+
+impl Default for OriginAuthConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+fn d_origin_header() -> String {
+    "x-origin-auth".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -904,6 +935,53 @@ impl GatewayConfig {
         if !self.challenge.secret.is_empty() && self.challenge.secret.len() < 32 {
             return Err("challenge.secret must be at least 32 hex characters".into());
         }
+        let oa = &self.origin_auth;
+        if oa.enabled {
+            let name = oa.header.to_ascii_lowercase();
+            if hyper::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                return Err(format!(
+                    "origin_auth.header: {:?} is not a header name",
+                    oa.header
+                ));
+            }
+            // headers the gateway or the application already give a meaning to
+            let reserved = [
+                "host",
+                "content-length",
+                "content-type",
+                "transfer-encoding",
+                "connection",
+                "te",
+                "trailer",
+                "upgrade",
+                "keep-alive",
+                "proxy-connection",
+                "authorization",
+                "proxy-authorization",
+                "cookie",
+                "x-forwarded-for",
+                "x-real-ip",
+                "forwarded",
+            ];
+            if reserved.contains(&name.as_str())
+                || name.starts_with("x-pattern-guard-")
+                || name.eq_ignore_ascii_case(&self.client_ip.header)
+            {
+                return Err(format!(
+                    "origin_auth.header: {name} is reserved; use a header of its own (e.g. x-origin-auth)"
+                ));
+            }
+            match (&oa.secret, &oa.secret_env) {
+                (Some(_), Some(_)) => {
+                    return Err("origin_auth: set secret_env or secret, not both".into());
+                }
+                (None, None) => return Err("origin_auth: set secret_env (or secret)".into()),
+                (Some(s), None) if s.len() < 32 => {
+                    return Err("origin_auth.secret must be at least 32 characters".into());
+                }
+                _ => {}
+            }
+        }
         if self.crowdsec.enabled {
             if !self.crowdsec.url.starts_with("http://") {
                 return Err("crowdsec.url must be http:// (local API)".into());
@@ -975,5 +1053,32 @@ mod tests {
         assert!(!bad(
             "body_min_bytes_per_sec = 0\nmax_buffered_body_bytes = 0"
         ));
+    }
+
+    #[test]
+    fn origin_auth_validation() {
+        let base = "upstream = \"http://127.0.0.1:1\"\n[origin_auth]\nenabled = true\n";
+        let ok = format!("{base}secret_env = \"ORIGIN_SECRET\"");
+        assert!(GatewayConfig::from_toml_str(&ok).is_ok());
+        for (extra, why) in [
+            ("", "set secret_env"),
+            ("secret = \"short\"", "at least 32"),
+            (
+                "secret = \"0123456789abcdef0123456789abcdef\"\nsecret_env = \"X\"",
+                "not both",
+            ),
+            ("secret_env = \"X\"\nheader = \"authorization\"", "reserved"),
+            (
+                "secret_env = \"X\"\nheader = \"x-pattern-guard-auth\"",
+                "reserved",
+            ),
+            (
+                "secret_env = \"X\"\nheader = \"bad header\"",
+                "not a header name",
+            ),
+        ] {
+            let e = GatewayConfig::from_toml_str(&format!("{base}{extra}")).unwrap_err();
+            assert!(e.contains(why), "{extra}: {e}");
+        }
     }
 }

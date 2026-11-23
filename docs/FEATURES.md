@@ -122,6 +122,7 @@ re-verified line by line.
 | 2c.11 | Push decisions to CrowdSec / host firewall (nftables) | CrowdSec, fail2ban | ⬜ |
 | 2c.19 | Business-operation protection: per-account budgets, allowed sources, replay / race protection | Imperva (API & business logic), Cloudflare (rate limiting by session) | ✅ `[[operations]]` |
 | 2c.20 | Login protection: per-account lockout across IPs, credential stuffing per IP | Cloudflare, Imperva ATO, fail2ban (per IP only) | ✅ `[[logins]]` |
+| 2c.21 | Origin authentication: secret header to the upstream, so direct requests that bypass the gateway can be refused | Cloudflare (authenticated origin pulls), AWS CloudFront (custom origin header) | ✅ `[origin_auth]` (e2e `origin_auth_secret_reaches_upstream_only`) · ⬜ mTLS to the upstream |
 | 2c.12 | Verified good bots (reverse DNS) | Cloudflare, BunkerWeb | ⬜ |
 | 2c.13 | Tor / anonymiser / DNSBL blocking | open-appsec Enterprise, BunkerWeb | ⬜ |
 | 2c.14 | Path-level authentication (basic auth / OIDC) | BunkerWeb, SafeLine | ⬜ |

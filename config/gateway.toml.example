@@ -224,3 +224,11 @@ action = "block"
 deny_countries = []
 challenge_countries = []
 allow_countries = []          # if set, every other (known) country is blocked
+
+# ---- Origin authentication: a secret header on every forwarded request, so your app
+# can refuse requests that didn't come through the gateway. A client's copy is replaced
+# and echoes are removed from responses. Prefer firewalling the app to the gateway.
+[origin_auth]
+enabled = false
+header = "x-origin-auth"
+secret_env = "PATTERN_GUARD_ORIGIN_SECRET"   # or secret = "..." (at least 32 characters)
