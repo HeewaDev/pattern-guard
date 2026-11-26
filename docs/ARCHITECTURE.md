@@ -12,7 +12,8 @@ tie-breaks, locks, analysers), how-to recipes and the proposed target structure,
 | WAF | `pattern-guard-waf` (`crates/waf`) | Payload inspection: `decode` (normalisation, base64), `indicators` (attack signatures), `lexicon` (OWASP CRS word lists), `sql` (SQL tokenizer), `shell` (shell-command analysis), `ssrf` (URL analysis), `multipart` (part parsing, upload checks), `inspect` (request walking, scoring) |
 | CLI | `pattern-guard-cli` (`crates/cli`, binary `pattern-guard`) | `replay` logs, `train` models, wrap commands |
 | Gateway | `pattern-guard-gateway` (`crates/gateway`) | Reverse proxy: `proxy/`, `challenge/`, `intel/`, `observability/`; runs the engines on live traffic and enforces decisions |
-| Evaluation | `pattern-guard-eval` (`tools/eval`, unpublished) | Traffic simulator, `realworld_eval`, `gen_traffic`, `waf_eval`, `crs_eval`; plus `crates/gateway/examples/loadtest.rs` |
+| Evaluation | `pattern-guard-eval` (`tools/eval`, unpublished) | Traffic simulator, `realworld_eval`, `gen_traffic`, `waf_eval`, `crs_eval`, `check_gates` (CI gates in `tools/eval/gates.toml`); plus `crates/gateway/examples/loadtest.rs` |
+| Red team | `pattern-guard-redteam` (`tools/redteam`, unpublished) | An adaptive attacker against a deliberately vulnerable demo shop, with and without the gateway in front; reports requests to the first bypass and ban, and vulnerabilities found with vs. without the gateway |
 
 The engine and WAF have no network or async dependencies, so they can be embedded anywhere: an
 axum middleware, a CLI, a log pipeline. The gateway is one consumer of them.

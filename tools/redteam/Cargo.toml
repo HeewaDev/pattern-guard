@@ -1,0 +1,23 @@
+[package]
+name = "pattern-guard-redteam"
+description = "Red-team harness: an adaptive attacker against a deliberately vulnerable demo app, with and without the gateway in front"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "redteam"
+path = "src/main.rs"
+
+[dependencies]
+pattern-guard-gateway = { path = "../../crates/gateway" }
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

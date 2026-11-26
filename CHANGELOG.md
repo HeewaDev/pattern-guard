@@ -57,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model names exactly this version's features; a reload refuses to switch to a model that
   doesn't, but keeps accepting one with the running model's layout (an older model the
   guard started with), with a warning on the first such reload.
+- **Red-team harness** (`tools/redteam`, unpublished crate `pattern-guard-redteam`, binary
+  `redteam`): a seeded, offline attacker against a deliberately vulnerable demo shop
+  (simulated SQL injection, reflected XSS, path traversal, command injection, BOLA, login
+  brute force; no real shell, database or file), once through the gateway in prevent mode
+  and once directly. It mutates blocked payloads (encodings, case, comments, whitespace,
+  quoting, globbing, separators, parameter pollution, body format and location), paces
+  itself, honours `Retry-After` and can solve proof-of-work. Scenarios: one IP, scanner,
+  residential-proxy rotation, proof-of-work solver. Reports requests and time to the first
+  bypass and the first ban, and vulnerabilities found with vs. without the gateway, as
+  Markdown and JSON. Other attackers (an LLM agent, a browser) plug in through the
+  `Strategy` trait or JSON lines (`--attacker-cmd`). CI: `redteam.yml`, not gating. First
+  results in docs/FEATURES.md 3.7.
 - **Evaluation gates in CI** (`.github/workflows/eval.yml`): on pushes to `main` and pull
   requests touching the WAF, the engine or `tools/eval`, the pinned evaluation data is
   fetched (cached) and `scripts/eval_gates.sh` checks `waf_eval` (development lists per

@@ -1,0 +1,51 @@
+name: Red team
+
+# The red-team harness (tools/redteam): an adaptive attacker against the demo shop, with
+# and without the gateway. Measured, not gated: the job never fails a pull request because
+# of the numbers; they go to the job summary and a JSON artefact for tracking per release.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/**"
+      - "tools/redteam/**"
+      - ".github/workflows/redteam.yml"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Attacker seed
+        default: "7"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  redteam:
+    name: Red-team harness (not gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release -p pattern-guard-redteam
+      - name: Run
+        env:
+          SEED: ${{ inputs.seed || '7' }}
+        run: |
+          ./target/release/redteam --seed "$SEED" --json redteam.json --markdown redteam.md 2>redteam.log
+          cat redteam.md >>"$GITHUB_STEP_SUMMARY"
+          cat redteam.md
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redteam-${{ github.sha }}
+          path: |
+            redteam.json
+            redteam.md
+            redteam.log

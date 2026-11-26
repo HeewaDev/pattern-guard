@@ -1,0 +1,63 @@
+# Gateway config for the red-team harness (tools/redteam): what a shop like the demo app
+# would deploy. Prevent mode, the default WAF and behavioural engine, bans, traps, response
+# inspection, rate limits on the login and the API, and login protection. The harness
+# fills in the upstream ({{UPSTREAM}}) and binds its own listeners on 127.0.0.1.
+# Use another file with `redteam --config FILE` (same placeholder).
+
+upstream = "{{UPSTREAM}}"
+mode = "prevent"
+forward_scores = true
+
+[client_ip]
+# the harness plays the load balancer that sets X-Forwarded-For
+trusted_proxies = ["127.0.0.1"]
+
+[waf]
+enabled = true
+block_score = 7.0
+log_score = 4.0
+
+[challenge]
+enabled = true
+difficulty = 16
+ttl_secs = 3600
+
+[bans]
+enabled = true
+threshold = 10
+window_secs = 60
+ban_secs = 600
+
+[traps]
+paths = ["/.env", "/.git", "/wp-login.php", "/phpinfo.php"]
+ban_secs = 3600
+
+[protocol]
+restricted_extensions = [".bak", ".sql", ".swp", ".old"]
+
+[response_inspection]
+enabled = true
+action = "block"
+
+[[rate_limits]]
+name = "login"
+path = "/login"
+methods = ["POST"]
+requests = 10
+per_secs = 60
+
+[[rate_limits]]
+name = "api per ip"
+path = "/api/"
+requests = 60
+per_secs = 60
+
+[[logins]]
+name = "login"
+path = "/login"
+methods = ["POST"]
+account = "form:username"
+max_failures = 5
+max_accounts_per_ip = 10
+window_secs = 900
+action = "challenge"

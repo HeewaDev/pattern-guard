@@ -59,6 +59,7 @@ client ─► [TLS terminator / CDN] ─► pattern-guard-gateway ─► upstrea
 | `crates/engine` | 3 024 (3 248) | `ml/features.rs` 553 · `config.rs` 488 · `guard.rs` 400 · `ml/model.rs` 347 |
 | `crates/cli` | 699 (891) | `replay.rs`, `train.rs`, `wrap.rs` |
 | `tools/eval` | 1 411 | `sim.rs` 965 |
+| `tools/redteam` | 6 610 with unit tests | `app/sql.rs` 1 187 · `app/shell.rs` 840 · `attack/mutate.rs` 822 · `attack/adaptive.rs` 775 |
 
 ## Design principles
 

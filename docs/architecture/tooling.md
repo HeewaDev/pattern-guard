@@ -66,6 +66,24 @@ failing gate never invites tuning on them.
 **Data hygiene.** Hold-out lists are never used for tuning. A result measured on development
 data must say so.
 
+## Red team (`tools/redteam`, unpublished crate `pattern-guard-redteam`)
+
+`cargo run --release -p pattern-guard-redteam` runs an attacker against a deliberately
+vulnerable demo shop, once through the gateway (in process, prevent mode,
+`tools/redteam/gateway.toml`) and once directly, and prints a Markdown report (`--json`
+for tracking per release). Details in [tools/redteam/README.md](../../tools/redteam/README.md).
+
+| Piece | Where | What |
+|---|---|---|
+| Demo shop | `src/app/` | hyper server on 127.0.0.1 with simulated SQLi (a small MySQL-flavoured engine), reflected XSS, path traversal (fake file system), command injection (a small dash-like `sh`), BOLA on `/api/orders/{id}`, login brute force. Nothing real is executed or read |
+| Oracle | `src/oracle.rs`, `src/browser.rs` | a vulnerability counts when the response the attacker got proves it (hidden row, password hash, `/etc/passwd`, `id` output, markup a browser runs, another customer's order, an admin session) |
+| Attacker | `src/attack/` | `Strategy` trait. Built in: `adaptive.rs`, seeded, plain payloads first, then mutations (encodings, case, comments, whitespace, quoting, globbing, separators, parameter pollution, body format and location) with a bandit over what got through; paces requests, honours `Retry-After`, optionally solves proof-of-work. `external.rs`: any program over JSON lines (`--attacker-cmd`), for an LLM or browser-driven attacker |
+| Harness | `src/harness.rs`, `src/report.rs` | scenarios `targeted`, `scanner`, `rotating` (new client IP per request via `X-Forwarded-For` from the trusted peer), `pow-solver`; per run: requests and time to the first bypass and the first ban (`/bans`), vulnerabilities found with vs. without the gateway, BOLA records leaked, blocks per layer (`/metrics`), challenges, 429s |
+
+It uses only the gateway's public API (`GatewayConfig::from_toml_str`, `build_state`,
+`start_background`, `serve`) and the admin endpoints. It measures; it is not a gate, and
+its payloads are not from the hold-out lists.
+
 ## Tests
 
 | Level | Where | Notes |
@@ -94,6 +112,7 @@ data must say so.
 | `rust.yml` · `stable` | same | newest stable Rust: `cargo test --workspace`, `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` |
 | `rust.yml` · `deny` | same | `cargo-deny` with `deny.toml`: permissive licences only, every RustSec advisory fails, crates.io only |
 | `eval.yml` | every push to `main`, pull requests touching `crates/waf`, `crates/engine`, `tools/eval` or the data scripts, by hand | fetches the pinned data (`tools/eval/data` cached, keyed on `datasets.sha256` and the fetch script), runs `scripts/eval_gates.sh`: fails below a gate; the gate table, every evaluation's output and the hold-out numbers (not gated) go to the job summary |
+| `redteam.yml` | every push to `main`, pull requests touching `crates/` or `tools/redteam`, by hand | runs the red-team harness (release build, ~1 min) and puts its tables in the job summary, JSON as an artefact. `continue-on-error`: it never fails a pull request |
 | `fuzz.yml` | nightly (300 s per target), pull requests touching parsers (60 s), by hand | `cargo fuzz` on nightly for each target in `fuzz/`, starting from the cached corpus (saved again except on pull requests); a crashing input is uploaded as an artefact |
 | `fuzz-long.yml` | weekly (Friday 19:00 UTC), by hand | the 24 h run: the five targets in parallel for 4.8 h each (job timeout 330 min, under GitHub's 6 h cap), then `cargo fuzz cmin` and the corpus is cached for the next run |
 

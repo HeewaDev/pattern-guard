@@ -17,8 +17,9 @@ real users out (false positive). Treat both as bugs, and measure detection chang
 | CLI | `crates/cli` | `pattern-guard-cli` (`pattern-guard`) | engine |
 | Gateway | `crates/gateway` | `pattern-guard-gateway` (lib + bin) | engine, tokio, hyper 1 |
 | Evaluation | `tools/eval` | `pattern-guard-eval` (unpublished) | engine |
+| Red team | `tools/redteam` | `pattern-guard-redteam` (unpublished, bin `redteam`) | gateway, tokio, hyper 1 |
 
-Dependencies point one way: `waf ← engine ← cli, gateway, eval`. The engine and the WAF
+Dependencies point one way: `waf ← engine ← cli, gateway, eval`, and `gateway ← redteam`. The engine and the WAF
 must stay free of async and network dependencies, because they are embedded elsewhere.
 
 Read before structural work:

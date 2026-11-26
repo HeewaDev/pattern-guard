@@ -569,6 +569,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pattern-guard-redteam"
+version = "0.3.0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "pattern-guard-gateway",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "pattern-guard-waf"
 version = "0.3.0"
 dependencies = [
