@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model names exactly this version's features; a reload refuses to switch to a model that
   doesn't, but keeps accepting one with the running model's layout (an older model the
   guard started with), with a warning on the first such reload.
+- **Weekly 24 h fuzz run** (`.github/workflows/fuzz-long.yml`): the five fuzz targets in
+  parallel for 4.8 h each, then corpus minimisation. The nightly and weekly runs keep the
+  corpus in the Actions cache, so coverage builds up from run to run.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values
@@ -271,6 +274,9 @@ Gateway issues found in the same review:
 
 ### Fixed
 
+- **Nightly fuzzing never ran**: the prebuilt cargo-fuzz in CI is a musl build, which
+  builds for `x86_64-unknown-linux-musl` by default, a target nightly has no standard
+  library for. `fuzz.yml` now passes `--target x86_64-unknown-linux-gnu`.
 - **WAF**: every `Inspector::new()` leaked the five indicator patterns it builds from the
   shared command and MongoDB-operator lists (~1.3 KB, `Box::leak`). They are owned now.
   LeakSanitizer reported it on the first input of every WAF fuzz target. Detection is

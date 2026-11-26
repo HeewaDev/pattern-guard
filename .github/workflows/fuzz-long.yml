@@ -1,0 +1,80 @@
+name: Fuzz (24 h)
+
+# The long run: every target fuzzed in parallel for ~4.8 h (GitHub stops a job after 6 h),
+# 5 targets × 4.8 h = 24 fuzzing hours a week. It shares the corpus with the nightly run
+# (fuzz.yml), so coverage builds up, and minimises the corpus afterwards.
+
+on:
+  schedule:
+    - cron: "0 19 * * 5" # weekly, Friday 19:00 UTC (done before the nightly run)
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target (keep it under ~5.2 h, the job's timeout is 5.5 h)
+        default: "17280"
+
+concurrency:
+  group: fuzz-long
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # See fuzz.yml: the prebuilt cargo-fuzz is a musl build and would build for musl.
+  FUZZ_TRIPLE: x86_64-unknown-linux-gnu
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    # 4.8 h of fuzzing + ~5 min build + corpus minimisation, under GitHub's 360 min cap.
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [waf_inspect, waf_multipart, waf_value, engine_log_line, config]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Restore the corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '17280' }}
+        run: |
+          corpus="$GITHUB_WORKSPACE/fuzz/corpus/${{ matrix.target }}"
+          seeds="$GITHUB_WORKSPACE/fuzz/seeds/${{ matrix.target }}"
+          mkdir -p "$corpus" "$seeds"
+          echo "corpus: $(find "$corpus" -type f | wc -l) inputs"
+          cargo fuzz run --target "$FUZZ_TRIPLE" ${{ matrix.target }} "$corpus" "$seeds" -- \
+            -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10 \
+            -print_final_stats=1
+      # Keep only inputs that add coverage, so the cache stays small. Also after a crash:
+      # the corpus is still good (libFuzzer never adds the crashing input to it).
+      - name: Minimise the corpus
+        if: always()
+        continue-on-error: true
+        run: |
+          corpus="fuzz/corpus/${{ matrix.target }}"
+          before=$(find "$corpus" -type f | wc -l)
+          cargo fuzz cmin --target "$FUZZ_TRIPLE" ${{ matrix.target }} "$corpus" -- \
+            -rss_limit_mb=2048 -timeout=10
+          echo "corpus: $before → $(find "$corpus" -type f | wc -l) inputs" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Save the corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

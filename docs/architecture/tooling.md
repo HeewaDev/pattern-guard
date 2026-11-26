@@ -81,7 +81,8 @@ data must say so.
 | `rust.yml` · `check` | every push and pull request to `main` | Rust **1.85** (the MSRV, also the Docker build image): `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, `cargo bench --workspace --no-run` |
 | `rust.yml` · `stable` | same | newest stable Rust: `cargo test --workspace`, `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` |
 | `rust.yml` · `deny` | same | `cargo-deny` with `deny.toml`: permissive licences only, every RustSec advisory fails, crates.io only |
-| `fuzz.yml` | nightly (300 s per target), pull requests touching parsers (60 s), by hand | `cargo fuzz` on nightly for each target in `fuzz/`; a crashing input is uploaded as an artefact |
+| `fuzz.yml` | nightly (300 s per target), pull requests touching parsers (60 s), by hand | `cargo fuzz` on nightly for each target in `fuzz/`, starting from the cached corpus (saved again except on pull requests); a crashing input is uploaded as an artefact |
+| `fuzz-long.yml` | weekly (Friday 19:00 UTC), by hand | the 24 h run: the five targets in parallel for 4.8 h each (job timeout 330 min, under GitHub's 6 h cap), then `cargo fuzz cmin` and the corpus is cached for the next run |
 
 Not in CI yet: evaluation gates (`waf_eval`, `crs_eval`, `realworld_eval` must not regress).
 They need the evaluation datasets to be fetchable reproducibly first; see [target.md](target.md).
@@ -103,8 +104,13 @@ cargo install cargo-fuzz          # needs a nightly toolchain and a C++ compiler
 cargo +nightly fuzz run waf_inspect fuzz/corpus/waf_inspect fuzz/seeds/waf_inspect
 ```
 
+cargo-fuzz builds for the target it was itself compiled for. A prebuilt binary (CI's
+`taiki-e/install-action`, `cargo binstall`) is a musl build, and nightly has no musl
+standard library, so pass `--target x86_64-unknown-linux-gnu` (CI does).
+
 Seed inputs live in `fuzz/seeds/<target>/` (committed). The growing corpus and crash
-artefacts (`fuzz/corpus`, `fuzz/artifacts`) are git-ignored.
+artefacts (`fuzz/corpus`, `fuzz/artifacts`) are git-ignored; CI keeps the corpus in the
+Actions cache (`fuzz-corpus-<target>-…`), shared by the nightly and the weekly run.
 
 ## Deployment artefacts
 

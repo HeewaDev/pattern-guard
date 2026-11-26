@@ -13,19 +13,25 @@ on:
       - "crates/gateway/src/config.rs"
       - "crates/gateway/src/policy/**"
       - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
   workflow_dispatch:
     inputs:
       seconds:
-        description: Seconds per target
+        description: Seconds per target (the 24 h run is fuzz-long.yml)
         default: "600"
 
 env:
   CARGO_TERM_COLOR: always
+  # cargo-fuzz builds for the target it was itself built for unless told otherwise. The
+  # prebuilt binary that install-action fetches is a musl build, and the nightly toolchain
+  # has no musl standard library ("can't find crate for `core`"), so name the runner's.
+  FUZZ_TRIPLE: x86_64-unknown-linux-gnu
 
 jobs:
   fuzz:
     name: ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +42,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
+      # The corpus grows from run to run (nightly, weekly 24 h run): restore the newest
+      # one. Pull requests start from it too but don't save theirs.
+      - name: Restore the corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Fuzz
         env:
           # 60 s on pull requests, the dispatch input when run by hand, 300 s nightly.
@@ -44,8 +58,15 @@ jobs:
           corpus="$GITHUB_WORKSPACE/fuzz/corpus/${{ matrix.target }}"
           seeds="$GITHUB_WORKSPACE/fuzz/seeds/${{ matrix.target }}"
           mkdir -p "$corpus" "$seeds"
-          cargo fuzz run ${{ matrix.target }} "$corpus" "$seeds" -- \
+          echo "corpus: $(find "$corpus" -type f | wc -l) inputs"
+          cargo fuzz run --target "$FUZZ_TRIPLE" ${{ matrix.target }} "$corpus" "$seeds" -- \
             -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10
+      - name: Save the corpus
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload the crashing input
         if: failure()
         uses: actions/upload-artifact@v4
