@@ -95,8 +95,26 @@ fn one_line(e: &str) -> String {
 /// The handler is in place when this returns, so a `SIGHUP` no longer ends the process.
 #[cfg(unix)]
 pub fn watch_sighup(state: Arc<State>, path: PathBuf) -> Result<(), String> {
+    spawn_reloads(state, path, hangup()?);
+    Ok(())
+}
+
+/// Installs the `SIGHUP` handler: from here on a `SIGHUP` is queued (several coalesce
+/// into one) instead of ending the process. [`spawn_reloads`] acts on them.
+#[cfg(unix)]
+pub(crate) fn hangup() -> Result<tokio::signal::unix::Signal, String> {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut hup = signal(SignalKind::hangup()).map_err(|e| format!("cannot watch SIGHUP: {e}"))?;
+    signal(SignalKind::hangup()).map_err(|e| format!("cannot watch SIGHUP: {e}"))
+}
+
+/// Reloads the config from `path` for every `SIGHUP` that `hup` received, including one
+/// queued before this was called.
+#[cfg(unix)]
+pub(crate) fn spawn_reloads(
+    state: Arc<State>,
+    path: PathBuf,
+    mut hup: tokio::signal::unix::Signal,
+) {
     tokio::spawn(async move {
         while hup.recv().await.is_some() {
             let (st, p) = (state.clone(), path.clone());
@@ -104,7 +122,6 @@ pub fn watch_sighup(state: Arc<State>, path: PathBuf) -> Result<(), String> {
             let _ = tokio::task::spawn_blocking(move || reload_from_path(&st, &p)).await;
         }
     });
-    Ok(())
 }
 
 /// Replaces `new` with `old` when they differ, and records `key`.

@@ -224,17 +224,20 @@ pub(crate) fn save(state: &State, path: &Path) -> Result<Saved, String> {
         },
         intel: export_intel(&state.learned.intel),
     };
-    let written = write_atomic(&engine_path(path), |w| {
+    // The small file (bans, reputation, the generated challenge key) first and on its own:
+    // a disk too full or too slow for the large engine file must not cost it.
+    let state_written = write_atomic(path, |w| {
+        serde_json::to_writer(w, &file).map_err(io::Error::from)
+    })
+    .map_err(|e| (path.to_path_buf(), e));
+    let engine_written = write_atomic(&engine_path(path), |w| {
         serde_json::to_writer(w, &engine).map_err(io::Error::from)
     })
-    .map_err(|e| (engine_path(path), e))
-    .and_then(|engine_bytes| {
-        write_atomic(path, |w| {
-            serde_json::to_writer(w, &file).map_err(io::Error::from)
-        })
-        .map(|b| b + engine_bytes)
-        .map_err(|e| (path.to_path_buf(), e))
-    });
+    .map_err(|e| (engine_path(path), e));
+    let written = match (state_written, engine_written) {
+        (Ok(a), Ok(b)) => Ok(a + b),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    };
     let m = &state.runtime.metrics;
     match written {
         Ok(bytes) => {
@@ -954,8 +957,28 @@ mod tests {
         assert_eq!(s.runtime.metrics.state_saves_failed.load(Relaxed), 1);
         fs::remove_dir(engine_path(&path)).unwrap();
         // the write fails half-way
-        let r = write_atomic(&path, |_| Err(io::Error::other("disk full")));
-        assert!(r.is_err() && !sibling(&path, ".tmp").exists() && !path.exists());
+        let other = d.join("other.json");
+        let r = write_atomic(&other, |_| Err(io::Error::other("disk full")));
+        assert!(r.is_err() && !sibling(&other, ".tmp").exists() && !other.exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_state_file_is_written_when_the_engine_file_cannot_be() {
+        let d = dir("engine-fails");
+        let path = d.join("state.json");
+        let s = state("");
+        let (c, e) = ban("203.0.113.9", Some(3600));
+        s.learned.intel.add(c, e);
+        // a full or slow disk refusing the large engine file, here a directory in its way
+        fs::create_dir_all(engine_path(&path)).unwrap();
+        assert!(save(&s, &path).is_err(), "the failure is still reported");
+        let saved = json(&path);
+        assert_eq!(saved["intel"].as_array().map(Vec::len), Some(1));
+        fs::remove_dir(engine_path(&path)).unwrap();
+        let t = state("");
+        restore(&t, &path);
+        assert!(t.learned.intel.lookup(ip("203.0.113.9")).is_some());
         let _ = fs::remove_dir_all(&d);
     }
 

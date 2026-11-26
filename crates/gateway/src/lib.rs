@@ -114,6 +114,13 @@ pub async fn run_until(
     stop: impl Future<Output = ()>,
 ) -> Result<(), String> {
     let listen: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
+    // Before the slow start-up steps (the restore takes ~2 s at full caps): from here a
+    // `systemctl reload` is queued and applied once the gateway runs, instead of ending it.
+    #[cfg(unix)]
+    let hup = match config_path {
+        Some(_) => Some(reload::hangup()?),
+        None => None,
+    };
     let state = build_state(cfg)?;
     // [persistence]: load before serving and before CrowdSec's first pull
     let saver = persistence::start(&state).await?;
@@ -123,8 +130,8 @@ pub async fn run_until(
         tokio::spawn(admin::serve_admin(state.clone(), l, drain.token()));
     }
     #[cfg(unix)]
-    if let Some(path) = config_path {
-        watch_sighup(state.clone(), path)?;
+    if let (Some(path), Some(hup)) = (config_path, hup) {
+        reload::spawn_reloads(state.clone(), path, hup);
     }
     #[cfg(not(unix))]
     let _ = config_path;
