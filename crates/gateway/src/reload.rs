@@ -5,9 +5,10 @@
 //! valid does anything change, and then the engine settings and the snapshot are
 //! swapped. On an error the running config stays as it was.
 //!
-//! Nothing is interrupted. Connections stay open. A request that started before the
-//! swap finishes with the snapshot it took, and the next request on the same
-//! connection takes the new one. Learned state (baselines, reputation, bans, buckets,
+//! Nothing is interrupted. Connections stay open. A request is judged on the snapshot
+//! current when its body has arrived and keeps it to the end, so one waiting on the
+//! upstream during a reload finishes on the old config, and an upload still arriving is
+//! judged on the new one. Learned state (baselines, reputation, bans, buckets,
 //! caches, clearances) is kept, except the entries of rate limits, operations and logins
 //! that the new config no longer defines.
 //!
@@ -44,6 +45,9 @@ pub struct Reloaded {
     pub kept: Vec<&'static str>,
     /// CrowdSec and feed tasks started, restarted or stopped.
     pub tasks: Vec<String>,
+    /// Things that were accepted but deserve a look (a model kept although it doesn't
+    /// match this version's features).
+    pub warnings: Vec<String>,
     /// Learned entries dropped because their rate limit, operation or login is gone.
     pub forgotten: usize,
 }
@@ -163,13 +167,15 @@ fn apply(state: &State, mut cfg: GatewayConfig) -> Result<Reloaded, String> {
         new.challenger = new.challenger.with_key_of(&old.challenger);
     }
     // the last step that can fail; it changes nothing unless it succeeds
-    kept.extend(
-        state
-            .learned
-            .guard
-            .reload(engine)
-            .map_err(|e| format!("guard_config: {e}"))?,
-    );
+    let engine = state
+        .learned
+        .guard
+        .reload(engine)
+        .map_err(|e| format!("guard_config: {e}"))?;
+    kept.extend(engine.kept);
+    let warnings: Vec<String> = (engine.model_warning.into_iter())
+        .map(|w| format!("guard_config: {w}"))
+        .collect();
     let new = Arc::new(new);
     state.replace_compiled(new.clone());
     let learned = &state.learned;
@@ -183,6 +189,7 @@ fn apply(state: &State, mut cfg: GatewayConfig) -> Result<Reloaded, String> {
     Ok(Reloaded {
         kept,
         tasks,
+        warnings,
         forgotten,
     })
 }
@@ -207,6 +214,9 @@ fn report(state: &State, result: &Result<Reloaded, String>) {
                 "pattern-guard-gateway: config reloaded ({})",
                 notes.join(", ")
             );
+            for w in &r.warnings {
+                eprintln!("pattern-guard-gateway: reload: {w}");
+            }
             if !r.kept.is_empty() {
                 eprintln!(
                     "pattern-guard-gateway: reload: {} can only change with a restart; the running values are kept",
@@ -451,5 +461,60 @@ mod tests {
         let r = reload(&st, cfg(&guard("[guard]\nmax_actors = 10\n"))).unwrap();
         assert_eq!(r.kept, ["guard.max_actors"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gateway that started with an older model (one feature missing, which startup
+    /// accepts) can still reload the rest of its config.
+    #[test]
+    fn an_older_model_does_not_block_later_reloads() {
+        let dir = std::env::temp_dir().join(format!("pg_reload_old_model_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = pattern_guard::Model::builtin().to_toml_string();
+        let older = model.replacen("name = \"actor_burst\"", "name = \"retired\"", 1);
+        std::fs::write(dir.join("older.toml"), older.replace("built-in", "older")).unwrap();
+        std::fs::write(dir.join("full.toml"), model).unwrap();
+        let guard = |m: &str| {
+            let path = dir.join(format!("guard-{m}"));
+            std::fs::write(&path, format!("[guard]\nmodel = \"{m}\"\n")).unwrap();
+            format!("guard_config = {path:?}\n")
+        };
+        let rule = "[[rules]]\nname = \"admin\"\npath = \"/admin\"\naction = \"block\"\n";
+        let st = state(&guard("older.toml"));
+        let r = reload(&st, cfg(&format!("{}{rule}", guard("older.toml")))).unwrap();
+        assert!(r.warnings[0].contains("feature layout"), "{:?}", r.warnings);
+        let ip: IpAddr = IP.parse().unwrap();
+        let admin = st.compiled().rules.evaluate(ip, &get("/admin"), None);
+        assert!(admin.terminal.is_some(), "the rule applies");
+        assert!(st.learned.guard.model().description.starts_with("older"));
+        // warned once
+        let r = reload(&st, cfg(&format!("{}{rule}", guard("older.toml")))).unwrap();
+        assert!(r.warnings.is_empty());
+        // moving to a model that fits works; moving back is refused
+        reload(&st, cfg(&guard("full.toml"))).unwrap();
+        assert!(reload(&st, cfg(&guard("older.toml"))).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `reload` takes a `GatewayConfig` built or changed in code, which never went
+    /// through `GatewayConfig::load`: its values are validated all the same.
+    #[test]
+    fn values_set_in_code_are_validated() {
+        let st = state("");
+        let before = st.compiled();
+        let mut threshold = cfg("");
+        threshold.bans.threshold = 0;
+        let mut difficulty = cfg("");
+        difficulty.challenge.difficulty = 40;
+        let mut https = cfg("");
+        https.upstream = "https://127.0.0.1:1".into();
+        for (bad, says) in [
+            (threshold, "bans"),
+            (difficulty, "challenge.difficulty"),
+            (https, "upstream"),
+        ] {
+            let e = reload(&st, bad).unwrap_err();
+            assert!(e.contains(says), "{e}");
+            assert!(Arc::ptr_eq(&before, &st.compiled()));
+        }
     }
 }

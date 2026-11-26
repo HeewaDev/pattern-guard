@@ -842,7 +842,9 @@ impl GatewayConfig {
         Ok(c)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    /// Checks the values serde can't (ranges, URLs, CIDRs). `load` and `from_toml_str`
+    /// call it; so does `Compiled::compile`, for configs built or changed in code.
+    pub fn validate(&self) -> Result<(), String> {
         if !self.upstream.starts_with("http://") {
             return Err("upstream must be an http:// URL (terminate TLS in front of the gateway or use a local upstream)".into());
         }

@@ -3,8 +3,9 @@
 //! * [`Compiled`]: everything built from the config (rules, limit and operation
 //!   definitions, lists, protocol, geo, security headers, leak signatures, upstream,
 //!   the challenge settings, the config itself). It is one immutable snapshot behind
-//!   [`State::compiled`], replaced as a whole on a reload. A request takes the snapshot
-//!   once and uses it to the end, so it never sees two configs.
+//!   [`State::compiled`], replaced as a whole on a reload. A request reads its body
+//!   under the snapshot current when its head arrived, then takes the current one and
+//!   keeps it for the decision and the forward, so they never see two configs.
 //! * [`Learned`]: what the gateway learns from traffic (behavioural baselines,
 //!   reputation and bans, rate buckets, operation and login caches, the API inventory).
 //!   It is kept across reloads, and it is what persistence will snapshot.
@@ -104,9 +105,11 @@ pub struct Compiled {
 }
 
 impl Compiled {
-    /// Compiles and checks every section of `cfg` (regexes, CIDRs, the geo database).
-    /// Has no side effects, so a failure leaves nothing behind.
+    /// Validates `cfg` ([`GatewayConfig::validate`]), then compiles and checks every
+    /// section (regexes, CIDRs, the geo database). Has no side effects, so a failure
+    /// leaves nothing behind.
     pub fn compile(cfg: GatewayConfig) -> Result<Self, String> {
+        cfg.validate()?;
         let up: hyper::Uri = cfg
             .upstream
             .parse()

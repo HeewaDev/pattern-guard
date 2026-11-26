@@ -298,7 +298,8 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
             let svc = service_fn(move |req: hyper::Request<Incoming>| {
                 let st = st.clone();
                 async move {
-                    // one config snapshot for the whole request, from admission on
+                    // the config when the head arrived: admission and the body-read
+                    // limits (proxy::handle takes the current one once the body is in)
                     let c = st.compiled();
                     // held until the response head is ready (body read, inspection, upstream)
                     let _slot = match admit(&st, &c, peer.ip(), req.headers()) {

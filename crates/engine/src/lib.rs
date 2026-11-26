@@ -34,7 +34,7 @@ pub use decision::Decision;
 pub use error::Error;
 pub use event::Event;
 pub use features::{FEATURE_NAMES, Features, N_FEATURES};
-pub use guard::{Assessment, Guard, Reason};
+pub use guard::{Assessment, Guard, Reason, ReloadReport};
 pub use model::{Model, TrainOptions};
 /// Payload inspection (WAF), re-exported from the `pattern-guard-waf` crate.
 pub use pattern_guard_waf as waf;

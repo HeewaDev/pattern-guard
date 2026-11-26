@@ -210,8 +210,8 @@ block_secs = 3600
 
 - Engine models are TOML files. Point `guard.toml`'s `model = "..."` at a new file and
   reload (`systemctl reload pattern-guard-gateway`, or `kill -HUP`): baselines are kept,
-  and a model trained for another version's features is refused. Most config changes
-  reload the same way; the few that need a restart are listed in
+  and a reload doesn't switch to a model trained for another version's features. Most
+  config changes reload the same way; the few that need a restart are listed in
   [GATEWAY.md](GATEWAY.md#reloading-the-config).
 - Read [CHANGELOG.md](../CHANGELOG.md) for breaking config changes.
 - Run `--check` before restarting or reloading.

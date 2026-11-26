@@ -102,13 +102,21 @@ impl Model {
             .filter(|&i| !named[i])
             .map(|i| FEATURE_NAMES[i])
             .collect();
+        m.unknown.sort_unstable();
+        m.unknown.dedup();
         Ok(m)
+    }
+
+    /// Whether both models name the same features (those of this engine they lack, and
+    /// those they name that it doesn't compute).
+    pub fn same_layout(&self, other: &Model) -> bool {
+        self.missing == other.missing && self.unknown == other.unknown
     }
 
     /// Whether the model names exactly the features this engine computes
     /// ([`FEATURE_NAMES`]). Loading accepts a partial match (missing features weigh 0,
     /// unknown ones are ignored), so an older model still starts after an upgrade;
-    /// [`Guard::reload`](crate::Guard::reload) requires this check to pass.
+    /// [`Guard::reload`](crate::Guard::reload) refuses to switch to a model that fails it.
     pub fn check_layout(&self) -> Result<(), Error> {
         let mut problems = Vec::new();
         if !self.missing.is_empty() {

@@ -127,7 +127,7 @@ re-verified line by line.
 | 2c.14 | Path-level authentication (basic auth / OIDC) | BunkerWeb, SafeLine | ⬜ |
 | 2c.15 | Per-path body limits, upload filtering | SafeLine, open-appsec | 🧪 global `max_body_bytes` · ⬜ per path, file-type checks |
 | 2c.16 | WebSocket, HTTP/2, TLS termination, caching, compression | BunkerWeb, SafeLine (nginx-based) | ⬜ (TLS via a front proxy today) |
-| 2c.17 | Hot reload of config without dropping connections | all of the above | ✅ `SIGHUP` / `systemctl reload`: the whole config and the engine model are validated before the swap, requests in flight finish on the old config, learned state is kept; restart-only keys in GATEWAY.md |
+| 2c.17 | Hot reload of config without dropping connections | all of the above | ✅ `SIGHUP` / `systemctl reload`: the whole config and the engine model are validated before the swap, a request is judged on the config current when its body has arrived, learned state is kept; restart-only keys in GATEWAY.md |
 | 2c.18 | Web UI for decisions, bans and tuning | BunkerWeb, SafeLine, open-appsec | ⬜ |
 
 ## 3. Proof

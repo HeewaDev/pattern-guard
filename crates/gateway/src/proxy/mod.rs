@@ -56,9 +56,11 @@ fn param_name(location: &str) -> Option<&str> {
     })
 }
 
-/// Handles one request. `c` is the config snapshot taken when the request arrived (see
-/// `server::serve`): the whole request uses it, so a reload in the middle never mixes
-/// two configs.
+/// Handles one request. `c` is the config snapshot taken when the request head arrived
+/// (see `server::serve`); it sets the body-read limits. Once the body is in, the request
+/// takes the current snapshot and keeps it to the end, so the decision and the forward
+/// never mix two configs, and an upload that trickled in across a reload is judged on
+/// the new config.
 pub async fn handle(
     state: Arc<State>,
     c: Arc<Compiled>,
@@ -84,6 +86,10 @@ pub async fn handle(
         Ok(b) => b,
         Err(refusal) => return Ok(*refusal),
     };
+    // A body may take hours to arrive (`body_min_bytes_per_sec`); decide on the config
+    // current now, not the one from when the head arrived.
+    let c = state.compiled();
+    let ip = client_ip(&c, peer.ip(), &parts.headers);
 
     let path_q = parts
         .uri

@@ -441,11 +441,15 @@ pattern-guard-gateway: reload refused, the running config is kept: rate limit "a
 `pattern_guard_config_reloads_total{result="ok|error"}` counts reloads. Library users call
 `pattern_guard_gateway::reload(&state, cfg)` or `reload_from_path(&state, path)` directly.
 
-Nothing is interrupted. Connections stay open, and the listener keeps accepting. A request
-takes the config once when it arrives, so a request in flight during a reload finishes
-with the config it started with, and the next request (also on the same keep-alive
-connection) uses the new one. Connection settings (`max_connections_per_ip`,
-`header_read_timeout_secs`) apply to connections accepted after the reload.
+Nothing is interrupted. Connections stay open, and the listener keeps accepting. A
+request is judged on the config current when its body has finished arriving, and keeps
+that config until its response is sent. A request already waiting on your app during a
+reload finishes with the config it was judged on. An upload still arriving is judged on the
+new config, however long it has been sending (its body-read limits, `max_body_bytes` and the
+`limits.body_*` keys, come from the config current when its head arrived). The next request,
+also on the same keep-alive connection, uses the new config. Connection settings
+(`max_connections_per_ip`, `header_read_timeout_secs`) apply to connections accepted after
+the reload.
 
 **What is kept.** Everything the gateway learned: behavioural baselines and actor history,
 reputation (bans, CrowdSec and feed entries), ban escalation counts, the API inventory, and
@@ -457,9 +461,12 @@ is a new key, so clearances issued before it end.
 operation or login that is still configured keeps its buckets, budgets, unique values and
 failure counts, even if its other settings changed (a lower `requests` takes effect on the
 next request; tokens above the new capacity are cut). One that is removed or renamed has
-its entries dropped. Re-adding it later starts it fresh. (A request in flight during the
-reload can still write an entry for a removed definition; that entry is never read and ages
-out of its capped table.)
+its entries dropped at the reload. A request that was judged on the old config and is still
+running can write entries for it afterwards. They stay in the capped table until they are
+evicted, and if a definition of that name is added back before then, it picks them up
+instead of starting fresh. Definitions that share a name are matched by their order among
+those of that name, so removing the first of two limits both named `api` hands its state
+to the second. Give each definition its own name to avoid that.
 
 **CrowdSec and feeds** are restarted when their config changed and left running when it
 didn't. A restarted bouncer fetches the full decision list again, and the old decisions stay
@@ -468,10 +475,12 @@ starts at the end of its file, as at startup. A removed feed's entries expire on
 (`block_secs`).
 
 **The behavioural engine** (`guard_config`) reloads its thresholds, rules, per-actor overrides,
-mode and model, and keeps its baselines. The new model must have been trained for exactly
-this version's features (`pattern-guard train` writes all of them). A model that lacks some or
-names unknown ones is refused, and the running model stays. At startup such a model is still
-accepted, so an older model keeps working after an upgrade.
+mode and model, and keeps its baselines. A reload doesn't switch to a model trained for
+another version's features (one that lacks some of this version's features or names
+unknown ones; `pattern-guard train` writes all of them): it is refused, and the running
+model stays. At startup such a model is still accepted, so an older model keeps working
+after an upgrade, and later reloads keep working with it too. A model with the same
+layout as the running one is accepted, with a warning on the first such reload.
 
 **Keys that need a restart.** These own something built once at startup. A reload keeps
 their running values and warns, naming each key:

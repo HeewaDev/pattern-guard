@@ -43,8 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now sets `ExecReload`), or with `pattern_guard_gateway::reload` / `reload_from_path`.
   The whole config, the engine config and its model are validated and compiled before
   anything changes; an invalid one is refused with one line naming the section, and the
-  running config stays. Requests in flight finish with the config they started with,
-  connections stay open, and learned state is kept: baselines, reputation, bans, the
+  running config stays. A request is judged on the config current when its body has
+  arrived and keeps it to the end; connections stay open, and learned state is kept: baselines, reputation, bans, the
   inventory, clearances (while `challenge.secret` is unchanged), and the buckets, budgets
   and counters of rate limits, operations and logins that are still configured (by name).
   CrowdSec and feed tasks restart only when their config changed. Keys that need a restart
@@ -53,8 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `guard.max_actors`, `[guard.adaptive]`) keep their running values with a warning. New
   metric `pattern_guard_config_reloads_total{result="ok|error"}`.
 - **Engine**: `Guard::reload(Config)` replaces the config and model of a running guard and
-  keeps what it learned. `Model::check_layout` tells whether a model names exactly this
-  version's features; a reload refuses a model that doesn't.
+  keeps what it learned, and returns a `ReloadReport`. `Model::check_layout` tells whether a
+  model names exactly this version's features; a reload refuses to switch to a model that
+  doesn't, but keeps accepting one with the running model's layout (an older model the
+  guard started with), with a warning on the first such reload.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values

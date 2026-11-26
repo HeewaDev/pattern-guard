@@ -29,9 +29,10 @@ Invalid values (unknown enum, bands out of order, zero thresholds) are rejected 
 
 `Guard::reload` (the gateway calls it on `SIGHUP`) applies a new config and model and keeps
 what was learned. `time_source`, `max_actors` and `[guard.adaptive]` shape the learned state:
-a reload keeps their running values and reports them. A reloaded model must name exactly
-this version's features (`Model::check_layout`); at startup, a model with missing features
-(weight 0) or unknown ones (ignored) is still accepted.
+a reload keeps their running values and reports them. A reload doesn't switch to a model
+that fails `Model::check_layout` (it lacks some of this version's features or names unknown
+ones), unless the running model has the same layout. At startup such a model is accepted
+(missing features weigh 0, unknown ones are ignored).
 
 ## Decisions
 

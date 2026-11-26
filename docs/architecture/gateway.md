@@ -71,8 +71,11 @@ fallible step is `Guard::reload`, which validates and swaps the engine's config 
 by itself. Only then is the snapshot swapped (`State::replace_compiled`). After the swap,
 `Buckets::forget_removed` and `OperationCaches::forget_removed` drop the entries of
 definitions that are gone (a scan only when one was removed), and `IntelTasks::update`
-restarts the CrowdSec or feed tasks whose config changed. An error at any step leaves
-everything as it was.
+restarts the CrowdSec or feed tasks whose config changed. A stopped bouncer's decisions are
+cleared once its aborted task has ended, and a new bouncer starts only after the one it
+replaces has ended. An error at any step leaves everything as it was. `Compiled::compile`
+runs `GatewayConfig::validate` itself, so a config built in code is checked like a loaded
+one.
 
 `--check` runs `build_state` with the decision log disabled, so validating a config never
 creates files. Every config error (bad regex, bad CIDR, missing GeoDb for country rules,
@@ -258,10 +261,12 @@ with SHA-256, keeping 64 bits. Caches hold at most 200 000 entries, and 256 acco
 - `compiled: RwLock<Arc<Compiled>>`: everything built from the config (the `GatewayConfig`
   itself, rules, rate-limit and operation definitions, the ban and trap policy, protocol,
   access lists, geo database and policy, security headers, leak signatures, upstream, the
-  `Challenger`). `server.rs` takes one snapshot per request with `State::compiled()` (a read
-  lock and an `Arc` clone) and passes it to the admission check and `proxy::handle`, so a
-  request uses one config from start to end. Each accepted connection takes one too, for its
-  connection-level limits.
+  `Challenger`). `server.rs` takes a snapshot when a request head arrives
+  (`State::compiled()`: a read lock and an `Arc` clone) for the admission check and the
+  body-read limits. Once the body is in, `proxy::handle` takes the current snapshot and keeps
+  it for the decision, the forward and the log, so these never see two configs, and a slow
+  upload can't hold on to a config that a reload replaced. Each accepted connection takes a
+  snapshot too, for its connection-level limits.
 - `learned`: what is learned from traffic. The behavioural `Guard`, the `IntelStore`,
   ban `Offenders`, rate-limit `Buckets`, `OperationCaches` (with the login counters) and the
   `Inventory`. Entries of rate limits, operations and logins are keyed by the definition's

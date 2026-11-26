@@ -36,6 +36,13 @@ async fn start_upstream() -> SocketAddr {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("none")
                         .to_string();
+                    if let Some(ms) = (req.uri().query())
+                        .and_then(|q| q.strip_prefix("sleep_ms="))
+                        .and_then(|v| v.parse().ok())
+                    {
+                        // a slow application (a request still in flight during a reload)
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                    }
                     if req.uri().path().starts_with("/signin")
                         && !req.uri().query().unwrap_or("").contains("ok")
                     {
@@ -1190,6 +1197,17 @@ async fn raw_status(s: &mut tokio::net::TcpStream) -> u16 {
     head[9..12].parse().unwrap()
 }
 
+/// Waits up to 3 s for `done`.
+async fn wait_for(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..300 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
 #[tokio::test]
 async fn config_reload_applies_to_the_next_request_and_spares_those_in_flight() {
     use tokio::io::AsyncWriteExt;
@@ -1198,21 +1216,23 @@ async fn config_reload_applies_to_the_next_request_and_spares_those_in_flight() 
         send(gw.addr, "GET", "/reports/1", &[], "").await.status,
         StatusCode::OK
     );
-    // a request in flight: its head and half of its body have arrived
+    let m = gw.state.runtime.metrics.clone();
+    // an upload in progress: its head and half of its body have arrived
     let mut s = tokio::net::TcpStream::connect(gw.addr).await.unwrap();
     s.write_all(b"POST /reports/upload HTTP/1.1\r\nhost: x\r\ncontent-length: 8\r\n\r\nhalf")
         .await
         .unwrap();
-    let m = gw.state.runtime.metrics.clone();
-    for _ in 0..200 {
-        if m.buffered_body_bytes.load(Ordering::SeqCst) == 4 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(m.buffered_body_bytes.load(Ordering::SeqCst), 4);
+    wait_for("the first half of the body", || {
+        m.buffered_body_bytes.load(Ordering::SeqCst) == 4
+    })
+    .await;
+    // a request already decided and forwarded, waiting on the application
+    let addr = gw.addr;
+    let waiting =
+        tokio::spawn(async move { send(addr, "GET", "/reports/2?sleep_ms=600", &[], "").await });
+    wait_for("the forward", || m.requests.load(Ordering::SeqCst) == 2).await;
 
-    // reload with a rule that blocks it
+    // reload with a rule that would block both
     let rules = GatewayConfig::from_toml_str(
         "upstream = \"http://127.0.0.1:1\"\n[[rules]]\nname = \"no reports\"\npath = \"/reports\"\naction = \"block\"\n",
     )
@@ -1224,13 +1244,15 @@ async fn config_reload_applies_to_the_next_request_and_spares_those_in_flight() 
     assert!(done.kept.is_empty(), "{:?}", done.kept);
 
     // the next request sees it …
-    let r = send(gw.addr, "GET", "/reports/2", &[], "").await;
+    let r = send(gw.addr, "GET", "/reports/3", &[], "").await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    // … the one in flight finishes with the config it started with …
+    // … the one waiting on the application finishes with the config it was judged on …
+    assert_eq!(waiting.await.unwrap().status, StatusCode::OK);
+    // … the upload is judged on the config current when its body is complete …
     s.write_all(b"rest").await.unwrap();
-    assert_eq!(raw_status(&mut s).await, 200);
-    // … and its connection stays open; its next request gets the new config
-    s.write_all(b"GET /reports/3 HTTP/1.1\r\nhost: x\r\n\r\n")
+    assert_eq!(raw_status(&mut s).await, 403);
+    // … and its connection stays open
+    s.write_all(b"GET /reports/4 HTTP/1.1\r\nhost: x\r\n\r\n")
         .await
         .unwrap();
     assert_eq!(raw_status(&mut s).await, 403);
@@ -1245,7 +1267,7 @@ async fn config_reload_applies_to_the_next_request_and_spares_those_in_flight() 
     let e = pattern_guard_gateway::reload(&gw.state, bad).unwrap_err();
     assert!(e.contains("rate limit \"x\""), "{e}");
     assert_eq!(
-        send(gw.addr, "GET", "/reports/4", &[], "").await.status,
+        send(gw.addr, "GET", "/reports/5", &[], "").await.status,
         StatusCode::FORBIDDEN
     );
     let metrics = send(gw.admin, "GET", "/metrics", &[], "").await.body;

@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -158,8 +159,21 @@ struct Settings {
     model: Arc<Model>,
 }
 
+/// What [`Guard::reload`] did besides applying the new settings.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReloadReport {
+    /// Keys that need a restart: their running values were kept (`guard.time_source`,
+    /// `guard.max_actors`, `guard.adaptive`).
+    pub kept: Vec<&'static str>,
+    /// Set on the first reload that keeps a model which fails [`Model::check_layout`]
+    /// (one the guard started with, or another with the same layout).
+    pub model_warning: Option<String>,
+}
+
 pub struct Guard {
     settings: RwLock<Arc<Settings>>,
+    /// A reload already reported that the model doesn't fit this engine's features.
+    layout_warned: AtomicBool,
     /// `SHARED_EVIDENCE` as a mask over `FEATURE_NAMES`.
     shared: [bool; N_FEATURES],
     state: Mutex<State>,
@@ -197,6 +211,7 @@ impl Guard {
                 config: Arc::new(config),
                 model: Arc::new(model),
             })),
+            layout_warned: AtomicBool::new(false),
             shared,
             state: Mutex::new(state),
         })
@@ -244,26 +259,38 @@ impl Guard {
     /// learned: baselines, actor history, rule windows, cooldowns. Calls already running
     /// finish with the settings they started with.
     ///
-    /// The model (`config.guard.model`, else the built-in one) must pass
-    /// [`Model::check_layout`]: it must have been trained for exactly this engine's
-    /// features. Otherwise, or if the config is invalid or the model can't be read,
-    /// nothing changes and the error is returned.
+    /// The model is `config.guard.model`, else the built-in one. A reload refuses to
+    /// switch to a model that fails [`Model::check_layout`] (trained for another
+    /// version's features). A model with the same layout as the running one is accepted
+    /// even if it fails the check, so a guard that started with an older model (which
+    /// [`Guard::new`] allows) can still reload the rest of its config; the first such
+    /// reload sets [`ReloadReport::model_warning`]. If the config is invalid, the model
+    /// can't be read or is refused, nothing changes and the error is returned.
     ///
     /// `time_source`, `max_actors` and `[guard.adaptive]` shape the learned state, so they
     /// can't change without a restart: their running values are kept, and the keys whose
-    /// new values were ignored are returned (`guard.time_source`, `guard.max_actors`,
-    /// `guard.adaptive`).
-    pub fn reload(&self, mut config: Config) -> Result<Vec<&'static str>, Error> {
+    /// new values were ignored are in [`ReloadReport::kept`].
+    pub fn reload(&self, mut config: Config) -> Result<ReloadReport, Error> {
         config.validate()?;
         let model = match &config.guard.model {
             Some(p) => Model::load(p)?,
             None => Model::builtin(),
         };
-        model.check_layout()?;
         let mut settings = self
             .settings
             .write()
             .unwrap_or_else(PoisonError::into_inner);
+        let mut model_warning = None;
+        if let Err(e) = model.check_layout() {
+            if !model.same_layout(&settings.model) {
+                return Err(e);
+            }
+            if !self.layout_warned.swap(true, Ordering::Relaxed) {
+                model_warning = Some(format!(
+                    "{e}; accepted, because the running model has the same layout"
+                ));
+            }
+        }
         let (old, new) = (&settings.config.guard, &mut config.guard);
         let mut kept = Vec::new();
         if new.time_source != old.time_source {
@@ -282,7 +309,10 @@ impl Guard {
             config: Arc::new(config),
             model: Arc::new(model),
         });
-        Ok(kept)
+        Ok(ReloadReport {
+            kept,
+            model_warning,
+        })
     }
 
     pub fn check(&self, event: &Event) -> Decision {
@@ -603,7 +633,7 @@ mod tests {
             let a = g.assess(&Event::new("a", "GET", "/", at(i as f64)));
             assert_eq!(a.rules_risk, 0.0);
         }
-        assert_eq!(g.reload(cfg(5)).unwrap(), Vec::<&str>::new());
+        assert_eq!(g.reload(cfg(5)).unwrap(), ReloadReport::default());
         assert_eq!(g.config().guard.burst_max_events, Some(5));
         // the five requests before the reload still count
         let a = g.assess(&Event::new("a", "GET", "/", at(5.0)));
@@ -625,7 +655,8 @@ mod tests {
                 )
                 .unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .kept;
         assert_eq!(
             kept,
             ["guard.time_source", "guard.max_actors", "guard.adaptive"]
@@ -658,8 +689,18 @@ mod tests {
         assert!(g.reload(load("missing.toml").unwrap()).is_err());
         assert!(g.reload(load("new.toml").unwrap()).is_ok());
         assert!(g.model().description.starts_with("retrained"));
-        // startup stays lenient: an older model still loads
-        assert!(Guard::new(load("old.toml").unwrap()).is_ok());
+        // startup stays lenient: an older model still loads …
+        let old = Guard::new(load("old.toml").unwrap()).unwrap();
+        // … and the rest of the config can still be reloaded with it (one warning)
+        let r = old.reload(load("old.toml").unwrap()).unwrap();
+        assert!(r.model_warning.unwrap().contains("feature layout"));
+        assert_eq!(
+            old.reload(load("old.toml").unwrap()).unwrap().model_warning,
+            None
+        );
+        // switching it to a model that fits is fine, and back is not
+        assert!(old.reload(load("new.toml").unwrap()).is_ok());
+        assert!(old.reload(load("old.toml").unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
