@@ -16,13 +16,15 @@ services:
     volumes:
       - ./gateway.toml:/etc/pattern-guard/gateway.toml:ro
       - decisions:/var/log/pattern-guard
+      - state:/var/lib/pattern-guard     # [persistence]: learned state across restarts
     # environment:
     #   CROWDSEC_BOUNCER_KEY: ${CROWDSEC_BOUNCER_KEY}
     depends_on:
       - app
     restart: unless-stopped
     # `docker stop` sends SIGTERM: requests in progress get limits.shutdown_grace_secs
-    # (default 7) to finish; the log is written after that. Docker kills after 10 s by default.
+    # (default 7) to finish; after that the log is written and the learned state saved.
+    # Docker kills after 10 s by default.
     stop_grace_period: 15s
 
   app:
@@ -33,3 +35,4 @@ services:
 
 volumes:
   decisions:
+  state:

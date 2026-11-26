@@ -16,3 +16,8 @@ header = "x-forwarded-for"
 
 [log]
 decisions = "/var/log/pattern-guard/decisions.jsonl"
+
+# Learned baselines, bans and the clearance key survive restarts. Keep
+# /var/lib/pattern-guard on a volume.
+[persistence]
+path = "/var/lib/pattern-guard/state.json"

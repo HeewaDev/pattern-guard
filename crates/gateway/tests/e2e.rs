@@ -1429,3 +1429,121 @@ async fn graceful_shutdown_closes_what_is_left_after_the_grace_period() {
     );
     wait_until_refused(addr).await;
 }
+
+/// Solves the proof-of-work challenge in `page` the way the page's script does and
+/// returns the clearance cookie (`pg_clearance=…`).
+async fn solve_challenge(addr: SocketAddr, page: &str, xff: (&str, &str)) -> String {
+    let vars = &page[page.find("var N=").unwrap()..];
+    let nonce = between(vars, "var N=\"", "\"");
+    let e = between(vars, ",E=", ",");
+    let d: u32 = between(vars, ",D=", ",").parse().unwrap();
+    let s = between(vars, ",S=\"", "\"");
+    let counter = (0u64..)
+        .find(|c| {
+            let h = Sha256::digest(format!("{nonce}:{c}").as_bytes());
+            pattern_guard_gateway::challenge::leading_zero_bits(&h) >= d
+        })
+        .unwrap();
+    let verify = format!("/.pattern-guard/verify?n={nonce}&e={e}&d={d}&s={s}&c={counter}&j=1");
+    let v = send(addr, "GET", &verify, &[xff], "").await;
+    assert_eq!(v.status, StatusCode::NO_CONTENT);
+    v.headers
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn learned_state_survives_a_restart() {
+    let up = start_upstream().await;
+    let dir = std::env::temp_dir().join(format!("pg-e2e-persist-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    let toml = format!(
+        "upstream = \"http://{up}\"\n[client_ip]\ntrusted_proxies = [\"127.0.0.1\"]\n[challenge]\ndifficulty = 8\n[access]\nchallenge = [\"192.0.2.60\"]\n[traps]\npaths = [\"/wp-login.php\"]\n[persistence]\npath = {:?}\ninterval_secs = 0\n",
+        path.display().to_string()
+    );
+    let prober = ("x-forwarded-for", "203.0.113.51");
+    let visitor = ("x-forwarded-for", "192.0.2.60");
+    let html = ("accept", "text/html");
+    let stopped = |server: tokio::task::JoinHandle<Result<(), String>>| async {
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("graceful shutdown")
+            .unwrap()
+            .unwrap()
+    };
+
+    // first run: a trap visit bans the prober, the visitor solves a challenge
+    let (addr, stop, server) = run_gateway(&toml).await;
+    let trap = send(addr, "GET", "/wp-login.php", &[prober], "").await;
+    assert_eq!(trap.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        send(addr, "GET", "/shop", &[prober], "").await.status,
+        StatusCode::FORBIDDEN
+    );
+    let page = send(addr, "GET", "/shop", &[visitor, html], "").await;
+    assert_eq!(page.status, StatusCode::FORBIDDEN);
+    let cookie = solve_challenge(addr, &page.body, visitor).await;
+    let cleared = [visitor, ("cookie", cookie.as_str())];
+    assert_eq!(
+        send(addr, "GET", "/shop", &cleared, "").await.status,
+        StatusCode::OK
+    );
+    stop.send(()).unwrap();
+    stopped(server).await;
+
+    // the shutdown saved both files: owner-only, no temporary file left
+    let engine = dir.join("state.json.engine");
+    for f in [&path, &engine] {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(f).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let mut tmp = f.as_os_str().to_owned();
+        tmp.push(".tmp");
+        assert!(!std::path::Path::new(&tmp).exists());
+    }
+    let read = |f: &std::path::Path| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap()
+    };
+    let saved = read(&path);
+    assert!(saved["intel"].to_string().contains("203.0.113.51"));
+    assert!(saved["challenge_secret"].is_string());
+    let actors = read(&engine)["state"]["features"]["actors"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(actors >= 2, "both clients were learned");
+
+    // second run from the same file
+    let (addr, stop, server) = run_gateway(&toml).await;
+    assert_eq!(
+        send(addr, "GET", "/shop", &[prober], "").await.status,
+        StatusCode::FORBIDDEN,
+        "the ban is still enforced"
+    );
+    assert_eq!(
+        send(addr, "GET", "/shop", &cleared, "").await.status,
+        StatusCode::OK,
+        "the clearance cookie is still accepted"
+    );
+    assert_eq!(
+        send(addr, "GET", "/shop", &[visitor, html], "")
+            .await
+            .status,
+        StatusCode::FORBIDDEN,
+        "and still needed"
+    );
+    stop.send(()).unwrap();
+    stopped(server).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

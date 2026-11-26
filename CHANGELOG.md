@@ -105,6 +105,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1 024 entries at a time. Floats are stored as their bits, so a restored guard decides
   exactly as the original would have. `util::stats` types are serde-serialisable;
   `TimeSource` is `Serialize`.
+- **Persistence of learned state** in the gateway, new section `[persistence]`: `path`
+  (unset = off, relative to the config file; restart-only) and `interval_secs` (300;
+  0 = only at a graceful shutdown; reloadable). `path` holds every live reputation entry
+  (gateway bans, CrowdSec, Suricata, Wazuh) with its expiry, and the challenge key only
+  when it was generated, so clearance cookies survive a restart and later reloads (a
+  configured `challenge.secret` is never written); `<path>.engine` holds the engine
+  snapshot, so a bad engine file costs only the behaviour. Saved in the background and
+  after the graceful shutdown (which first waits for a reload in progress and stops the
+  CrowdSec and feed tasks), atomically (temp file, fsync, rename; the temp file is
+  removed on failure) with mode 0600; streamed back before serving and before the first
+  CrowdSec pull. A restored entry never gets more time than it had left at the save,
+  capped by its source (`bans.max_ban_secs`, the feed's `block_secs`, a year for
+  CrowdSec); only sources the config produces are restored; a gateway ban must name one
+  host and expire; reasons are cut at 512 bytes; caps are re-applied. A corrupt or
+  incompatible file gives one warning, is kept as `<file>.bad`, and only its part starts
+  empty. A `path` whose name is taken by a directory is a startup (and `--check`) error.
+  New metrics `pattern_guard_state_saves_total{result}`,
+  `pattern_guard_state_save_seconds`, `pattern_guard_state_save_bytes`,
+  `pattern_guard_state_last_save_timestamp_seconds`. The Docker image and compose file
+  keep `/var/lib/pattern-guard` on a volume (persistence on in the image's config); the
+  systemd unit sets `StateDirectory=pattern-guard`. Measured at the default caps (100 000
+  actors, 100 000 bans, 500 000 CrowdSec entries): 211 MB (138 MB engine, 74 MB
+  reputation), saved in 0.4–0.9 s, loaded in 1–2 s.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values

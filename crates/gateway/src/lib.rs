@@ -15,6 +15,7 @@ pub mod hardening;
 pub mod intel;
 pub mod ipnet;
 pub mod observability;
+mod persistence;
 pub mod policy;
 pub mod proxy;
 mod reload;
@@ -50,6 +51,7 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
         None => Guard::from_toml_str("").map_err(|e| e.to_string())?,
     };
     let compiled = Compiled::compile(cfg)?;
+    persistence::check_path(&compiled.cfg)?; // also for --check
     let metrics = Arc::new(Metrics::default());
     let learned = Learned::new(&compiled.cfg, guard, &metrics);
     let runtime = Runtime::new(&compiled.cfg, metrics);
@@ -101,8 +103,9 @@ pub async fn run(cfg: GatewayConfig, config_path: Option<PathBuf>) -> Result<(),
 
 /// Runs the gateway on bound listeners until `stop` completes, then shuts down
 /// gracefully: closes the listeners, gives the requests in progress
-/// `limits.shutdown_grace_secs` to finish, closes what is left and flushes the decision
-/// log. Returns when that is done. `config_path`: as for [`run`].
+/// `limits.shutdown_grace_secs` to finish, closes what is left, flushes the decision
+/// log and saves the learned state (`[persistence]`). Returns when that is done.
+/// `config_path`: as for [`run`].
 pub async fn run_until(
     cfg: GatewayConfig,
     config_path: Option<PathBuf>,
@@ -112,6 +115,8 @@ pub async fn run_until(
 ) -> Result<(), String> {
     let listen: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
     let state = build_state(cfg)?;
+    // [persistence]: load before serving and before CrowdSec's first pull
+    let saver = persistence::start(&state).await?;
     let drain = shutdown::Drain::new();
     start_background(&state, None)?;
     if let Some(l) = admin {
@@ -132,7 +137,7 @@ pub async fn run_until(
     );
     let accept = tokio::spawn(server::serve_until(state.clone(), listener, drain.token()));
     stop.await;
-    shutdown::finish(&state, &drain).await;
+    shutdown::finish(&state, &drain, saver).await;
     accept.abort();
     Ok(())
 }

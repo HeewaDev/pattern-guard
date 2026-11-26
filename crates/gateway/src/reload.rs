@@ -26,9 +26,11 @@ use crate::intel;
 use crate::state::{Compiled, State};
 
 /// Gateway keys a reload can't change: the listeners are bound, the decision-log
-/// writer owns its file and queue, and the caps size the reputation store. The engine
-/// adds `guard.time_source`, `guard.max_actors` and `guard.adaptive` (see
-/// `pattern_guard::Guard::reload`).
+/// writer owns its file and queue, the caps size the reputation store, and the state
+/// files were loaded from `persistence.path` (saving elsewhere would lose them). The
+/// engine adds `guard.time_source`, `guard.max_actors` and `guard.adaptive` (see
+/// `pattern_guard::Guard::reload`). `persistence.interval_secs` and
+/// `limits.shutdown_grace_secs` do reload: they are read when they are used.
 pub const RESTART_ONLY: &[&str] = &[
     "listen",
     "admin_listen",
@@ -36,6 +38,7 @@ pub const RESTART_ONLY: &[&str] = &[
     "limits.decision_log_queue_bytes",
     "limits.max_bans",
     "limits.max_intel_entries_per_source",
+    "persistence.path",
 ];
 
 /// What an applied reload did.
@@ -142,6 +145,12 @@ fn keep_restart_only(old: &GatewayConfig, new: &mut GatewayConfig) -> Vec<&'stat
         RESTART_ONLY[5],
         &o.max_intel_entries_per_source,
         &mut n.max_intel_entries_per_source,
+    );
+    keep(
+        k,
+        RESTART_ONLY[6],
+        &old.persistence.path,
+        &mut new.persistence.path,
     );
     kept
 }
@@ -345,7 +354,9 @@ mod tests {
                 "listen = \"127.0.0.1:9999\"\nadmin_listen = \"127.0.0.1:9998\"\n\
                  [log]\ndecisions = \"/nonexistent/decisions.jsonl\"\ninclude_allowed = true\n\
                  [limits]\nmax_bans = 5\nmax_intel_entries_per_source = 6\n\
-                 decision_log_queue_bytes = 65536\nmax_connections_per_ip = 3\n",
+                 decision_log_queue_bytes = 65536\nmax_connections_per_ip = 3\n\
+                 shutdown_grace_secs = 2\n\
+                 [persistence]\npath = \"/nonexistent/state.json\"\ninterval_secs = 60\n",
             ),
         )
         .unwrap();
@@ -355,9 +366,12 @@ mod tests {
         assert_eq!(c.cfg.admin_listen.unwrap().port(), 9901);
         assert_eq!(c.cfg.log.decisions, None);
         assert_eq!(c.cfg.limits.max_bans, 100_000);
+        assert_eq!(c.cfg.persistence.path, None);
         // the other keys of the same sections apply
         assert!(c.cfg.log.include_allowed);
         assert_eq!(c.cfg.limits.max_connections_per_ip, 3);
+        assert_eq!(c.cfg.limits.shutdown_grace_secs, 2);
+        assert_eq!(c.cfg.persistence.interval_secs, 60);
     }
 
     #[test]

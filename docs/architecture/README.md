@@ -29,8 +29,11 @@ client ─► [TLS terminator / CDN] ─► pattern-guard-gateway ─► upstrea
 
 - TLS ends **in front of** the gateway (Caddy, nginx, a CDN). The gateway only speaks
   HTTP/1.1 to clients and to the upstream (`upstream` must be `http://`).
-- The gateway is stateless across restarts. Learned baselines, bans and clearances live
-  in memory only. Persistence is milestone M3 in [../ROADMAP.md](../ROADMAP.md).
+- Learned state lives in memory. With `[persistence] path` set, the behavioural engine's
+  tables, the reputation store (bans, CrowdSec, feeds) and a generated clearance key are
+  saved to one file periodically and at a graceful shutdown, and loaded at startup
+  (`crates/gateway/src/persistence.rs`). Rate-limit buckets, the `[bans]` escalation
+  history, operation and login caches and the inventory still start empty.
 
 ## Crates
 

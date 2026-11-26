@@ -11,14 +11,16 @@ RUN cargo build --release --locked -p pattern-guard-gateway -p pattern-guard-cli
 
 FROM debian:bookworm-slim
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin pattern-guard \
- && mkdir -p /etc/pattern-guard /var/log/pattern-guard \
- && chown pattern-guard:pattern-guard /var/log/pattern-guard
+ && mkdir -p /etc/pattern-guard /var/log/pattern-guard /var/lib/pattern-guard \
+ && chown pattern-guard:pattern-guard /var/log/pattern-guard /var/lib/pattern-guard \
+ && chmod 0700 /var/lib/pattern-guard
 COPY --from=build /src/target/release/pattern-guard-gateway /src/target/release/pattern-guard /usr/local/bin/
 COPY config/gateway.toml.example config/guard.toml.example /etc/pattern-guard/
 COPY deploy/docker/gateway.toml /etc/pattern-guard/gateway.toml
 USER pattern-guard
 # 8080: traffic. 9901: /metrics, /healthz, /inventory, /bans (publish it privately only).
 EXPOSE 8080 9901
-VOLUME ["/var/log/pattern-guard"]
+# Decision log, and the learned state ([persistence] in the default config).
+VOLUME ["/var/log/pattern-guard", "/var/lib/pattern-guard"]
 ENTRYPOINT ["pattern-guard-gateway"]
 CMD ["--config", "/etc/pattern-guard/gateway.toml"]

@@ -137,6 +137,16 @@ impl IntelTasks {
     }
 }
 
+impl IntelTasks {
+    /// Stops every task (at shutdown, before the last state save, so nothing writes to
+    /// the store during it). A later `update` does nothing.
+    pub fn stop(&self) {
+        if let Some(r) = self.lock().take() {
+            r.stop();
+        }
+    }
+}
+
 impl Running {
     /// Starts a bouncer once `after` (the bouncer it replaces, or the clean-up of a
     /// stopped one) has ended, so their writes can't land after its full refresh.

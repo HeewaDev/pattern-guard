@@ -492,12 +492,14 @@ their running values and warns, naming each key:
 | `limits.max_bans`, `limits.max_intel_entries_per_source` | they size the reputation store |
 | `guard.time_source` | the engine's clock |
 | `guard.max_actors`, `[guard.adaptive]` | they size and shape the learned baselines |
+| `persistence.path` | the state was loaded from it; saving elsewhere would lose it |
 
 ```
 pattern-guard-gateway: reload: listen, guard.max_actors can only change with a restart; the running values are kept
 ```
 
-Every other key applies on reload. The WAF signatures are part of the binary; a new version
+Every other key applies on reload, including `persistence.interval_secs` and
+`limits.shutdown_grace_secs`. The WAF signatures are part of the binary; a new version
 needs a restart.
 
 ## Graceful shutdown
@@ -511,7 +513,8 @@ On SIGTERM (`docker stop`, `systemctl stop`, Kubernetes) or SIGINT (Ctrl-C) the 
 3. closes the connections still open after `limits.shutdown_grace_secs` (default 7,
    0 = at once, at most 3600; it applies on reload);
 4. then, **after** the grace period, writes the decision-log lines still queued (until
-   the end of the grace period, at least 1 second) and exits.
+   the end of the grace period, at least 1 second), saves the learned state
+   (`[persistence]`, about a second at full caps) and exits.
 
 A stop therefore takes as long as the slowest request in progress, at most
 `shutdown_grace_secs` plus what comes after it (about a second). The supervisor must wait
@@ -523,11 +526,78 @@ the systemd unit `TimeoutStopSec=20` (systemd's default is 90 s,
 slow endpoints (reports, uploads, long polling), raise `shutdown_grace_secs` towards
 `upstream_timeout_secs` and the supervisor's timeout with it.
 
+## Persistence
+
+Without it, a restart forgets everything the gateway has learned: route baselines and
+client behaviour, bans, and (with a random challenge key) every solved challenge. With a
+path set, that state is saved and loaded at the next start:
+
+```toml
+[persistence]
+path = "/var/lib/pattern-guard/state.json"   # unset (default) = off; relative to this file
+interval_secs = 300                          # 0 = only at a graceful shutdown; else ≥ 10
+```
+
+| Kept | Not kept (starts empty) |
+|---|---|
+| Behavioural engine: actor, client, subnet and route tables (baselines), rule windows, cooldowns | Rate-limit buckets |
+| Reputation: gateway bans (traps, repeat offenders), CrowdSec, Suricata and Wazuh entries, with their expiry | The escalation history of `[bans]` (the next ban of a repeat offender is a first one) |
+| The challenge key, **only** when it was generated (no `challenge.secret`): clearance cookies stay valid, also across later reloads | Operation and login caches, the API inventory |
+
+- **Two files.** `path` holds the reputation and the challenge key (about 80 bytes per
+  entry); `<path>.engine` holds the behavioural engine. Each is read on its own, so a
+  damaged or incompatible engine file costs the behaviour only: bans and clearances still
+  come back.
+- **When.** Every `interval_secs` (it applies on reload), and after the graceful shutdown
+  (once the connections are closed and the decision log is written; the last save waits
+  for a reload in progress and stops the CrowdSec and feed tasks first). Saves run on a
+  background thread; the engine is copied 1 024 entries per hold of its lock, so requests
+  barely notice (the slowest request during a save at full caps waited ~5–20 ms).
+- **How.** Each file is written to `<file>.tmp` next to it with mode 0600 (it may hold the
+  challenge key), fsynced and renamed over the file. A crash or `kill -9` during a save
+  leaves the previous file; a failed save removes its temporary file. A configured
+  `challenge.secret` is never written.
+- **Loading.** At startup, before the first request and before the first CrowdSec pull
+  (CrowdSec's full list then replaces the restored CrowdSec entries; if CrowdSec is down,
+  the restored ones keep protecting). Files are streamed, never copied into memory whole.
+  No file: that part starts empty. A file that can't be read, isn't a state file or comes
+  from an incompatible release: one warning line, the file is renamed to `<file>.bad`,
+  and that part starts empty. The gateway still starts. If the directory doesn't exist, or
+  a state file's name is taken by something that isn't a regular file (a directory), the
+  gateway refuses to start (`--check` says so too); nothing but a regular file is ever
+  renamed.
+- **What is restored.** Only the reputation sources the current config produces: the
+  gateway's own bans, CrowdSec if `[crowdsec]` is enabled, Suricata or Wazuh if a feed of
+  that kind is configured. Entries of an integration you switched off would keep blocking,
+  and `/bans/unban` can't lift them, so they are dropped (counted in the log line). A
+  gateway ban must name one host (an address, or the `/64` of merged IPv6 bans) and must
+  expire; reasons are cut at 512 bytes; malformed entries are dropped with a warning.
+- **Time.** An entry never gets more time than it had left at the save, minus the time
+  since (a clock that is now behind gives none back), and at most what its source can give:
+  `bans.max_ban_secs` (or `ban_secs` / `traps.ban_secs` if longer), the feed's
+  `block_secs`, a year for CrowdSec. Engine counters store absolute times, so they decay
+  by the time that really passed (minutes or weeks).
+- **Privacy.** Clients are stored as 64-bit hashes of their keys, and bans by address.
+  The hashes are not anonymous (an IPv4 address is quick to brute-force), so treat the
+  files like an access log.
+- **Size.** About 210 MB at the default caps with every table full (100 000 actors,
+  50 000 clients and subnets, 10 000 routes: 138 MB engine; 100 000 bans and 500 000
+  CrowdSec entries: 74 MB): a save takes 0.4–0.9 s, a load 1–2 s. A small site's files
+  are a few MB or less.
+- **Metrics.** `pattern_guard_state_saves_total{result="ok" | "error"}`,
+  `pattern_guard_state_save_seconds`, `pattern_guard_state_save_bytes`,
+  `pattern_guard_state_last_save_timestamp_seconds`. A failed save is also one line on
+  stderr.
+
+Give each instance its own `path`. With Docker, keep the directory on a volume
+([DEPLOYMENT.md](DEPLOYMENT.md#0-docker-quickest)); with systemd, `StateDirectory=` creates it
+([DEPLOYMENT.md](DEPLOYMENT.md#3-systemd)).
+
 ## Admin endpoints (`admin_listen`, keep private)
 
 | Path | |
 |---|---|
-| `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries (and entries evicted at a cap), CrowdSec status, decision time, dropped decision-log lines, config reloads (`result="ok"` / `"error"`) |
+| `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries (and entries evicted at a cap), CrowdSec status, decision time, dropped decision-log lines, config reloads (`result="ok"` / `"error"`), state saves (`[persistence]`) |
 | `/healthz` | `ok` |
 | `/inventory` | API discovery: every route template seen (`GET /api/items/{n}`), with volume, block count, status codes, first/last seen. At most 10 000 routes; templates longer than 512 bytes are cut (ending in `…`); requests refused by `[protocol]` are not recorded |
 | `/bans` | Active automatic and trap bans: IP (or `/64`, see below), reason, seconds left; soonest-expiring first |

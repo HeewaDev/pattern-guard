@@ -37,6 +37,13 @@ max_intel_entries_per_source = 500000  # per CrowdSec origin / Suricata / Wazuh
 shutdown_grace_secs = 7                # on SIGTERM: time for requests in progress to finish;
                                        #   keep the supervisor's stop timeout a few seconds above it
 
+# Keep what the gateway has learned across restarts: behavioural baselines, bans and
+# other reputation, and the generated clearance key (so solved challenges stay solved).
+# Written atomically with mode 0600; the engine part goes to <path>.engine. Unset = off.
+[persistence]
+# path = "/var/lib/pattern-guard/state.json"   # relative: next to this file; restart-only
+interval_secs = 300                    # also saved at a graceful shutdown; 0 = only then
+
 [waf]
 enabled = true
 block_score = 7.0                      # 0–10

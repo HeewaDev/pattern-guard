@@ -93,7 +93,34 @@ pub struct GatewayConfig {
     /// Country-based access control from an IP-to-country CSV.
     #[serde(default)]
     pub geo: GeoConfig,
+    /// Keep learned state (behaviour, reputation, a generated clearance key) across
+    /// restarts (see docs/GATEWAY.md#persistence).
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistenceConfig {
+    /// File the learned state is saved to and loaded from at startup. Relative to this
+    /// file. Unset = nothing is persisted.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Seconds between saves; the state is also saved at a graceful shutdown. 0 = only
+    /// then. Otherwise at least `MIN_PERSIST_INTERVAL_SECS`.
+    #[serde(default = "d_persist_interval")]
+    pub interval_secs: u64,
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        toml::from_str("").unwrap()
+    }
+}
+
+/// Smallest non-zero `persistence.interval_secs`: a save at the default caps takes
+/// about a second of CPU.
+pub const MIN_PERSIST_INTERVAL_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -804,6 +831,9 @@ fn d_max_intel_per_source() -> usize {
 fn d_shutdown_grace() -> u64 {
     7 // the decision-log flush comes after it: all within Docker's 10 s stop timeout
 }
+fn d_persist_interval() -> u64 {
+    300
+}
 fn d_block_score() -> f64 {
     7.0
 }
@@ -843,6 +873,11 @@ impl GatewayConfig {
         if let (Some(g), Some(dir)) = (&c.geo.database, path.parent()) {
             if g.is_relative() {
                 c.geo.database = Some(dir.join(g));
+            }
+        }
+        if let (Some(p), Some(dir)) = (&c.persistence.path, path.parent()) {
+            if p.is_relative() {
+                c.persistence.path = Some(dir.join(p));
             }
         }
         Ok(c)
@@ -900,6 +935,18 @@ impl GatewayConfig {
         if self.limits.shutdown_grace_secs > MAX_SHUTDOWN_GRACE_SECS {
             return Err(format!(
                 "limits.shutdown_grace_secs must be at most {MAX_SHUTDOWN_GRACE_SECS}"
+            ));
+        }
+        let p = &self.persistence;
+        if p.path
+            .as_ref()
+            .is_some_and(|f| f.file_name().is_none() || f.to_string_lossy().ends_with('/'))
+        {
+            return Err("persistence.path must name a file".into());
+        }
+        if p.interval_secs != 0 && p.interval_secs < MIN_PERSIST_INTERVAL_SECS {
+            return Err(format!(
+                "persistence.interval_secs must be 0 (save at shutdown only) or at least {MIN_PERSIST_INTERVAL_SECS}"
             ));
         }
         if self.challenge.difficulty > 28 {
@@ -984,5 +1031,35 @@ mod tests {
         assert_eq!(c.limits.shutdown_grace_secs, 7);
         assert!(!bad("shutdown_grace_secs = 0"));
         assert!(bad("shutdown_grace_secs = 3601"));
+    }
+
+    #[test]
+    fn persistence() {
+        let c = GatewayConfig::from_toml_str("upstream = \"http://x\"\n").unwrap();
+        assert_eq!(
+            (c.persistence.path, c.persistence.interval_secs),
+            (None, 300)
+        );
+        let cfg = |s: &str| {
+            GatewayConfig::from_toml_str(&format!("upstream = \"http://x\"\n[persistence]\n{s}\n"))
+        };
+        assert!(cfg("path = \"/var/lib/pattern-guard/state.json\"").is_ok());
+        assert!(cfg("path = \"state.json\"\ninterval_secs = 0").is_ok());
+        assert!(cfg("path = \"/var/lib/pattern-guard/\"").is_err());
+        assert!(cfg("path = \"/\"").is_err());
+        assert!(cfg("interval_secs = 5").is_err());
+        assert!(cfg("pth = \"x\"").is_err(), "unknown keys are refused");
+        // relative to the config file
+        let dir = std::env::temp_dir().join(format!("pg-cfg-persist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("gateway.toml");
+        std::fs::write(
+            &file,
+            "upstream = \"http://x\"\n[persistence]\npath = \"state.json\"\n",
+        )
+        .unwrap();
+        let c = GatewayConfig::load(&file).unwrap();
+        assert_eq!(c.persistence.path, Some(dir.join("state.json")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

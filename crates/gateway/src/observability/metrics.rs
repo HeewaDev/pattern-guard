@@ -34,6 +34,13 @@ pub struct Metrics {
     /// Requests refused with 429: the client already had `limits.max_requests_in_flight_per_ip`
     /// requests in progress.
     pub rejected_in_flight: AtomicU64,
+    /// Saves of the learned state (`[persistence]`) that succeeded / failed.
+    pub state_saves_ok: AtomicU64,
+    pub state_saves_failed: AtomicU64,
+    /// The last successful save: its duration (µs), file size and Unix time.
+    pub state_save_micros: AtomicU64,
+    pub state_save_bytes: AtomicU64,
+    pub state_saved_at: AtomicU64,
     pub crowdsec_ok: AtomicU64,
     /// Config reloads that were applied.
     pub reloads_ok: AtomicU64,
@@ -199,6 +206,30 @@ impl Metrics {
                 v.load(Relaxed)
             );
         }
+        c(
+            &mut s,
+            "pattern_guard_state_saves_total",
+            "Saves of the learned state to persistence.path, by result.",
+        );
+        for (result, v) in [
+            ("ok", &self.state_saves_ok),
+            ("error", &self.state_saves_failed),
+        ] {
+            let _ = writeln!(
+                s,
+                "pattern_guard_state_saves_total{{result=\"{result}\"}} {}",
+                v.load(Relaxed)
+            );
+        }
+        let _ = writeln!(
+            s,
+            "# HELP pattern_guard_state_save_seconds Duration of the last successful state save.\n# TYPE pattern_guard_state_save_seconds gauge\npattern_guard_state_save_seconds {}\n\
+             # HELP pattern_guard_state_save_bytes Size of the state file at the last successful save.\n# TYPE pattern_guard_state_save_bytes gauge\npattern_guard_state_save_bytes {}\n\
+             # HELP pattern_guard_state_last_save_timestamp_seconds Unix time of the last successful state save (0 = none yet).\n# TYPE pattern_guard_state_last_save_timestamp_seconds gauge\npattern_guard_state_last_save_timestamp_seconds {}",
+            self.state_save_micros.load(Relaxed) as f64 / 1e6,
+            self.state_save_bytes.load(Relaxed),
+            self.state_saved_at.load(Relaxed),
+        );
         let _ = writeln!(
             s,
             "# HELP pattern_guard_buffered_body_bytes Request-body bytes buffered right now.\n# TYPE pattern_guard_buffered_body_bytes gauge\npattern_guard_buffered_body_bytes {}",

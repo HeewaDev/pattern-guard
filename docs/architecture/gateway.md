@@ -12,7 +12,8 @@ learning layers.
 | `main.rs` | Arguments (`--config`, `--check`), loads the config, calls `run` |
 | `lib.rs` | `build_state` (compiles everything once), `start_background` (tasks), `run` / `run_until`; re-exports `serve` |
 | `server.rs` | `serve`: accept loop, per-IP connection cap (`Slot`), header-read timeout, one task per connection |
-| `shutdown.rs` | Graceful shutdown: SIGTERM / SIGINT, `Drain` and its `Token`s (stop accepting, finish requests in progress, close the rest at the grace deadline), decision-log flush |
+| `shutdown.rs` | Graceful shutdown: SIGTERM / SIGINT, `Drain` and its `Token`s (stop accepting, finish requests in progress, close the rest at the grace deadline), decision-log flush, last state save |
+| `persistence.rs` | `[persistence]`: load at startup; periodic and shutdown saves of the reputation store and a generated challenge key (`path`) and of the engine snapshot (`<path>.engine`), each atomic with mode 0600 |
 | `admin.rs` | Admin server: `/metrics`, `/healthz`, `/inventory`, `/bans`, `POST /bans/unban` |
 | `util.rs` | `now_secs`, `header_str`, `form_decode` (exact one-pass form decoding) |
 | `state.rs` | `State { compiled, learned, runtime }`: the config snapshot (`Compiled`, swapped as a whole), what is learned from traffic (`Learned`) and process plumbing (`Runtime`). See [Shared state](#shared-state-and-concurrency) |
@@ -53,6 +54,8 @@ main ─► GatewayConfig::load ─► validate
      └► run ─► bind listen + admin_listen ─► run_until(…, shutdown::signal())
             ├► build_state            Compiled::compile (rules / limits / operations, GeoDb, Challenger),
             │                         load guard.toml + model, build Inspector, HTTP client
+            ├► persistence::start     [persistence]: restore the state files (spawn_blocking),
+            │                         then save every interval_secs (spawn_blocking)
             ├► start_background
             │    ├─ crowdsec::run       every poll_secs: GET /v1/decisions/stream (startup=true first)
             │    ├─ feeds::run ×N       every 1 s: read new lines of each alert file (≤ 8 MiB per read)
@@ -66,8 +69,29 @@ main ─► GatewayConfig::load ─► validate
             │         every connection gets hyper's graceful_shutdown (idle keep-alive: closed
             │         at once; a request in progress: answered, then closed)
             ├► after limits.shutdown_grace_secs (default 7): connections still open are dropped
-            └► EventLog::flush        queued lines written (until the deadline, at least 1 s)
+            ├► EventLog::flush        queued lines written (until the deadline, at least 1 s)
+            └► Saver::finish          last state save, under the reload lock, after the
+                                      CrowdSec and feed tasks are stopped
 ```
+
+**State files** (`persistence.rs`). `path` is one JSON object: `format` (1),
+`saved_at`, `challenge_secret` (hex, only a generated key and only with challenges
+enabled) and `intel` (every live entry: `target`, `action`, `source`, `reason`,
+`expires` as Unix time). `<path>.engine` is the `pattern_guard::Snapshot` (see
+[engine.md](engine.md#snapshots)). They are separate files rather than one object, so
+that a bad engine part (a corrupt float, a struct whose shape changed) can't make the
+reputation fail to parse, and each is streamed with `serde_json::from_reader` (peak memory
+about the parsed engine state, not a copy of the file). A save copies the engine in
+chunks, exports the store `SWEEP_BATCH` entries per read lock (`IntelStore::export`),
+streams each JSON into `<file>.tmp` (0600), fsyncs, renames and fsyncs the directory;
+any failure removes the temporary file. On load an entry's time left is
+`(expires − saved_at) − max(0, now − saved_at)`, capped by its source
+(`source_limit`), and entries of sources the config doesn't produce are dropped. The load
+runs before `start_background`, so CrowdSec's startup pull (`clear_source("crowdsec")`)
+replaces what was restored. The challenge key is a `OnceLock` in `Challenger`, generated
+on first use unless the load supplied one first; `with_key_of` carries it into the next
+`Compiled` on a reload. The periodic saver re-reads `interval_secs` every second; the last
+save takes `reload_lock` and calls `IntelTasks::stop`.
 
 `serve` (used by the tests) is `serve_until` with a token that never fires. A connection
 task holds a `Token` (a `watch::Receiver`); the `Drain` waits for `Sender::closed()`, so
@@ -235,7 +259,8 @@ gateway                                         browser
 ```
 
 - The key comes from `challenge.secret` (≥ 32 hex characters), or is random per process. With a random
-  key, clearances don't survive a restart and aren't valid across instances.
+  key, clearances aren't valid across instances, and survive a restart only with
+  `[persistence]` (the generated key is saved; a configured one never is).
 - `safe_return` accepts only same-site relative paths (no `//`, `/\` or CR/LF). On the
   page, the path is a JSON string with `<`, `>` and `&` escaped.
 - **Form re-submission.** For a challenged browser form `POST`, the page holds the fields as
@@ -354,5 +379,7 @@ network.
 | Decision-log disk full or slow | Lines dropped; requests unaffected |
 | A lock poisoned by a panic | Recovered (`PoisonError::into_inner`); the request path keeps working |
 | Memory pressure from many clients | Every table is capped; the oldest entries are evicted first |
-| Restart | All learned state is lost: baselines, bans, rate buckets, clearances (with a random key). A reload (`SIGHUP`) keeps it |
+| Restart | Without `[persistence]`: all learned state is lost. With it: engine tables, reputation and a generated clearance key come back as of the last save (the shutdown save after a graceful stop); rate buckets, ban escalation, operation / login caches and the inventory start empty. A reload (`SIGHUP`) keeps everything |
 | Invalid config on reload | Refused as a whole; the running config stays; one stderr line, `pattern_guard_config_reloads_total{result="error"}` |
+| State file corrupt or from an incompatible release | One warning per file, kept as `<file>.bad`; only that file's part starts empty, the gateway starts |
+| State save fails (disk full, permissions) | One line on stderr, `pattern_guard_state_saves_total{result="error"}`; the previous file stays, no temporary file is left |

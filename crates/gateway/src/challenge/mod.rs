@@ -12,6 +12,7 @@
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::net::IpAddr;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
@@ -28,7 +29,11 @@ pub const VERIFY_PATH: &str = "/.pattern-guard/verify";
 const CHALLENGE_TTL: u64 = 300;
 
 pub struct Challenger {
-    secret: Vec<u8>,
+    /// The HMAC key: `challenge.secret`, else 32 random bytes made on first use, unless
+    /// persisted state supplied the previous run's key first (`restore_secret`).
+    secret: OnceLock<Vec<u8>>,
+    /// The key is `challenge.secret` (and is never persisted).
+    configured: bool,
     pub difficulty: u32,
     pub ttl_secs: u64,
 }
@@ -59,7 +64,7 @@ pub fn hex(b: &[u8]) -> String {
         })
 }
 
-fn unhex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
     }
@@ -91,25 +96,47 @@ pub struct Issued {
 
 impl Challenger {
     pub fn new(secret_hex: &str, difficulty: u32, ttl_secs: u64) -> Self {
-        let secret = unhex(secret_hex)
-            .filter(|s| s.len() >= 16)
-            .unwrap_or_else(|| random_bytes().to_vec());
+        let secret = OnceLock::new();
+        let configured = match unhex(secret_hex).filter(|s| s.len() >= 16) {
+            Some(key) => secret.set(key).is_ok(),
+            None => false,
+        };
         Self {
             secret,
+            configured,
             difficulty,
             ttl_secs,
         }
     }
 
     /// This challenger with `other`'s key, so the challenges and clearance cookies `other`
-    /// issued stay valid (a reload that keeps `challenge.secret`, including an empty one).
+    /// issued stay valid (a reload that keeps `challenge.secret`, including an empty one,
+    /// whose generated or restored key carries over).
     pub fn with_key_of(mut self, other: &Challenger) -> Self {
-        self.secret = other.secret.clone();
+        self.secret = OnceLock::from(other.key().to_vec());
+        self.configured = other.configured;
         self
     }
 
+    fn key(&self) -> &[u8] {
+        self.secret.get_or_init(|| random_bytes().to_vec())
+    }
+
+    /// The key when it was generated (no usable `challenge.secret`), for persistence; a
+    /// configured key is `None`, so it is never written anywhere.
+    pub fn generated_secret(&self) -> Option<&[u8]> {
+        (!self.configured).then(|| self.key())
+    }
+
+    /// Uses `key` (the previous run's generated key, from persisted state) instead of
+    /// generating one, so clearance cookies survive a restart. Refused (`false`) when
+    /// the key is configured, already in use, or shorter than 16 bytes.
+    pub fn restore_secret(&self, key: &[u8]) -> bool {
+        !self.configured && key.len() >= 16 && self.secret.set(key.to_vec()).is_ok()
+    }
+
     fn mac(&self, parts: &[&str]) -> HmacSha256 {
-        let mut m = HmacSha256::new_from_slice(&self.secret).expect("any key length");
+        let mut m = HmacSha256::new_from_slice(self.key()).expect("any key length");
         for (i, p) in parts.iter().enumerate() {
             if i > 0 {
                 m.update(b"|");
@@ -366,6 +393,32 @@ mod tests {
             );
         }
         h
+    }
+
+    #[test]
+    fn generated_keys_can_be_restored_configured_ones_never_leave() {
+        let ip: IpAddr = "192.0.2.60".parse().unwrap();
+        let first = Challenger::new("", 8, 3600);
+        let cookie = first.clearance_cookie(ip);
+        let key = first.generated_secret().unwrap().to_vec();
+        assert_eq!(key.len(), 32);
+        let header = cookie.split(';').next().unwrap().to_string(); // pg_clearance=<exp>.<tag>
+        // the next run: a fresh random key would reject the cookie, the restored one accepts it
+        let fresh = Challenger::new("", 8, 3600);
+        assert!(!fresh.has_clearance(ip, Some(&header)));
+        let next = Challenger::new("", 8, 3600);
+        assert!(next.restore_secret(&key));
+        assert!(next.has_clearance(ip, Some(&header)));
+        assert!(!next.restore_secret(&key), "only before the key is in use");
+        assert!(
+            !Challenger::new("", 8, 3600).restore_secret(&key[..8]),
+            "too short"
+        );
+
+        let configured = Challenger::new(&"ab".repeat(32), 8, 3600);
+        assert!(configured.generated_secret().is_none());
+        assert!(!configured.restore_secret(&key));
+        assert!(!configured.has_clearance(ip, Some(&header)));
     }
 
     #[test]

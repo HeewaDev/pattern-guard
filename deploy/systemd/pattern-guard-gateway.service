@@ -17,9 +17,13 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=1
 # On SIGTERM the gateway stops accepting, lets requests in progress finish for up to
-# limits.shutdown_grace_secs (default 7) and writes the queued decision-log lines.
-# Keep this a few seconds above shutdown_grace_secs.
+# limits.shutdown_grace_secs (default 7), then writes the queued decision-log lines and
+# saves its learned state. Keep this a few seconds above shutdown_grace_secs.
 TimeoutStopSec=20
+# /var/lib/pattern-guard, owned by the service user and writable despite
+# ProtectSystem=strict: set [persistence] path = "/var/lib/pattern-guard/state.json".
+StateDirectory=pattern-guard
+StateDirectoryMode=0700
 # CROWDSEC_BOUNCER_KEY=... and other secrets
 EnvironmentFile=-/etc/pattern-guard/env
 LimitNOFILE=65536

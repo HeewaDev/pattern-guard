@@ -455,6 +455,46 @@ impl IntelStore {
         out
     }
 
+    /// Every live entry of every source, as (ip or cidr, entry), for persistence. Read
+    /// `SWEEP_BATCH` entries per hold of the read lock, so a large store never keeps a
+    /// writer (and, behind it, the request path) waiting for the whole copy. Entries
+    /// added or removed meanwhile may or may not be included.
+    pub fn export(&self) -> Vec<(String, IntelEntry)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let now = Instant::now();
+        let read = || self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let sources: Vec<String> = read().sources.keys().cloned().collect();
+        let mut out = Vec::with_capacity(self.len());
+        for source in sources {
+            let mut after: Option<(Deadline, u64)> = None;
+            loop {
+                let g = read();
+                let Some(ix) = g.sources.get(&source) else {
+                    break;
+                };
+                let batch = match after {
+                    None => ix.range(..),
+                    Some(a) => ix.range((Excluded(a), Unbounded)),
+                };
+                let mut seen = 0;
+                for (&index_key @ (deadline, _), &key) in batch.take(SWEEP_BATCH) {
+                    seen += 1;
+                    after = Some(index_key);
+                    if matches!(deadline, Deadline::At(t) if t <= now) {
+                        continue;
+                    }
+                    if let Some(s) = g.entries_at(key).find(|s| s.entry.source == source) {
+                        out.push((key_string(key), s.entry.clone()));
+                    }
+                }
+                if seen < SWEEP_BATCH {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     /// Drops expired entries (call periodically). Works in batches of `SWEEP_BATCH`,
     /// releasing the write lock in between, and only visits expired entries.
     pub fn sweep(&self) {
@@ -656,5 +696,39 @@ mod tests {
         assert_eq!(s.list("gateway").len(), 5_000);
         assert!(s.lookup(ip("10.0.0.1")).is_some());
         assert!(s.lookup(ip("10.0.0.2")).is_none());
+    }
+
+    #[test]
+    fn export_covers_every_source_across_batches() {
+        let s = IntelStore::default();
+        // more than one batch for one source, a few for others, ranges and /64s
+        for i in 0..(SWEEP_BATCH as u32 * 2 + 10) {
+            s.add(
+                Cidr::parse(&std::net::Ipv4Addr::from(0x0a00_0000 + i).to_string()).unwrap(),
+                entry(IntelAction::Ban, "gateway:ban", Some(600 + i as u64)),
+            );
+        }
+        s.add(
+            Cidr::parse("198.51.100.0/24").unwrap(),
+            entry(IntelAction::Challenge, "crowdsec:CAPI", None),
+        );
+        s.add(
+            Cidr::parse("2001:db8:1:2::/64").unwrap(),
+            entry(IntelAction::Ban, "suricata", Some(60)),
+        );
+        s.add(
+            Cidr::parse("192.0.2.1").unwrap(),
+            entry(IntelAction::Ban, "wazuh", Some(0)), // already expired
+        );
+        let all = s.export();
+        assert_eq!(all.len(), SWEEP_BATCH * 2 + 10 + 2);
+        let targets: std::collections::HashSet<&str> =
+            all.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(targets.len(), all.len(), "no entry twice");
+        assert!(targets.contains("198.51.100.0/24") && targets.contains("2001:db8:1:2::/64"));
+        assert!(
+            !targets.contains("192.0.2.1"),
+            "expired entries are left out"
+        );
     }
 }

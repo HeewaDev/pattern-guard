@@ -7,15 +7,19 @@
 //!    response is the connection's last;
 //! 3. closes the connections still open once `limits.shutdown_grace_secs` have passed;
 //! 4. flushes the decision log (until the end of the grace period, at least
-//!    [`FLUSH_MIN`]) and returns.
+//!    [`FLUSH_MIN`]);
+//! 5. saves the learned state (`[persistence]`; not bounded: the save replaces the file
+//!    atomically, so being killed half-way leaves the previous one) and returns.
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio::time::Instant;
 
+use crate::persistence::Saver;
 use crate::state::State;
 
 /// The decision log always gets this long to be written at exit, even when the
@@ -150,8 +154,8 @@ async fn ctrl_c() {
     }
 }
 
-/// Steps 1–4 of the module docs, once the signal has arrived.
-pub(crate) async fn finish(state: &State, drain: &Drain) {
+/// Steps 1–5 of the module docs, once the signal has arrived.
+pub(crate) async fn finish(state: &Arc<State>, drain: &Drain, saver: Option<Saver>) {
     let grace = state.compiled().cfg.limits.shutdown_grace_secs; // as reloaded
     let deadline = Instant::now() + Duration::from_secs(grace);
     eprintln!("pattern-guard-gateway: shutting down; requests in progress have {grace}s to finish");
@@ -166,5 +170,8 @@ pub(crate) async fn finish(state: &State, drain: &Drain) {
                 "pattern-guard-gateway: the disk is too slow; decision-log lines still queued are lost"
             );
         }
+    }
+    if let Some(saver) = saver {
+        saver.finish(state).await;
     }
 }

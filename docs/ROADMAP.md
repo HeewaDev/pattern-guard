@@ -116,7 +116,7 @@ open-appsec's engine (Apache-2.0) and OWASP CRS. The full list, with source path
 ### M3 — Production hardening · L
 **Goal:** safe to run as the front door of a busy site.
 - [ ] Shard the behavioural engine by actor hash; lock-free reputation reads.
-- [x] Hot reload of config and model on SIGHUP. [ ] Persist baselines, reputation and clearances (snapshot + load).
+- [x] Hot reload of config and model on SIGHUP. [x] Persist baselines, reputation and clearances (snapshot + load, `[persistence]`).
 - [ ] WebSocket passthrough; HTTP/2 to upstream; stream bodies beyond the inspection window.
 - [x] Graceful shutdown and connection draining (`limits.shutdown_grace_secs`). [ ] Configurable fail-open/fail-closed.
 - [x] Dockerfile (Debian slim, non-root), docker-compose demo, hardened systemd unit in `deploy/`. [ ] CrowdSec in the compose demo, Helm chart.

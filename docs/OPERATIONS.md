@@ -66,6 +66,9 @@ groups:
     expr: rate(pattern_guard_challenges_failed_total[10m]) > rate(pattern_guard_challenges_passed_total[10m])
     for: 15m
     annotations: {summary: "More failed than passed challenges — bots attacking the challenge, or a broken client"}
+  - alert: PatternGuardStateNotSaved          # only with [persistence] path set
+    expr: increase(pattern_guard_state_saves_total{result="error"}[30m]) > 0
+    annotations: {summary: "Learned state can't be saved (disk full, permissions): a restart would lose it"}
 ```
 
 Useful dashboard panels:

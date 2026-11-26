@@ -25,6 +25,7 @@ docker run -d --name pattern-guard -p 8080:8080 -p 127.0.0.1:9901:9901 \
   --stop-timeout 15 \
   -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" \
   -v pattern-guard-logs:/var/log/pattern-guard \
+  -v pattern-guard-state:/var/lib/pattern-guard \
   pattern-guard
 docker run --rm -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" pattern-guard \
   --config /etc/pattern-guard/gateway.toml --check
@@ -41,7 +42,10 @@ docker run --rm -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" patter
   `/etc/pattern-guard/`.
 - Its default config is [deploy/docker/gateway.toml](../deploy/docker/gateway.toml):
   detect mode, upstream `http://app:80`, decision log in the
-  `/var/log/pattern-guard` volume. Mount your own over it.
+  `/var/log/pattern-guard` volume, learned state (`[persistence]`) in
+  `/var/lib/pattern-guard/state.json`. Mount your own config over it, and keep
+  `/var/lib/pattern-guard` on a named volume: otherwise every new container starts with
+  nothing learned (see [GATEWAY.md](GATEWAY.md#persistence)).
 - Publish the admin port (9901) on a private address only.
 - [deploy/docker/compose.yml](../deploy/docker/compose.yml) runs the gateway in front of a
   demo app: `docker compose -f deploy/docker/compose.yml up --build`, then replace `app`
@@ -136,6 +140,8 @@ ExecStart=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gatew
 Restart=always
 RestartSec=1
 TimeoutStopSec=20                             # > limits.shutdown_grace_secs (default 7)
+StateDirectory=pattern-guard                  # /var/lib/pattern-guard for [persistence]
+StateDirectoryMode=0700
 # EnvironmentFile=/etc/pattern-guard/env      # CROWDSEC_BOUNCER_KEY=...
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -158,7 +164,17 @@ journalctl -u pattern-guard-gateway -f
 `systemctl stop` and `systemctl restart` send SIGTERM: the gateway drains (see
 [GATEWAY.md](GATEWAY.md#graceful-shutdown)) and exits within `limits.shutdown_grace_secs`
 plus about a second. `TimeoutStopSec` must stay above that, or systemd kills it before
-the decision log is written.
+the decision log is written and the learned state is saved.
+
+To keep learned state across restarts, set in `gateway.toml`:
+
+```toml
+[persistence]
+path = "/var/lib/pattern-guard/state.json"
+```
+
+`StateDirectory=pattern-guard` makes systemd create `/var/lib/pattern-guard` (mode 0700,
+owned by the service user) and keep it writable under `ProtectSystem=strict`.
 
 To read Suricata or Wazuh alert files, add the service user to the group that owns them
 (e.g. `sudo usermod -aG wazuh pattern-guard`) and add their directories to
@@ -209,6 +225,8 @@ block_secs = 3600
 - Behavioural state is per instance. Use client-IP affinity (sticky by source IP) on the
   load balancer, so each client's behaviour is seen by one instance.
 - Each instance pulls CrowdSec decisions itself.
+- Give each instance its own `persistence.path`. Instances don't share or merge state
+  files.
 
 ## 6. Sizing
 
@@ -218,6 +236,10 @@ block_secs = 3600
 - Memory is bounded by the LRU caps (`max_actors`, `adaptive.max_routes`,
   `max_fingerprints`, `max_subnets`), plus request buffers up to `max_body_bytes` per
   in-flight request.
+- The `[persistence]` files grow with the same caps: about 210 MB together when every
+  table is full (100 000 actors, 100 000 bans, 500 000 CrowdSec entries). A save takes
+  up to about 1 s of one core, the load at startup 1–2 s. Expect a few MB for a small
+  site.
 
 ## 7. Upgrading
 
@@ -226,5 +248,9 @@ block_secs = 3600
   and a reload doesn't switch to a model trained for another version's features. Most
   config changes reload the same way; the few that need a restart are listed in
   [GATEWAY.md](GATEWAY.md#reloading-the-config).
+- The `[persistence]` state files carry format versions. A release that can't read the
+  previous ones says so in one warning line at startup, keeps the unusable file as
+  `<file>.bad` and starts with nothing learned for that part only: an engine with a new
+  feature layout still gets the bans and the clearance key back.
 - Read [CHANGELOG.md](../CHANGELOG.md) for breaking config changes.
 - Run `--check` before restarting or reloading.
