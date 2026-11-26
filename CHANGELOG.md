@@ -271,6 +271,10 @@ Gateway issues found in the same review:
 
 ### Fixed
 
+- **WAF**: every `Inspector::new()` leaked the five indicator patterns it builds from the
+  shared command and MongoDB-operator lists (~1.3 KB, `Box::leak`). They are owned now.
+  LeakSanitizer reported it on the first input of every WAF fuzz target. Detection is
+  unchanged (`waf_eval` and `crs_eval` output identical).
 - **Gateway**: a request to `/.pattern-guard/verify` whose `r=` value had a non-ASCII byte
   right after `%` made the connection's task panic (the decoder sliced a string inside a
   UTF-8 character). The gateway's two percent-decoders are now one byte-based

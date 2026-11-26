@@ -1,5 +1,7 @@
 //! Weighted attack indicators, grouped by attack class.
 
+use std::borrow::Cow;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AttackClass {
     SqlInjection,
@@ -51,7 +53,9 @@ pub(crate) struct Indicator {
     pub(crate) class: AttackClass,
     pub(crate) name: &'static str,
     pub(crate) weight: f64,
-    pub(crate) pattern: &'static str,
+    /// A literal, or built from the shared command / operator lists (owned, so building
+    /// an `Inspector` allocates nothing it doesn't free).
+    pub(crate) pattern: Cow<'static, str>,
 }
 
 const CMDS: &str = r"(cat|ls|id|whoami|uname|wget|curl|nc|ncat|netcat|bash|sh|zsh|ksh|powershell|pwsh|cmd|ping|nslookup|dig|python[23]?|perl|ruby|php|rm|chmod|chown|echo|printenv|env|ifconfig|ipconfig|systeminfo|tasklist|base64|telnet|ssh|scp)";
@@ -63,19 +67,20 @@ pub(crate) fn indicators() -> Vec<Indicator> {
         class,
         name,
         weight,
-        pattern,
+        pattern: Cow::Borrowed(pattern),
     };
-    let cmd_chain: &'static str = Box::leak(
-        format!(r"([;&|\n]|\$\()\s*{CMDS}(\s*$|\s*[;&|`)]|\s+[-/]|\s+(https?|ftp)://|\s+\$)")
-            .into_boxed_str(),
-    );
-    let backtick_args: &'static str = Box::leak(format!(r"`\s*{CMDS}\s+[^`]+`").into_boxed_str());
-    let backtick_bare: &'static str = Box::leak(format!(r"`\s*{CMDS}\s*`").into_boxed_str());
-    let abs_cmd: &'static str =
-        Box::leak(format!(r"(^|[;&|(\s])/(usr/)?s?bin/{CMDS}\b").into_boxed_str());
-    let mongo_bracket: &'static str = Box::leak(
-        format!(r#"\[\s*\${MONGO_OPS}\s*\]|"\${MONGO_OPS}"\s*:|^\${MONGO_OPS}$"#).into_boxed_str(),
-    );
+    let built = |class, name, weight, pattern: String| Indicator {
+        class,
+        name,
+        weight,
+        pattern: Cow::Owned(pattern),
+    };
+    let cmd_chain =
+        format!(r"([;&|\n]|\$\()\s*{CMDS}(\s*$|\s*[;&|`)]|\s+[-/]|\s+(https?|ftp)://|\s+\$)");
+    let backtick_args = format!(r"`\s*{CMDS}\s+[^`]+`");
+    let backtick_bare = format!(r"`\s*{CMDS}\s*`");
+    let abs_cmd = format!(r"(^|[;&|(\s])/(usr/)?s?bin/{CMDS}\b");
+    let mongo_bracket = format!(r#"\[\s*\${MONGO_OPS}\s*\]|"\${MONGO_OPS}"\s*:|^\${MONGO_OPS}$"#);
     vec![
         // SQL shapes that are attacks as a whole value (fragments appended to a query)
         // or attack-only on their own. Values are decoded and lower-cased.
@@ -436,22 +441,22 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             r"/etc/(passwd|shadow|group|hosts|issue)\b|/proc/(self|\d+)/|\bc:\\\\?windows\\|\bboot\.ini\b|\bwin\.ini\b|/\.ssh/|\bweb-inf/web\.xml|/\.env\b|/\.git/|/\.aws/",
         ),
         // ---- command injection ----
-        i(CommandInjection, "shell_chain", 7.0, cmd_chain),
+        built(CommandInjection, "shell_chain", 7.0, cmd_chain),
         i(
             CommandInjection,
             "command_substitution",
             4.0,
             r"\$\(\s*[a-z]+[^)]*\)",
         ),
-        i(
+        built(
             CommandInjection,
             "backtick_command_args",
             7.0,
             backtick_args,
         ),
         // `ls` is also how people write code in Markdown: log, don't block, on its own.
-        i(CommandInjection, "backtick_command", 4.0, backtick_bare),
-        i(CommandInjection, "absolute_path_command", 7.0, abs_cmd),
+        built(CommandInjection, "backtick_command", 4.0, backtick_bare),
+        built(CommandInjection, "absolute_path_command", 7.0, abs_cmd),
         i(
             CommandInjection,
             "ssi_directive",
@@ -719,7 +724,7 @@ pub(crate) fn indicators() -> Vec<Indicator> {
             r"\.cookie\b.*?;\W*?(expires|domain)\W*?=|\bhttp-equiv\W+set-cookie\b",
         ),
         // ---- NoSQL injection ----
-        i(NoSqlInjection, "mongo_operator", 7.0, mongo_bracket),
+        built(NoSqlInjection, "mongo_operator", 7.0, mongo_bracket),
         i(NoSqlInjection, "mongo_where", 8.0, r#"\$where\b"#),
     ]
 }
