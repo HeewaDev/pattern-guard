@@ -115,7 +115,7 @@ pub struct GuardConfig {
 }
 
 /// Tuning for the adaptive engine. Defaults are sensible for HTTP traffic.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AdaptiveConfig {
     /// Seconds a route must be observed before its learned baseline is trusted.
     #[serde(default = "default_warmup_secs")]

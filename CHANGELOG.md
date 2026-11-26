@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Engine API** (`pattern-guard`): `Guard::config()` and `Guard::model()` return
+  `Arc<Config>` / `Arc<Model>` instead of references, because a reload can replace them
+  while the guard is in use. Field access (`guard.model().description`) is unchanged;
+  code that kept the reference must keep the `Arc`.
+- **Gateway library API**: `run(cfg, config_path)` takes the path the config was loaded
+  from (`None`: no reload on `SIGHUP`).
 - **Gateway library API: state split** (`pattern_guard_gateway::state`). `State` is now
   `{ compiled, learned, runtime }`: `State::compiled()` returns the config snapshot
   (`Compiled`: the `GatewayConfig`, rules, limit and operation definitions, lists, the
@@ -33,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hot reload of the gateway config** on `SIGHUP` (`systemctl reload`, the systemd unit
+  now sets `ExecReload`), or with `pattern_guard_gateway::reload` / `reload_from_path`.
+  The whole config, the engine config and its model are validated and compiled before
+  anything changes; an invalid one is refused with one line naming the section, and the
+  running config stays. Requests in flight finish with the config they started with,
+  connections stay open, and learned state is kept: baselines, reputation, bans, the
+  inventory, clearances (while `challenge.secret` is unchanged), and the buckets, budgets
+  and counters of rate limits, operations and logins that are still configured (by name).
+  CrowdSec and feed tasks restart only when their config changed. Keys that need a restart
+  (`listen`, `admin_listen`, `log.decisions`, `limits.decision_log_queue_bytes`,
+  `limits.max_bans`, `limits.max_intel_entries_per_source`, `guard.time_source`,
+  `guard.max_actors`, `[guard.adaptive]`) keep their running values with a warning. New
+  metric `pattern_guard_config_reloads_total{result="ok|error"}`.
+- **Engine**: `Guard::reload(Config)` replaces the config and model of a running guard and
+  keeps what it learned. `Model::check_layout` tells whether a model names exactly this
+  version's features; a reload refuses a model that doesn't.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values

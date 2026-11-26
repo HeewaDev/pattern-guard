@@ -50,7 +50,7 @@ async fn main() {
         }
         return;
     }
-    if let Err(e) = pattern_guard_gateway::run(cfg).await {
+    if let Err(e) = pattern_guard_gateway::run(cfg, Some(path.into())).await {
         eprintln!("pattern-guard-gateway: {e}");
         std::process::exit(1);
     }

@@ -4,6 +4,8 @@
 //! Per request: access lists → reputation (CrowdSec, Suricata, Wazuh) → WAF payload
 //! inspection → behavioural ML → one decision → block / proof-of-work challenge / delay /
 //! forward. `mode = "detect"` logs the same decisions without enforcing them.
+//!
+//! The config can be reloaded while running ([`reload`], or `SIGHUP` with [`run`]).
 
 mod admin;
 pub mod challenge;
@@ -15,13 +17,18 @@ pub mod ipnet;
 pub mod observability;
 pub mod policy;
 pub mod proxy;
+mod reload;
 mod server;
 pub mod state;
 pub mod util;
 
+#[cfg(unix)]
+pub use reload::watch_sighup;
+pub use reload::{RESTART_ONLY, Reloaded, reload, reload_from_path};
 pub use server::serve;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,22 +57,11 @@ pub fn build_state(cfg: GatewayConfig) -> Result<Arc<State>, String> {
 /// Starts background tasks (CrowdSec, feeds, sweeper) and the admin server.
 pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Result<(), String> {
     let c = state.compiled();
-    if c.cfg.crowdsec.enabled {
-        let key = intel::crowdsec::api_key(&c.cfg.crowdsec)?;
-        tokio::spawn(intel::crowdsec::run(
-            c.cfg.crowdsec.clone(),
-            key,
-            state.learned.intel.clone(),
-            state.runtime.metrics.clone(),
-        ));
-    }
-    for f in &c.cfg.feeds {
-        tokio::spawn(intel::feeds::run(
-            f.clone(),
-            state.learned.intel.clone(),
-            state.runtime.metrics.clone(),
-        ));
-    }
+    let key = intel::tasks::crowdsec_key(&c.cfg)?;
+    state
+        .runtime
+        .intel_tasks
+        .start(&c.cfg, key, &state.learned.intel, &state.runtime.metrics);
     let intel = state.learned.intel.clone();
     tokio::spawn(async move {
         loop {
@@ -79,8 +75,9 @@ pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Resul
     Ok(())
 }
 
-/// Binds listeners from the config and runs until Ctrl-C.
-pub async fn run(cfg: GatewayConfig) -> Result<(), String> {
+/// Binds listeners from the config and runs until Ctrl-C. With `config_path` (the file
+/// `cfg` was loaded from), a `SIGHUP` reloads the config from it (Unix).
+pub async fn run(cfg: GatewayConfig, config_path: Option<PathBuf>) -> Result<(), String> {
     let listener = TcpListener::bind(cfg.listen)
         .await
         .map_err(|e| format!("cannot listen on {}: {e}", cfg.listen))?;
@@ -95,6 +92,12 @@ pub async fn run(cfg: GatewayConfig) -> Result<(), String> {
     let listen: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
     let state = build_state(cfg)?;
     start_background(&state, admin)?;
+    #[cfg(unix)]
+    if let Some(path) = config_path {
+        watch_sighup(state.clone(), path)?;
+    }
+    #[cfg(not(unix))]
+    let _ = config_path;
     let c = state.compiled();
     eprintln!(
         "pattern-guard-gateway: listening on {listen} → {} (mode: {:?}, model: {})",

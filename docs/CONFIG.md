@@ -27,6 +27,12 @@ Invalid values (unknown enum, bands out of order, zero thresholds) are rejected 
 | `model` | path | built-in | Trained model TOML (from `pattern-guard train`). Relative to the config file. |
 | `max_actors` | integer ≥ 1 | `100000` | Distinct actors kept in memory (LRU). |
 
+`Guard::reload` (the gateway calls it on `SIGHUP`) applies a new config and model and keeps
+what was learned. `time_source`, `max_actors` and `[guard.adaptive]` shape the learned state:
+a reload keeps their running values and reports them. A reloaded model must name exactly
+this version's features (`Model::check_layout`); at startup, a model with missing features
+(weight 0) or unknown ones (ignored) is still accepted.
+
 ## Decisions
 
 | Key | Type | Default | Description |

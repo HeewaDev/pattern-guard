@@ -421,11 +421,81 @@ They happen before inspection, so they are not in the decision log.
 Volumetric L3/L4 floods must be absorbed upstream (ISP / CDN / cloud scrubbing). No
 software on your server can absorb more traffic than its uplink carries.
 
+## Reloading the config
+
+Send `SIGHUP` to reload the config file without a restart: `systemctl reload
+pattern-guard-gateway` (the unit in `deploy/systemd/` sets `ExecReload`) or
+`kill -HUP <pid>` (in Docker: `docker kill --signal HUP <container>`). The gateway reads
+the same `--config` file again, and the `guard_config` file and model it points to.
+Validate a file first with `--check`.
+
+A reload validates and compiles **everything** before it changes anything: every section,
+every regex and CIDR, the geo database, the CrowdSec key, the engine config and its
+model. If any of it fails, the running config stays as it was, and one line names the
+problem:
+
+```
+pattern-guard-gateway: reload refused, the running config is kept: rate limit "api": key must be ip, ip_route or header:<name>
+```
+
+`pattern_guard_config_reloads_total{result="ok|error"}` counts reloads. Library users call
+`pattern_guard_gateway::reload(&state, cfg)` or `reload_from_path(&state, path)` directly.
+
+Nothing is interrupted. Connections stay open, and the listener keeps accepting. A request
+takes the config once when it arrives, so a request in flight during a reload finishes
+with the config it started with, and the next request (also on the same keep-alive
+connection) uses the new one. Connection settings (`max_connections_per_ip`,
+`header_read_timeout_secs`) apply to connections accepted after the reload.
+
+**What is kept.** Everything the gateway learned: behavioural baselines and actor history,
+reputation (bans, CrowdSec and feed entries), ban escalation counts, the API inventory, and
+clearance cookies. The challenge key is kept as long as `challenge.secret` is unchanged
+(including an empty secret, whose random key lives as long as the process). A new secret
+is a new key, so clearances issued before it end.
+
+**Rate limits, operations and logins** keep their learned state by `name`. A limit,
+operation or login that is still configured keeps its buckets, budgets, unique values and
+failure counts, even if its other settings changed (a lower `requests` takes effect on the
+next request; tokens above the new capacity are cut). One that is removed or renamed has
+its entries dropped. Re-adding it later starts it fresh. (A request in flight during the
+reload can still write an entry for a removed definition; that entry is never read and ages
+out of its capped table.)
+
+**CrowdSec and feeds** are restarted when their config changed and left running when it
+didn't. A restarted bouncer fetches the full decision list again, and the old decisions stay
+in place until it arrives. Turning CrowdSec off removes its decisions. A new or changed feed
+starts at the end of its file, as at startup. A removed feed's entries expire on their own
+(`block_secs`).
+
+**The behavioural engine** (`guard_config`) reloads its thresholds, rules, per-actor overrides,
+mode and model, and keeps its baselines. The new model must have been trained for exactly
+this version's features (`pattern-guard train` writes all of them). A model that lacks some or
+names unknown ones is refused, and the running model stays. At startup such a model is still
+accepted, so an older model keeps working after an upgrade.
+
+**Keys that need a restart.** These own something built once at startup. A reload keeps
+their running values and warns, naming each key:
+
+| Key | Why |
+|---|---|
+| `listen`, `admin_listen` | the sockets are bound once |
+| `log.decisions`, `limits.decision_log_queue_bytes` | the decision-log writer owns its file and its queue |
+| `limits.max_bans`, `limits.max_intel_entries_per_source` | they size the reputation store |
+| `guard.time_source` | the engine's clock |
+| `guard.max_actors`, `[guard.adaptive]` | they size and shape the learned baselines |
+
+```
+pattern-guard-gateway: reload: listen, guard.max_actors can only change with a restart; the running values are kept
+```
+
+Every other key applies on reload. The WAF signatures are part of the binary; a new version
+needs a restart.
+
 ## Admin endpoints (`admin_listen`, keep private)
 
 | Path | |
 |---|---|
-| `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries (and entries evicted at a cap), CrowdSec status, decision time, dropped decision-log lines |
+| `/metrics` | Prometheus: requests by action, blocks by layer, WAF findings by class, challenges passed/failed, feed alerts, reputation entries (and entries evicted at a cap), CrowdSec status, decision time, dropped decision-log lines, config reloads (`result="ok"` / `"error"`) |
 | `/healthz` | `ok` |
 | `/inventory` | API discovery: every route template seen (`GET /api/items/{n}`), with volume, block count, status codes, first/last seen. At most 10 000 routes; templates longer than 512 bytes are cut (ending in `…`); requests refused by `[protocol]` are not recorded |
 | `/bans` | Active automatic and trap bans: IP (or `/64`, see below), reason, seconds left; soonest-expiring first |

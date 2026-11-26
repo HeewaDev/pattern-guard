@@ -1163,3 +1163,92 @@ action = "challenge"
     .await;
     assert!(api.body.contains("challenge_required"));
 }
+
+/// Reads one response from a raw connection; returns the status.
+async fn raw_status(s: &mut tokio::net::TcpStream) -> u16 {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let head_end = loop {
+        let n = s.read(&mut tmp).await.unwrap();
+        assert!(n > 0, "connection closed before a response");
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+    let len: usize = head
+        .lines()
+        .find_map(|l| l.strip_prefix("content-length:"))
+        .map_or(0, |v| v.trim().parse().unwrap());
+    while buf.len() < head_end + len {
+        let n = s.read(&mut tmp).await.unwrap();
+        assert!(n > 0);
+        buf.extend_from_slice(&tmp[..n]);
+    }
+    head[9..12].parse().unwrap()
+}
+
+#[tokio::test]
+async fn config_reload_applies_to_the_next_request_and_spares_those_in_flight() {
+    use tokio::io::AsyncWriteExt;
+    let gw = start_gateway("").await;
+    assert_eq!(
+        send(gw.addr, "GET", "/reports/1", &[], "").await.status,
+        StatusCode::OK
+    );
+    // a request in flight: its head and half of its body have arrived
+    let mut s = tokio::net::TcpStream::connect(gw.addr).await.unwrap();
+    s.write_all(b"POST /reports/upload HTTP/1.1\r\nhost: x\r\ncontent-length: 8\r\n\r\nhalf")
+        .await
+        .unwrap();
+    let m = gw.state.runtime.metrics.clone();
+    for _ in 0..200 {
+        if m.buffered_body_bytes.load(Ordering::SeqCst) == 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(m.buffered_body_bytes.load(Ordering::SeqCst), 4);
+
+    // reload with a rule that blocks it
+    let rules = GatewayConfig::from_toml_str(
+        "upstream = \"http://127.0.0.1:1\"\n[[rules]]\nname = \"no reports\"\npath = \"/reports\"\naction = \"block\"\n",
+    )
+    .unwrap()
+    .rules;
+    let mut cfg = gw.state.compiled().cfg.clone();
+    cfg.rules = rules;
+    let done = pattern_guard_gateway::reload(&gw.state, cfg).unwrap();
+    assert!(done.kept.is_empty(), "{:?}", done.kept);
+
+    // the next request sees it …
+    let r = send(gw.addr, "GET", "/reports/2", &[], "").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // … the one in flight finishes with the config it started with …
+    s.write_all(b"rest").await.unwrap();
+    assert_eq!(raw_status(&mut s).await, 200);
+    // … and its connection stays open; its next request gets the new config
+    s.write_all(b"GET /reports/3 HTTP/1.1\r\nhost: x\r\n\r\n")
+        .await
+        .unwrap();
+    assert_eq!(raw_status(&mut s).await, 403);
+
+    // an invalid config is refused and the running one stays
+    let mut bad = gw.state.compiled().cfg.clone();
+    bad.rate_limits = GatewayConfig::from_toml_str(
+        "upstream = \"http://127.0.0.1:1\"\n[[rate_limits]]\nname = \"x\"\nkey = \"nope\"\nrequests = 1\nper_secs = 1\n",
+    )
+    .unwrap()
+    .rate_limits;
+    let e = pattern_guard_gateway::reload(&gw.state, bad).unwrap_err();
+    assert!(e.contains("rate limit \"x\""), "{e}");
+    assert_eq!(
+        send(gw.addr, "GET", "/reports/4", &[], "").await.status,
+        StatusCode::FORBIDDEN
+    );
+    let metrics = send(gw.admin, "GET", "/metrics", &[], "").await.body;
+    assert!(metrics.contains("pattern_guard_config_reloads_total{result=\"ok\"} 1"));
+    assert!(metrics.contains("pattern_guard_config_reloads_total{result=\"error\"} 1"));
+}

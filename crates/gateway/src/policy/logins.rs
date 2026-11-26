@@ -49,6 +49,14 @@ pub(super) struct LoginCaches {
     ip_accounts: Mutex<IpAccounts>,
 }
 
+impl LoginCaches {
+    /// Drops the counters of the logins in `gone`; returns how many entries.
+    pub(super) fn forget(&self, gone: &std::collections::HashSet<u64>) -> usize {
+        super::forget(&self.failures, gone, |(id, _)| *id)
+            + super::forget(&self.ip_accounts, gone, |(id, _)| *id)
+    }
+}
+
 impl Default for LoginCaches {
     fn default() -> Self {
         Self {

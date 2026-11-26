@@ -16,6 +16,7 @@ learning layers.
 | `util.rs` | `now_secs`, `header_str`, `form_decode` (exact one-pass form decoding) |
 | `state.rs` | `State { compiled, learned, runtime }`: the config snapshot (`Compiled`, swapped as a whole), what is learned from traffic (`Learned`) and process plumbing (`Runtime`). See [Shared state](#shared-state-and-concurrency) |
 | `config.rs` | `GatewayConfig` and every section (serde, `deny_unknown_fields`), defaults, `validate()` |
+| `reload.rs` | Hot reload: `reload`, `reload_from_path`, `watch_sighup` (Unix), `RESTART_ONLY` |
 | `proxy/mod.rs` | `handle`: the request pipeline and enforcement |
 | `proxy/verdict.rs` | Fusion: `Action`, `Layer` (the logged layer names), `Signal`, `Respond`, `Verdict` |
 | `proxy/client_ip.rs` | Real client IP behind trusted proxies |
@@ -36,6 +37,7 @@ learning layers.
 | `intel/store.rs` | `IntelStore`: ban / challenge entries per IP or CIDR from any source |
 | `intel/crowdsec.rs` | CrowdSec LAPI stream bouncer |
 | `intel/feeds.rs` | Tails Suricata EVE and Wazuh alert files |
+| `intel/tasks.rs` | `IntelTasks`: the running CrowdSec and feed tasks, restarted on reload when their config changes |
 | `hardening/headers.rs` | Security headers added to responses, fingerprinting headers removed |
 | `hardening/leaks.rs` | Response signatures: SQL / PHP / Java / Python / .NET / Node errors, directory listings, private keys, AWS keys |
 | `observability/metrics.rs` | Prometheus text exposition (atomics plus small mutex maps) |
@@ -56,9 +58,21 @@ main ─► GatewayConfig::load ─► validate
             │    ├─ intel sweeper       every 30 s: drop expired entries
             │    └─ serve_admin         /metrics /healthz /inventory /bans /bans/unban
             ├► EventLog writer        (spawned by build_state when log.decisions is set)
+            ├► watch_sighup           (Unix) SIGHUP → spawn_blocking(reload_from_path)
             └► serve (accept loop) ──► one task per connection ──► hyper http1 ──► proxy::handle
      until Ctrl-C (no connection draining yet; see target.md)
 ```
+
+**Reload** (`reload.rs`): `reload` / `reload_from_path` run under one lock, so reloads never
+interleave. They set the restart-only keys (`RESTART_ONLY`) back to their running values,
+then read the CrowdSec key, load the engine config, and build a whole new `Compiled`
+(carrying the `Challenger` key over when `challenge.secret` is unchanged). The last
+fallible step is `Guard::reload`, which validates and swaps the engine's config and model
+by itself. Only then is the snapshot swapped (`State::replace_compiled`). After the swap,
+`Buckets::forget_removed` and `OperationCaches::forget_removed` drop the entries of
+definitions that are gone (a scan only when one was removed), and `IntelTasks::update`
+restarts the CrowdSec or feed tasks whose config changed. An error at any step leaves
+everything as it was.
 
 `--check` runs `build_state` with the decision log disabled, so validating a config never
 creates files. Every config error (bad regex, bad CIDR, missing GeoDb for country rules,
@@ -261,6 +275,7 @@ A request that reaches the fuse takes these locks:
 | State | Type | Taken per request | Notes |
 |---|---|---|---|
 | `compiled` | `RwLock<Arc<Compiled>>` | 1 read (clone the `Arc`) | written only by a reload |
+| engine settings | `RwLock<Arc<Settings>>` inside `Guard` | 1 read each in `assess` and `observe_response` | the config and model; written only by `Guard::reload` |
 | `learned.guard` (engine) | one `Mutex` inside `Guard` | 2× (`assess`, `observe_response`) | **the main serialisation point**; ~2 µs held |
 | `learned.rate_buckets` | `Mutex<LruCache>` (200 000) | 1× if any limit is configured | all limits are checked under one lock |
 | `learned.operations` | several `Mutex<LruCache>` | only on matching routes | settled again in `Ticket::complete` |
@@ -298,7 +313,7 @@ public contract.
 upstream errors, bodies too large, rejected connections, CrowdSec health, WAF hits per class, blocks per
 layer, feed hits, intel entries, the summed decision time, requests rejected by reason
 (`body_timeout`, `body_budget`, `in_flight_per_ip`), buffered body bytes, dropped decision-log
-lines and evicted intel entries.
+lines, evicted intel entries, and config reloads by result (`ok`, `error`).
 
 **Inventory** (`/inventory`): one entry per `METHOD /template` (at most 10 000): first and last
 seen, requests, blocked, up to 16 status codes.
@@ -322,4 +337,5 @@ network.
 | Decision-log disk full or slow | Lines dropped; requests unaffected |
 | A lock poisoned by a panic | Recovered (`PoisonError::into_inner`); the request path keeps working |
 | Memory pressure from many clients | Every table is capped; the oldest entries are evicted first |
-| Restart | All learned state is lost: baselines, bans, rate buckets, clearances (with a random key) |
+| Restart | All learned state is lost: baselines, bans, rate buckets, clearances (with a random key). A reload (`SIGHUP`) keeps it |
+| Invalid config on reload | Refused as a whole; the running config stays; one stderr line, `pattern_guard_config_reloads_total{result="error"}` |

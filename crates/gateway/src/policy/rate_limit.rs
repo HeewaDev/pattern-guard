@@ -106,6 +106,13 @@ impl Buckets {
         h.finish()
     }
 
+    /// Drops the buckets of the limits in `old` that `new` no longer defines (by name);
+    /// the others keep their tokens. Returns how many were dropped.
+    pub fn forget_removed(&self, old: &Limits, new: &Limits) -> usize {
+        let gone = super::removed_ids(&old.ids(), &new.ids());
+        super::forget(&self.buckets, &gone, |(id, _)| *id)
+    }
+
     pub fn len(&self) -> usize {
         self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
@@ -162,6 +169,10 @@ impl Limits {
 
     pub fn is_empty(&self) -> bool {
         self.limits.is_empty()
+    }
+
+    fn ids(&self) -> Vec<u64> {
+        self.limits.iter().map(|l| l.id).collect()
     }
 
     fn applies(l: &Limit, parts: &Parts, path: &PathView) -> bool {
@@ -360,6 +371,17 @@ action = "delay"
             "the bucket is still empty: no fresh burst for new definitions"
         );
         assert_eq!(rl.buckets.len(), 2);
+        // a reload that removes "search": its buckets go, the login bucket stays empty
+        let old = std::mem::replace(
+            &mut rl.limits,
+            limits(
+                "[[rate_limits]]\nname = \"login\"\npath = \"/login\"\nrequests = 3\nper_secs = 60\n",
+            ),
+        );
+        assert_eq!(rl.buckets.forget_removed(&old, &rl.limits), 1);
+        assert_eq!(rl.buckets.len(), 1);
+        assert!(rl.check_at(ip, &login, t0).is_some());
+        assert_eq!(rl.buckets.forget_removed(&rl.limits, &rl.limits), 0);
     }
 
     #[test]

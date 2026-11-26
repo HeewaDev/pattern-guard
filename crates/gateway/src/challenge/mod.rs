@@ -101,6 +101,13 @@ impl Challenger {
         }
     }
 
+    /// This challenger with `other`'s key, so the challenges and clearance cookies `other`
+    /// issued stay valid (a reload that keeps `challenge.secret`, including an empty one).
+    pub fn with_key_of(mut self, other: &Challenger) -> Self {
+        self.secret = other.secret.clone();
+        self
+    }
+
     fn mac(&self, parts: &[&str]) -> HmacSha256 {
         let mut m = HmacSha256::new_from_slice(&self.secret).expect("any key length");
         for (i, p) in parts.iter().enumerate() {

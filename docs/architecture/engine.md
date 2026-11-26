@@ -175,6 +175,11 @@ detection and every attack's blocked-or-challenged rate unchanged.
 
 ## Concurrency
 
+The config and the model sit behind an `RwLock<Arc<Settings>>`. Each `assess` and
+`observe_response` clones the `Arc` once, so `Guard::reload` can swap both while calls are
+running, and a call never mixes two settings. `Guard::config()` and `Guard::model()` return
+`Arc`s for the same reason.
+
 One `Mutex<State>` guards the clock, the feature engine, the rules tracker and the cooldowns.
 Everything that doesn't need shared state (path template, route and target keys, probe scan
 of the first 2 KiB, actor and client hashes) is prepared before locking, so the lock is held

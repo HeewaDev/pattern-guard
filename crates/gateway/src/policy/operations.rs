@@ -185,6 +185,21 @@ pub struct OperationCaches {
     logins: LoginCaches,
 }
 
+impl OperationCaches {
+    /// Drops the budgets, unique values and login counters of the operations and logins
+    /// in `old` that `new` no longer defines (by name). Returns how many entries.
+    pub fn forget_removed(&self, old: &Operations, new: &Operations) -> usize {
+        let ops = |o: &Operations| o.ops.iter().map(|op| op.id).collect::<Vec<_>>();
+        let logins = |o: &Operations| o.logins.iter().map(|l| l.id).collect::<Vec<_>>();
+        let gone = super::removed_ids(&ops(old), &ops(new));
+        super::forget(&self.buckets, &gone, |(id, _)| *id)
+            + super::forget(&self.unique, &gone, |(id, _)| *id)
+            + self
+                .logins
+                .forget(&super::removed_ids(&logins(old), &logins(new)))
+    }
+}
+
 impl Default for OperationCaches {
     fn default() -> Self {
         Self {
@@ -639,6 +654,44 @@ account = "form:from"
         assert_eq!((t.unique.len(), t.logins.len()), (1, 1));
         let (h, _) = o.check(IP.parse().unwrap(), &p, br#"{"from":"ann","id":"T2"}"#);
         assert_eq!(h.unwrap().kind, "account_limit");
+    }
+
+    #[test]
+    fn caches_follow_definitions_by_name() {
+        let checkout = "[[operations]]\nname = \"checkout\"\npath = \"/checkout\"\n\
+                        account = \"header:authorization\"\nlimit = { requests = 1, per_secs = 3600 }\n";
+        let refund = checkout.replace("checkout", "refund");
+        let login = "[[logins]]\nname = \"login\"\npath = \"/signin\"\naccount = \"form:user\"\n\
+                     max_failures = 1\nmax_accounts_per_ip = 0\n";
+        let mut o = ops(&format!("{checkout}{refund}{login}"));
+        let ip: IpAddr = IP.parse().unwrap();
+        let alice = [("authorization", "Bearer alice")];
+        let form = [("content-type", "application/x-www-form-urlencoded")];
+        for path in ["/checkout", "/refund"] {
+            let (h, t) = o.check(ip, &req("POST", path, &alice), b"");
+            assert!(h.is_none());
+            t.complete(200);
+        }
+        let (_, t) = o.check(ip, &req("POST", "/signin", &form), b"user=ann");
+        t.complete(401);
+        // reload: "refund" removed, a new operation in front, the login unchanged
+        let old = std::mem::replace(
+            &mut o.defs,
+            ops(&format!(
+                "{}{checkout}{login}",
+                checkout.replace("checkout", "order")
+            ))
+            .defs,
+        );
+        assert_eq!(o.caches.forget_removed(&old, &o.defs), 1);
+        let spent = |o: &Ops, path: &str| o.check(ip, &req("POST", path, &alice), b"").0;
+        assert_eq!(spent(&o, "/checkout").unwrap().kind, "account_limit");
+        assert!(spent(&o, "/order").is_none());
+        let locked = o.check(ip, &req("POST", "/signin", &form), b"user=ann").0;
+        assert_eq!(locked.unwrap().kind, "account_locked");
+        // "order" and the login removed: the budget, the failures, the accounts per IP
+        let old = std::mem::replace(&mut o.defs, ops(checkout).defs);
+        assert_eq!(o.caches.forget_removed(&old, &o.defs), 3);
     }
 
     #[test]

@@ -39,6 +39,10 @@ pub struct Model {
     weights: Features,
     mean: Features,
     scale: Features,
+    /// Features of this engine that the model file doesn't name (they weigh 0).
+    missing: Vec<&'static str>,
+    /// Names in the model file that this engine doesn't compute (ignored).
+    unknown: Vec<String>,
 }
 
 impl Model {
@@ -68,27 +72,59 @@ impl Model {
             weights: [0.0; N_FEATURES],
             mean: [0.0; N_FEATURES],
             scale: [1.0; N_FEATURES],
+            missing: Vec::new(),
+            unknown: Vec::new(),
         };
         let mut matched = 0;
+        let mut named = [false; N_FEATURES];
         for fw in file.features {
             // Unknown names (from newer versions) are ignored; missing ones get weight 0.
-            if let Some(i) = FEATURE_NAMES.iter().position(|n| *n == fw.name) {
-                if !(fw.weight.is_finite() && fw.mean.is_finite() && fw.scale > 0.0) {
-                    return Err(Error::ModelParse(format!(
-                        "bad values for feature {}",
-                        fw.name
-                    )));
-                }
-                m.weights[i] = fw.weight;
-                m.mean[i] = fw.mean;
-                m.scale[i] = fw.scale;
-                matched += 1;
+            let Some(i) = FEATURE_NAMES.iter().position(|n| *n == fw.name) else {
+                m.unknown.push(fw.name);
+                continue;
+            };
+            if !(fw.weight.is_finite() && fw.mean.is_finite() && fw.scale > 0.0) {
+                return Err(Error::ModelParse(format!(
+                    "bad values for feature {}",
+                    fw.name
+                )));
             }
+            named[i] = true;
+            m.weights[i] = fw.weight;
+            m.mean[i] = fw.mean;
+            m.scale[i] = fw.scale;
+            matched += 1;
         }
         if matched == 0 {
             return Err(Error::ModelParse("model has no known features".into()));
         }
+        m.missing = (0..N_FEATURES)
+            .filter(|&i| !named[i])
+            .map(|i| FEATURE_NAMES[i])
+            .collect();
         Ok(m)
+    }
+
+    /// Whether the model names exactly the features this engine computes
+    /// ([`FEATURE_NAMES`]). Loading accepts a partial match (missing features weigh 0,
+    /// unknown ones are ignored), so an older model still starts after an upgrade;
+    /// [`Guard::reload`](crate::Guard::reload) requires this check to pass.
+    pub fn check_layout(&self) -> Result<(), Error> {
+        let mut problems = Vec::new();
+        if !self.missing.is_empty() {
+            problems.push(format!("lacks {}", self.missing.join(", ")));
+        }
+        if !self.unknown.is_empty() {
+            problems.push(format!("has unknown {}", self.unknown.join(", ")));
+        }
+        if problems.is_empty() {
+            return Ok(());
+        }
+        Err(Error::ModelParse(format!(
+            "{:?} was trained for another feature layout: it {} (retrain it with this version)",
+            self.description,
+            problems.join(" and ")
+        )))
     }
 
     pub fn to_toml_string(&self) -> String {
@@ -239,6 +275,8 @@ pub fn train(
         weights: weights_out,
         mean,
         scale,
+        missing: Vec::new(),
+        unknown: Vec::new(),
     }
 }
 
@@ -296,6 +334,24 @@ mod tests {
         let m = Model::builtin();
         let (p, _) = m.predict(&[0.0; N_FEATURES]);
         assert!((0.0..=1.0).contains(&p));
+    }
+
+    #[test]
+    fn layout_check_wants_exactly_this_engines_features() {
+        assert!(Model::builtin().check_layout().is_ok());
+        let full = Model::builtin().to_toml_string();
+        assert!(Model::from_toml_str(&full).unwrap().check_layout().is_ok());
+        // an older model (one feature missing) and a newer one (one feature unknown) load,
+        // but don't pass the check
+        let older = full.replacen(
+            &format!("name = \"{}\"", FEATURE_NAMES[N_FEATURES - 1]),
+            "name = \"from_a_newer_version\"",
+            1,
+        );
+        let m = Model::from_toml_str(&older).unwrap();
+        let e = m.check_layout().unwrap_err().to_string();
+        assert!(e.contains(FEATURE_NAMES[N_FEATURES - 1]), "{e}");
+        assert!(e.contains("from_a_newer_version"), "{e}");
     }
 
     #[test]

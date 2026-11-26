@@ -11,6 +11,9 @@ User=pattern-guard
 Group=pattern-guard
 ExecStartPre=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gateway.toml --check
 ExecStart=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gateway.toml
+# `systemctl reload`: check the file, then reload it in place (docs/GATEWAY.md, "Reloading the config")
+ExecReload=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gateway.toml --check
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=1
 # CROWDSEC_BOUNCER_KEY=... and other secrets

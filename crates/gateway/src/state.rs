@@ -32,6 +32,7 @@ use crate::geo::{GeoDb, GeoPolicy};
 use crate::hardening::headers::SecurityHeaders;
 use crate::hardening::leaks::LeakInspector;
 use crate::intel::IntelStore;
+use crate::intel::tasks::IntelTasks;
 use crate::ipnet::Cidr;
 use crate::observability::eventlog::EventLog;
 use crate::observability::inventory::Inventory;
@@ -65,6 +66,18 @@ impl State {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Makes `new` the snapshot that requests from now on take (see `reload`).
+    pub(crate) fn replace_compiled(&self, new: Arc<Compiled>) {
+        let old = std::mem::replace(
+            &mut *self
+                .compiled
+                .write()
+                .unwrap_or_else(PoisonError::into_inner),
+            new,
+        );
+        drop(old); // outside the lock: the last user of a snapshot frees it
     }
 }
 
@@ -180,6 +193,10 @@ pub struct Runtime {
     pub req_counter: AtomicU64,
     pub console_second: AtomicU64,
     pub console_suppressed: AtomicU64,
+    /// CrowdSec and feed tasks, restarted by a reload when their config changes.
+    pub intel_tasks: IntelTasks,
+    /// Held for the whole of a reload, so two reloads never interleave.
+    pub(crate) reload_lock: Mutex<()>,
 }
 
 impl Runtime {
@@ -199,6 +216,8 @@ impl Runtime {
             req_counter: AtomicU64::new(0),
             console_second: AtomicU64::new(0),
             console_suppressed: AtomicU64::new(0),
+            intel_tasks: IntelTasks::default(),
+            reload_lock: Mutex::new(()),
         }
     }
 }

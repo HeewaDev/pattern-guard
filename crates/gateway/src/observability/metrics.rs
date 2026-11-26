@@ -35,6 +35,10 @@ pub struct Metrics {
     /// requests in progress.
     pub rejected_in_flight: AtomicU64,
     pub crowdsec_ok: AtomicU64,
+    /// Config reloads that were applied.
+    pub reloads_ok: AtomicU64,
+    /// Config reloads that were refused (the running config was kept).
+    pub reloads_failed: AtomicU64,
     pub duration_us_sum: AtomicU64,
     pub requests: AtomicU64,
     waf: Mutex<HashMap<&'static str, u64>>,
@@ -180,6 +184,18 @@ impl Metrics {
             let _ = writeln!(
                 s,
                 "pattern_guard_requests_rejected_total{{reason=\"{reason}\"}} {}",
+                v.load(Relaxed)
+            );
+        }
+        c(
+            &mut s,
+            "pattern_guard_config_reloads_total",
+            "Config reloads by result (error: refused, the running config was kept).",
+        );
+        for (result, v) in [("ok", &self.reloads_ok), ("error", &self.reloads_failed)] {
+            let _ = writeln!(
+                s,
+                "pattern_guard_config_reloads_total{{result=\"{result}\"}} {}",
                 v.load(Relaxed)
             );
         }

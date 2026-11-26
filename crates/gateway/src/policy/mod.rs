@@ -6,8 +6,11 @@
 //! **learned state**, which is kept (`Buckets`, `OperationCaches`, `Offenders`). The
 //! learned half is keyed by `definition_ids`, so it follows a definition by name.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Mutex, PoisonError};
+
+use lru::LruCache;
 
 pub mod bans;
 mod fields;
@@ -36,6 +39,36 @@ pub(crate) fn definition_ids<'a>(names: impl IntoIterator<Item = &'a str>) -> Ve
             h.finish()
         })
         .collect()
+}
+
+/// The ids in `old` that `new` no longer has.
+pub(crate) fn removed_ids(old: &[u64], new: &[u64]) -> HashSet<u64> {
+    let new: HashSet<&u64> = new.iter().collect();
+    old.iter().filter(|id| !new.contains(id)).copied().collect()
+}
+
+/// Drops the entries of `cache` whose definition id (`id_of(key)`) is in `gone`, and
+/// returns how many. It scans the whole cache under its lock, so it only runs when a
+/// definition was removed.
+pub(crate) fn forget<K: Hash + Eq + Clone, V>(
+    cache: &Mutex<LruCache<K, V>>,
+    gone: &HashSet<u64>,
+    id_of: impl Fn(&K) -> u64,
+) -> usize {
+    if gone.is_empty() {
+        return 0;
+    }
+    let mut c = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let keys: Vec<K> = c
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| gone.contains(&id_of(k)))
+        .cloned()
+        .collect();
+    for k in &keys {
+        c.pop(k);
+    }
+    keys.len()
 }
 
 #[cfg(test)]

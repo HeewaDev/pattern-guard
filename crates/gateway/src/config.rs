@@ -235,7 +235,7 @@ pub struct AccessConfig {
     pub challenge: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CrowdSecConfig {
     #[serde(default)]
@@ -276,7 +276,7 @@ pub enum FeedAction {
     Challenge,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedConfig {
     pub kind: FeedKind,

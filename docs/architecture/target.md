@@ -130,6 +130,7 @@ crates/gateway/src/
   server.rs              accept loop, per-IP connection cap, graceful shutdown (M3)
   admin.rs               admin endpoints
   state.rs               State { compiled, learned, runtime }
+  reload.rs              hot reload (SIGHUP): validate and compile, then swap `compiled`
   util.rs                now_secs, header_str, gateway percent-decoding
   config/
     mod.rs               GatewayConfig, load (relative paths), validate (calls each section)

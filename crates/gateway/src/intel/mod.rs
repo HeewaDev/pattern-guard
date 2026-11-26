@@ -4,5 +4,6 @@
 pub mod crowdsec;
 pub mod feeds;
 mod store;
+pub mod tasks;
 
 pub use store::{IntelAction, IntelEntry, IntelStore};

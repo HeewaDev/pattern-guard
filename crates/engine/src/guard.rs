@@ -1,11 +1,11 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Instant;
 
 use lru::LruCache;
 
-use crate::config::{Config, EffectiveConfig, Mode, TimeSource};
+use crate::config::{Config, EffectiveConfig, GuardConfig, Mode, TimeSource};
 use crate::decision::Decision;
 use crate::error::Error;
 use crate::event::Event;
@@ -151,9 +151,15 @@ struct State {
     cooldowns: LruCache<u64, Strikes>,
 }
 
+/// What a guard scores with. A call takes it once, so a [`Guard::reload`] in the middle
+/// of a call never mixes two configs or models.
+struct Settings {
+    config: Arc<Config>,
+    model: Arc<Model>,
+}
+
 pub struct Guard {
-    config: Config,
-    model: Model,
+    settings: RwLock<Arc<Settings>>,
     /// `SHARED_EVIDENCE` as a mask over `FEATURE_NAMES`.
     shared: [bool; N_FEATURES],
     state: Mutex<State>,
@@ -187,8 +193,10 @@ impl Guard {
             shared[i] = SHARED_EVIDENCE.contains(name);
         }
         Ok(Self {
-            config,
-            model,
+            settings: RwLock::new(Arc::new(Settings {
+                config: Arc::new(config),
+                model: Arc::new(model),
+            })),
             shared,
             state: Mutex::new(state),
         })
@@ -204,16 +212,77 @@ impl Guard {
 
     /// Replaces the scoring model (e.g. one you trained with `pattern-guard train`).
     pub fn with_model(mut self, model: Model) -> Self {
-        self.model = model;
+        let s = self
+            .settings
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        *s = Arc::new(Settings {
+            config: s.config.clone(),
+            model: Arc::new(model),
+        });
         self
     }
 
-    pub fn config(&self) -> &Config {
-        &self.config
+    /// The config in use (it changes with [`reload`](Self::reload)).
+    pub fn config(&self) -> Arc<Config> {
+        self.settings().config.clone()
     }
 
-    pub fn model(&self) -> &Model {
-        &self.model
+    /// The model in use (it changes with [`reload`](Self::reload)).
+    pub fn model(&self) -> Arc<Model> {
+        self.settings().model.clone()
+    }
+
+    fn settings(&self) -> Arc<Settings> {
+        self.settings
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replaces the config and the model of a running guard and keeps everything it has
+    /// learned: baselines, actor history, rule windows, cooldowns. Calls already running
+    /// finish with the settings they started with.
+    ///
+    /// The model (`config.guard.model`, else the built-in one) must pass
+    /// [`Model::check_layout`]: it must have been trained for exactly this engine's
+    /// features. Otherwise, or if the config is invalid or the model can't be read,
+    /// nothing changes and the error is returned.
+    ///
+    /// `time_source`, `max_actors` and `[guard.adaptive]` shape the learned state, so they
+    /// can't change without a restart: their running values are kept, and the keys whose
+    /// new values were ignored are returned (`guard.time_source`, `guard.max_actors`,
+    /// `guard.adaptive`).
+    pub fn reload(&self, mut config: Config) -> Result<Vec<&'static str>, Error> {
+        config.validate()?;
+        let model = match &config.guard.model {
+            Some(p) => Model::load(p)?,
+            None => Model::builtin(),
+        };
+        model.check_layout()?;
+        let mut settings = self
+            .settings
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (old, new) = (&settings.config.guard, &mut config.guard);
+        let mut kept = Vec::new();
+        if new.time_source != old.time_source {
+            new.time_source = old.time_source;
+            kept.push("guard.time_source");
+        }
+        if new.max_actors != old.max_actors {
+            new.max_actors = old.max_actors;
+            kept.push("guard.max_actors");
+        }
+        if new.adaptive != old.adaptive {
+            new.adaptive = old.adaptive.clone();
+            kept.push("guard.adaptive");
+        }
+        *settings = Arc::new(Settings {
+            config: Arc::new(config),
+            model: Arc::new(model),
+        });
+        Ok(kept)
     }
 
     pub fn check(&self, event: &Event) -> Decision {
@@ -233,8 +302,7 @@ impl Guard {
     /// Route templating, probe scanning and key hashing. Runs before the state lock is
     /// taken: the lock is shared by every request, and a 64 KB path with a 400 KB user
     /// agent held it for ~830 µs when this ran inside it.
-    fn prepare(&self, ev: &Event) -> Request {
-        let g = &self.config.guard;
+    fn prepare(g: &GuardConfig, ev: &Event) -> Request {
         let n = normalize_path(&ev.target);
         let route = hash_str(&[&ev.action, &n.template]);
         let (rep_key, target_key) = if g.normalize_targets {
@@ -253,12 +321,12 @@ impl Guard {
     }
 
     /// The part of `assess` that reads and updates shared state. Constant time.
-    fn score(&self, st: &mut State, req: &Request, eff: &EffectiveConfig) -> Scored {
-        let g = &self.config.guard;
+    fn score(&self, s: &Settings, st: &mut State, req: &Request, eff: &EffectiveConfig) -> Scored {
+        let g = &s.config.guard;
         let now = st.clock.now(req.unix_secs);
         let (features, model_risk, contrib) = if g.mode != Mode::Rules {
             let f = st.engine.observe_request(&req.p, now);
-            let (risk, contrib) = self.model.predict(&f);
+            let (risk, contrib) = s.model.predict(&f);
             (f, risk, contrib)
         } else {
             ([0.0; N_FEATURES], 0.0, [0.0; N_FEATURES])
@@ -314,8 +382,9 @@ impl Guard {
 
     /// Scores one request and records it. Call once per request, before handling it.
     pub fn assess(&self, event: &Event) -> Assessment {
-        let eff = self.config.guard.for_actor(&event.actor);
-        let req = self.prepare(event);
+        let s = self.settings();
+        let eff = s.config.guard.for_actor(&event.actor);
+        let req = Self::prepare(&s.config.guard, event);
         let Scored {
             features,
             model_risk,
@@ -325,7 +394,7 @@ impl Guard {
             rule_name,
             in_cooldown,
             cooldown_own,
-        } = self.score(&mut self.lock(), &req, &eff);
+        } = self.score(&s, &mut self.lock(), &req, &eff);
 
         let block_at = eff.challenge_below.unwrap_or(eff.delay_below);
         let mut risk = model_risk.max(rules_risk);
@@ -374,7 +443,7 @@ impl Guard {
             reasons.extend(order.into_iter().take(3).map(|i| Reason {
                 signal: FEATURE_NAMES[i],
                 weight: contrib[i],
-                high: self.model.weight(i) >= 0.0,
+                high: s.model.weight(i) >= 0.0,
             }));
         }
 
@@ -397,10 +466,11 @@ impl Guard {
     /// to [`assess`](Self::assess)). Failure ratios (401/403/404/429…) are among the
     /// strongest signals for credential stuffing, scanning and scraping.
     pub fn observe_response(&self, event: &Event, status: u16) {
-        if self.config.guard.mode == Mode::Rules {
+        let s = self.settings();
+        if s.config.guard.mode == Mode::Rules {
             return;
         }
-        let req = self.prepare(event);
+        let req = Self::prepare(&s.config.guard, event);
         self.record_response(&mut self.lock(), &req, status);
     }
 
@@ -518,6 +588,79 @@ mod tests {
             g.check(&Event::new("a", "GET", "/", at(i as f64 * 1000.0)));
         }
         assert!(g.check_with_risk(&Event::new("a", "GET", "/", at(0.0))).1 > 0.0);
+    }
+
+    #[test]
+    fn reload_keeps_what_was_learned_and_applies_the_new_config() {
+        let cfg = |burst: u32| {
+            Config::from_toml_str(&format!(
+                "[guard]\nmode = \"rules\"\nwindow_secs = 60\nburst_max_events = {burst}\n"
+            ))
+            .unwrap()
+        };
+        let g = Guard::new(cfg(10)).unwrap();
+        for i in 0..5 {
+            let a = g.assess(&Event::new("a", "GET", "/", at(i as f64)));
+            assert_eq!(a.rules_risk, 0.0);
+        }
+        assert_eq!(g.reload(cfg(5)).unwrap(), Vec::<&str>::new());
+        assert_eq!(g.config().guard.burst_max_events, Some(5));
+        // the five requests before the reload still count
+        let a = g.assess(&Event::new("a", "GET", "/", at(5.0)));
+        assert!(a.rules_risk > 0.0, "{a:?}");
+        assert_eq!(
+            g.assess(&Event::new("b", "GET", "/", at(5.0))).rules_risk,
+            0.0
+        );
+    }
+
+    #[test]
+    fn reload_keeps_keys_that_shape_learned_state() {
+        let g = Guard::from_toml_str("[guard]\nwarn_below = 0.5\n").unwrap();
+        let kept = g
+            .reload(
+                Config::from_toml_str(
+                    "[guard]\nwarn_below = 0.55\ntime_source = \"system\"\nmax_actors = 10\n\
+                     [guard.adaptive]\nwarmup_secs = 1\n",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            ["guard.time_source", "guard.max_actors", "guard.adaptive"]
+        );
+        let c = g.config();
+        assert_eq!(c.guard.warn_below, 0.55, "the rest applies");
+        assert_eq!(c.guard.time_source, TimeSource::Event);
+        assert_eq!(c.guard.max_actors, NonZeroUsize::new(100_000));
+        assert_eq!(c.guard.adaptive.warmup_secs, 300.0);
+    }
+
+    #[test]
+    fn reload_refuses_a_model_for_another_feature_layout() {
+        let dir = std::env::temp_dir().join(format!("pg_reload_model_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let full = Model::builtin().to_toml_string();
+        let older = full.replacen(
+            &format!("name = \"{}\"", FEATURE_NAMES[0]),
+            "name = \"renamed\"",
+            1,
+        );
+        std::fs::write(dir.join("old.toml"), older.replace("built-in", "older")).unwrap();
+        std::fs::write(dir.join("new.toml"), full.replace("built-in", "retrained")).unwrap();
+        let g = Guard::from_toml_str("").unwrap();
+        let load =
+            |m: &str| Config::from_toml_str(&format!("[guard]\nmodel = {:?}\n", dir.join(m)));
+        let e = g.reload(load("old.toml").unwrap()).unwrap_err().to_string();
+        assert!(e.contains("feature layout"), "{e}");
+        assert!(g.model().description.starts_with("built-in"), "kept");
+        assert!(g.reload(load("missing.toml").unwrap()).is_err());
+        assert!(g.reload(load("new.toml").unwrap()).is_ok());
+        assert!(g.model().description.starts_with("retrained"));
+        // startup stays lenient: an older model still loads
+        assert!(Guard::new(load("old.toml").unwrap()).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
