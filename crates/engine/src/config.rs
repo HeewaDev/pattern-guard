@@ -34,7 +34,7 @@ pub enum Mode {
 }
 
 /// Which clock drives sliding windows and decay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeSource {
     /// `Event::timestamp` (monotonised: never moves backwards). Required for log replay.

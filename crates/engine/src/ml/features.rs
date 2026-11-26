@@ -26,9 +26,12 @@ use std::net::IpAddr;
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::config::AdaptiveConfig;
 use crate::event::Event;
+use crate::snapshot::bits::F;
+use crate::snapshot::{With, copy_in_chunks, lru_refill};
 use crate::util::stats::{Decay, GapStats, RecentIds, TopCounts, smoothed_ratio};
 
 pub const N_FEATURES: usize = 28;
@@ -84,6 +87,13 @@ const BROWSER_BURST: f64 = 30.0;
 /// Smoothing for rate ratios: one request per minute.
 const RATE_FLOOR: f64 = 1.0 / 60.0;
 
+/// Per-entry list sizes (also re-applied when a snapshot is restored).
+const ACTOR_ROUTES: usize = 16;
+const ACTOR_ROUTE_OUTCOMES: usize = 8;
+const ACTOR_IDS: usize = 32;
+const CLIENT_ROUTES: usize = 32;
+const CLIENT_IDS: usize = 64;
+
 /// Request facts derived once per request, before the guard takes its state lock, so
 /// that work proportional to the request's size (templating the path, scanning it for
 /// probes, hashing the actor id and user agent) never runs under the lock.
@@ -131,7 +141,10 @@ pub fn is_failure(status: u16) -> bool {
     matches!(status, 400 | 401 | 403 | 404 | 405 | 422 | 429)
 }
 
-#[derive(Default)]
+// Snapshot encoding: each state is a tuple of its fields in declaration order (field
+// names would make a full snapshot ~20 % larger), floats as bits (`snapshot::bits`).
+
+#[derive(Debug, Default, Clone)]
 struct ActorState {
     n: u64,
     reads: u64,
@@ -150,7 +163,89 @@ struct ActorState {
     ids: RecentIds,
 }
 
-#[derive(Default)]
+impl ActorState {
+    /// For a restored entry: the list sizes, and no time after `as_of`.
+    fn bound(&mut self, as_of: f64) {
+        self.routes.truncate(ACTOR_ROUTES);
+        self.route_resp.truncate(ACTOR_ROUTE_OUTCOMES);
+        self.route_fail.truncate(ACTOR_ROUTE_OUTCOMES);
+        self.ids.truncate(ACTOR_IDS);
+        self.last_seen = self.last_seen.map(|t| t.min(as_of));
+        for d in [
+            &mut self.burst,
+            &mut self.volume,
+            &mut self.fails,
+            &mut self.responses,
+            &mut self.novel,
+            &mut self.id_reqs,
+            &mut self.seq,
+        ] {
+            d.clamp_to(as_of);
+        }
+        for t in [&mut self.routes, &mut self.route_resp, &mut self.route_fail] {
+            t.clamp_to(as_of);
+        }
+    }
+}
+
+impl Serialize for ActorState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (
+            self.n,
+            self.reads,
+            self.last_seen.map(F),
+            &self.gaps,
+            [
+                self.burst,
+                self.volume,
+                self.fails,
+                self.responses,
+                self.novel,
+                self.id_reqs,
+                self.seq,
+            ],
+            [&self.routes, &self.route_resp, &self.route_fail],
+            &self.ids,
+        )
+            .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ActorState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        type Row = (
+            u64,
+            u64,
+            Option<F>,
+            GapStats,
+            [Decay; 7],
+            [TopCounts; 3],
+            RecentIds,
+        );
+        let (n, reads, last_seen, gaps, decays, tops, ids) = Row::deserialize(d)?;
+        let [burst, volume, fails, responses, novel, id_reqs, seq] = decays;
+        let [routes, route_resp, route_fail] = tops;
+        Ok(Self {
+            n,
+            reads,
+            last_seen: last_seen.map(|F(x)| x),
+            gaps,
+            burst,
+            volume,
+            fails,
+            responses,
+            novel,
+            id_reqs,
+            seq,
+            routes,
+            route_resp,
+            route_fail,
+            ids,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 struct ClientState {
     volume: Decay,
     new_actors: Decay,
@@ -162,13 +257,115 @@ struct ClientState {
     ids: RecentIds,
 }
 
-#[derive(Default)]
+impl ClientState {
+    /// For a restored entry: the list sizes, and no time after `as_of`.
+    fn bound(&mut self, as_of: f64) {
+        self.routes.truncate(CLIENT_ROUTES);
+        self.ids.truncate(CLIENT_IDS);
+        for d in [
+            &mut self.volume,
+            &mut self.new_actors,
+            &mut self.fails,
+            &mut self.responses,
+            &mut self.id_reqs,
+            &mut self.seq,
+        ] {
+            d.clamp_to(as_of);
+        }
+        self.routes.clamp_to(as_of);
+    }
+}
+
+impl SubnetState {
+    fn bound(&mut self, as_of: f64) {
+        for d in [&mut self.new_actors, &mut self.fails, &mut self.responses] {
+            d.clamp_to(as_of);
+        }
+    }
+}
+
+impl RouteState {
+    /// For a restored entry: no time after `as_of`, no negative baseline (its log ratio
+    /// would be NaN).
+    fn bound(&mut self, as_of: f64) {
+        self.first_seen = self.first_seen.min(as_of);
+        self.base_t = self.base_t.min(as_of);
+        for d in [
+            &mut self.short,
+            &mut self.fails_short,
+            &mut self.resp_short,
+            &mut self.new_short,
+        ] {
+            d.clamp_to(as_of);
+        }
+        if let Some(b) = &mut self.base {
+            for x in b {
+                *x = x.max(0.0);
+            }
+        }
+    }
+}
+
+impl Serialize for ClientState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (
+            [
+                self.volume,
+                self.new_actors,
+                self.fails,
+                self.responses,
+                self.id_reqs,
+                self.seq,
+            ],
+            &self.routes,
+            &self.ids,
+        )
+            .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClientState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (decays, routes, ids) = <([Decay; 6], TopCounts, RecentIds)>::deserialize(d)?;
+        let [volume, new_actors, fails, responses, id_reqs, seq] = decays;
+        Ok(Self {
+            volume,
+            new_actors,
+            fails,
+            responses,
+            id_reqs,
+            seq,
+            routes,
+            ids,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 struct SubnetState {
     new_actors: Decay,
     fails: Decay,
     responses: Decay,
 }
 
+impl Serialize for SubnetState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        [self.new_actors, self.fails, self.responses].serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for SubnetState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let [new_actors, fails, responses] = <[Decay; 3]>::deserialize(d)?;
+        Ok(Self {
+            new_actors,
+            fails,
+            responses,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct RouteState {
     first_seen: f64,
     short: Decay,
@@ -178,6 +375,66 @@ struct RouteState {
     /// Asymmetric baselines of the short-window signals: (rate, fail ratio, new-actor rate).
     base: Option<[f64; 3]>,
     base_t: f64,
+}
+
+impl Serialize for RouteState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (
+            F(self.first_seen),
+            [
+                self.short,
+                self.fails_short,
+                self.resp_short,
+                self.new_short,
+            ],
+            self.base.map(|b| b.map(F)),
+            F(self.base_t),
+        )
+            .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for RouteState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (F(first_seen), decays, base, F(base_t)) =
+            <(F, [Decay; 4], Option<[F; 3]>, F)>::deserialize(d)?;
+        let [short, fails_short, resp_short, new_short] = decays;
+        Ok(Self {
+            first_seen,
+            short,
+            fails_short,
+            resp_short,
+            new_short,
+            base: base.map(|b| b.map(|F(x)| x)),
+            base_t,
+        })
+    }
+}
+
+/// What a [`FeatureEngine`] has learned: each table's entries, least recently used first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Learned {
+    actors: Vec<(u64, ActorState)>,
+    clients: Vec<(u64, ClientState)>,
+    subnets: Vec<((u8, u128), SubnetState)>,
+    routes: Vec<(u64, RouteState)>,
+}
+
+impl Learned {
+    pub(crate) fn actors(&self) -> usize {
+        self.actors.len()
+    }
+
+    /// Entries per table: actors, clients, subnets, routes.
+    #[cfg(test)]
+    pub(crate) fn sizes(&self) -> [usize; 4] {
+        [
+            self.actors.len(),
+            self.clients.len(),
+            self.subnets.len(),
+            self.routes.len(),
+        ]
+    }
 }
 
 impl RouteState {
@@ -222,6 +479,26 @@ impl FeatureEngine {
         &self.cfg.probe_paths
     }
 
+    /// Copies every table of the engine `with` lends out, a chunk per lock hold (for
+    /// [`crate::Snapshot`]; see `snapshot::copy_in_chunks`).
+    pub(crate) fn snapshot(with: With<'_, FeatureEngine>) -> Learned {
+        Learned {
+            actors: copy_in_chunks(with, |e| &e.actors, ActorState::clone),
+            clients: copy_in_chunks(with, |e| &e.clients, ClientState::clone),
+            subnets: copy_in_chunks(with, |e| &e.subnets, SubnetState::clone),
+            routes: copy_in_chunks(with, |e| &e.routes, RouteState::clone),
+        }
+    }
+
+    /// Replaces every table with `s`, within this engine's caps.
+    /// `as_of`: the snapshot's clock; no restored time may be later.
+    pub(crate) fn restore(&mut self, s: Learned, as_of: f64) {
+        lru_refill(&mut self.actors, s.actors, |a| a.bound(as_of));
+        lru_refill(&mut self.clients, s.clients, |c| c.bound(as_of));
+        lru_refill(&mut self.subnets, s.subnets, |n| n.bound(as_of));
+        lru_refill(&mut self.routes, s.routes, |r| r.bound(as_of));
+    }
+
     fn subnet_key(&self, ip: IpAddr) -> (u8, u128) {
         match ip {
             IpAddr::V4(v4) => {
@@ -256,14 +533,14 @@ impl FeatureEngine {
         a.last_seen = Some(a.last_seen.map_or(now, |l| l.max(now)));
         a.burst.add(1.0, now, TAU_BURST);
         a.volume.add(1.0, now, TAU_VOLUME);
-        let route_new_for_actor = a.routes.add(p.route, 1.0, now, TAU_VOLUME, 16);
+        let route_new_for_actor = a.routes.add(p.route, 1.0, now, TAU_VOLUME, ACTOR_ROUTES);
         let cold_write = is_write && a.reads == 0;
         if is_read {
             a.reads += 1;
         }
         if let Some(id) = p.id {
             a.id_reqs.add(1.0, now, TAU_OBJECTS);
-            let (seen, near) = a.ids.push(p.route, id, 3, 32);
+            let (seen, near) = a.ids.push(p.route, id, 3, ACTOR_IDS);
             if !seen {
                 a.novel.add(1.0, now, TAU_OBJECTS);
             }
@@ -315,10 +592,10 @@ impl FeatureEngine {
             if actor_is_new {
                 c.new_actors.add(1.0, now, TAU_CLIENT);
             }
-            c.routes.add(p.route, 1.0, now, TAU_CLIENT, 32);
+            c.routes.add(p.route, 1.0, now, TAU_CLIENT, CLIENT_ROUTES);
             if let Some(id) = p.id {
                 c.id_reqs.add(1.0, now, TAU_OBJECTS);
-                let (_, near) = c.ids.push(p.route, id, 3, 64);
+                let (_, near) = c.ids.push(p.route, id, 3, CLIENT_IDS);
                 if near {
                     c.seq.add(1.0, now, TAU_OBJECTS);
                 }
@@ -403,9 +680,11 @@ impl FeatureEngine {
         if let Some(a) = self.actors.peek_mut(&p.actor) {
             a.responses.add(1.0, now, TAU_OUTCOME);
             a.fails.add(fail, now, TAU_OUTCOME);
-            a.route_resp.add(p.route, 1.0, now, TAU_OUTCOME, 8);
+            a.route_resp
+                .add(p.route, 1.0, now, TAU_OUTCOME, ACTOR_ROUTE_OUTCOMES);
             if fail > 0.0 {
-                a.route_fail.add(p.route, 1.0, now, TAU_OUTCOME, 8);
+                a.route_fail
+                    .add(p.route, 1.0, now, TAU_OUTCOME, ACTOR_ROUTE_OUTCOMES);
             }
         }
         if let Some(ip) = p.ip {

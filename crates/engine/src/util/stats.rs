@@ -3,6 +3,13 @@
 //! Instead of storing every event, state is kept as exponentially decayed counters:
 //! `v(t) = v(t0) * exp(-(t - t0) / tau) + x`. A counter with time constant `tau`
 //! approximates "events in the last `tau` seconds" and costs 16 bytes.
+//!
+//! Every type here is serde-serialisable (for engine snapshots), compactly as tuples and
+//! with floats as their IEEE-754 bits (exact; NaN and infinities are refused on load).
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::snapshot::bits::F;
 
 /// Exponentially decayed counter. The time constant is passed on each call so the
 /// struct stays two floats.
@@ -146,6 +153,96 @@ impl RecentIds {
             self.pos = (self.pos + 1) % cap;
         }
         (seen, neighbour)
+    }
+
+    /// Keeps at most `cap` pairs (a restored snapshot may come from a larger cap).
+    pub(crate) fn truncate(&mut self, cap: usize) {
+        self.buf.truncate(cap);
+        self.pos = if self.buf.is_empty() {
+            0
+        } else {
+            self.pos % self.buf.len()
+        };
+    }
+}
+
+impl TopCounts {
+    /// Keeps at most `cap` keys (a restored snapshot may come from a larger cap).
+    pub(crate) fn truncate(&mut self, cap: usize) {
+        self.items.truncate(cap);
+    }
+
+    /// [`Decay::clamp_to`] for every count.
+    pub(crate) fn clamp_to(&mut self, as_of: f64) {
+        for (_, d) in &mut self.items {
+            d.clamp_to(as_of);
+        }
+    }
+}
+
+impl Decay {
+    /// For a restored snapshot: a counter last updated after `as_of` (the snapshot's
+    /// clock) is moved back to it, and a negative value (which no update produces) is
+    /// set to zero, so a crafted file can't make features NaN or freeze decay.
+    pub(crate) fn clamp_to(&mut self, as_of: f64) {
+        self.t = self.t.min(as_of);
+        self.v = self.v.max(0.0);
+    }
+}
+
+impl Serialize for Decay {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (F(self.v), F(self.t)).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Decay {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (F(v), F(t)) = Deserialize::deserialize(d)?;
+        Ok(Self { v, t })
+    }
+}
+
+impl Serialize for GapStats {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (self.n, F(self.mean), F(self.sq)).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for GapStats {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (n, F(mean), F(sq)) = Deserialize::deserialize(d)?;
+        Ok(Self { n, mean, sq })
+    }
+}
+
+impl Serialize for TopCounts {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for TopCounts {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            items: Deserialize::deserialize(d)?,
+        })
+    }
+}
+
+impl Serialize for RecentIds {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (&self.buf, self.pos).serialize(s)
+    }
+}
+
+/// `pos` is brought inside the buffer, so `push` can never index past it.
+impl<'de> Deserialize<'de> for RecentIds {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (buf, pos): (Vec<(u64, u64)>, usize) = Deserialize::deserialize(d)?;
+        let mut r = Self { buf, pos };
+        r.truncate(usize::MAX);
+        Ok(r)
     }
 }
 

@@ -2,18 +2,23 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use lru::LruCache;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, EffectiveConfig, GuardConfig, Mode, TimeSource};
 use crate::decision::Decision;
 use crate::error::Error;
 use crate::event::Event;
-use crate::ml::features::{FEATURE_NAMES, FeatureEngine, Features, N_FEATURES, Prepared};
+use crate::ml::features::{self, FEATURE_NAMES, FeatureEngine, Features, N_FEATURES, Prepared};
 use crate::ml::model::Model;
 use crate::rules::analyzer;
-use crate::rules::tracker::Tracker;
+use crate::rules::tracker::{self, Tracker};
+use crate::snapshot::{
+    MAX_CLOCK_AHEAD_SECS, MAX_RESTART_GAP_SECS, MAX_SYSTEM_CLOCK_SECS, Snapshot, bits,
+    copy_in_chunks, lru_refill,
+};
 use crate::util::normalize::{hash_str, is_probe_path, normalize_path};
 use crate::util::stats::Decay;
 
@@ -58,8 +63,14 @@ pub struct Assessment {
 }
 
 enum Clock {
-    Event { max: f64 },
-    System { start: Instant },
+    Event {
+        max: f64,
+    },
+    /// Seconds since `start`, plus `offset` (where a restored snapshot's clock resumes).
+    System {
+        start: Instant,
+        offset: f64,
+    },
 }
 
 impl Clock {
@@ -72,9 +83,23 @@ impl Clock {
                 }
                 *max
             }
-            Clock::System { start } => start.elapsed().as_secs_f64(),
+            Clock::System { start, offset } => *offset + start.elapsed().as_secs_f64(),
         }
     }
+
+    /// The current reading without an event; `None` before the first event.
+    fn reading(&self) -> Option<f64> {
+        match self {
+            Clock::Event { max } => max.is_finite().then_some(*max),
+            Clock::System { start, offset } => Some(*offset + start.elapsed().as_secs_f64()),
+        }
+    }
+}
+
+fn unix_secs(t: SystemTime) -> f64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// What `assess` and `observe_response` derive from an event before taking the state
@@ -135,9 +160,10 @@ struct Scored {
     cooldown_own: bool,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct Strikes {
     blocks: Decay,
+    #[serde(with = "bits")]
     until: f64,
     /// Whether the actor's own behaviour (not only shared evidence) reached the block
     /// threshold when the cooldown started: then it blocks, else it challenges.
@@ -170,6 +196,49 @@ pub struct ReloadReport {
     pub model_warning: Option<String>,
 }
 
+impl State {
+    /// Nothing learned yet, with the caps of `g`.
+    fn empty(g: &GuardConfig) -> Self {
+        let clock = match g.time_source {
+            TimeSource::Event => Clock::Event {
+                max: f64::NEG_INFINITY,
+            },
+            TimeSource::System => Clock::System {
+                start: Instant::now(),
+                offset: 0.0,
+            },
+        };
+        Self {
+            clock,
+            engine: FeatureEngine::new(g.adaptive.clone(), g.max_actors),
+            rules: Tracker::new(g.max_actors),
+            cooldowns: LruCache::new(g.max_actors.unwrap_or(NonZeroUsize::new(100_000).unwrap())),
+        }
+    }
+}
+
+/// The learned state inside a [`Snapshot`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Learned {
+    /// Wall clock when it was taken (Unix seconds).
+    #[serde(with = "bits")]
+    taken_at: f64,
+    time_source: TimeSource,
+    /// The guard's clock then; `None` before its first event.
+    #[serde(with = "bits::opt")]
+    clock: Option<f64>,
+    features: features::Learned,
+    rules: tracker::Learned,
+    /// Least recently used first.
+    cooldowns: Vec<(u64, Strikes)>,
+}
+
+impl Learned {
+    pub(crate) fn actors(&self) -> usize {
+        self.features.actors()
+    }
+}
+
 pub struct Guard {
     settings: RwLock<Arc<Settings>>,
     /// A reload already reported that the model doesn't fit this engine's features.
@@ -187,21 +256,7 @@ impl Guard {
             Some(p) => Model::load(p)?,
             None => Model::builtin(),
         };
-        let g = &config.guard;
-        let clock = match g.time_source {
-            TimeSource::Event => Clock::Event {
-                max: f64::NEG_INFINITY,
-            },
-            TimeSource::System => Clock::System {
-                start: Instant::now(),
-            },
-        };
-        let state = State {
-            clock,
-            engine: FeatureEngine::new(g.adaptive.clone(), g.max_actors),
-            rules: Tracker::new(g.max_actors),
-            cooldowns: LruCache::new(g.max_actors.unwrap_or(NonZeroUsize::new(100_000).unwrap())),
-        };
+        let state = State::empty(&config.guard);
         let mut shared = [false; N_FEATURES];
         for (i, name) in FEATURE_NAMES.iter().enumerate() {
             shared[i] = SHARED_EVIDENCE.contains(name);
@@ -509,6 +564,106 @@ impl Guard {
         let now = st.clock.now(req.unix_secs);
         st.engine.observe_response(&req.p, status, now);
     }
+
+    /// Copies what the guard has learned (see [`crate::snapshot`]). Requests keep being
+    /// served meanwhile: the state lock is taken once per table to list its keys (a few
+    /// milliseconds for 100 000), then for 1 024 entries at a time (≤ 1.5 ms), with a
+    /// 50 µs pause in between. So the copy is not atomic, which costs nothing here (each
+    /// entry is consistent, and the clock is read last). It blocks the calling thread
+    /// for 0.1–0.3 s at the default caps: call it from a background thread, and
+    /// serialise the snapshot after it returns.
+    pub fn snapshot(&self) -> Snapshot {
+        let taken_at = unix_secs(SystemTime::now());
+        let features = FeatureEngine::snapshot(&|f| f(&self.lock().engine));
+        let rules = Tracker::snapshot(&|f| f(&self.lock().rules));
+        let cooldowns = copy_in_chunks(&|f| f(&self.lock()), |s| &s.cooldowns, Strikes::clone);
+        Snapshot::new(Learned {
+            taken_at,
+            time_source: self.settings().config.guard.time_source,
+            // after the tables, so no entry is newer than the clock
+            clock: self.lock().clock.reading(),
+            features,
+            rules,
+            cooldowns,
+        })
+    }
+
+    /// Replaces what the guard has learned with `snapshot`, within this guard's caps
+    /// (the most recently used entries are kept). Call it before the first request. On an
+    /// error nothing changes: another format or layout ([`Error::SnapshotVersion`],
+    /// [`Error::SnapshotLayout`]), another `time_source`, or an event clock more than
+    /// [`MAX_CLOCK_AHEAD_SECS`] ahead of the system clock ([`Error::SnapshotIncompatible`]).
+    ///
+    /// Values are checked for range as well as shape: no stored time may lie after the
+    /// snapshot's clock (a later one is set to it), a cooldown ends at most
+    /// `cooldown_secs` after it, counters are not negative, and the system-mode clock and
+    /// the gap since `taken_at` are bounded ([`MAX_SYSTEM_CLOCK_SECS`],
+    /// [`MAX_RESTART_GAP_SECS`]).
+    pub fn restore(&self, snapshot: Snapshot) -> Result<(), Error> {
+        self.restore_at(snapshot, SystemTime::now())
+    }
+
+    /// [`restore`](Self::restore) with the system clock reading `now`.
+    pub fn restore_at(&self, snapshot: Snapshot, now: SystemTime) -> Result<(), Error> {
+        let s = snapshot.into_state()?;
+        let settings = self.settings();
+        let g = &settings.config.guard;
+        if s.time_source != g.time_source {
+            return Err(Error::SnapshotIncompatible(format!(
+                "taken with time_source {:?}, this guard uses {:?}",
+                s.time_source, g.time_source
+            )));
+        }
+        let now = unix_secs(now);
+        // Built before taking the lock: only the swap happens under it.
+        let mut fresh = State::empty(g);
+        // the engine time the state is as of: nothing in it may be later
+        let as_of = match &mut fresh.clock {
+            Clock::Event { max } => match s.clock {
+                Some(clock) if clock > now + MAX_CLOCK_AHEAD_SECS => {
+                    return Err(Error::SnapshotIncompatible(format!(
+                        "its clock is {:.0} s ahead of the system clock",
+                        clock - now
+                    )));
+                }
+                Some(clock) => {
+                    *max = clock;
+                    clock
+                }
+                None => now, // no event yet: there should be nothing to clamp
+            },
+            // resume where it stopped, plus the time that passed in between
+            Clock::System { offset, .. } => {
+                let clock = s.clock.unwrap_or(0.0).clamp(0.0, MAX_SYSTEM_CLOCK_SECS);
+                let gap = (now - s.taken_at).clamp(0.0, MAX_RESTART_GAP_SECS);
+                *offset = clock + gap;
+                clock
+            }
+        };
+        fresh.engine.restore(s.features, as_of);
+        let actor_configs =
+            || std::iter::once(g.for_actor("")).chain(g.actors.keys().map(|id| g.for_actor(id)));
+        let window_cap = actor_configs()
+            .map(|eff| tracker::window_cap(&eff))
+            .max()
+            .unwrap_or(1);
+        fresh.rules.restore(s.rules, window_cap, as_of);
+        let cooldown = actor_configs()
+            .map(|eff| eff.cooldown_secs)
+            .fold(0.0, f64::max);
+        lru_refill(&mut fresh.cooldowns, s.cooldowns, |c| {
+            c.blocks.clamp_to(as_of);
+            c.until = c.until.min(as_of + cooldown);
+        });
+        let mut st = self.lock();
+        if let (Clock::Event { max }, Clock::Event { max: seen }) = (&mut fresh.clock, &st.clock) {
+            *max = max.max(*seen); // the clock never goes backwards
+        }
+        let old = std::mem::replace(&mut *st, fresh);
+        drop(st);
+        drop(old); // freeing a full state takes a while: not under the lock
+        Ok(())
+    }
 }
 
 const _: () = {
@@ -709,5 +864,567 @@ mod tests {
         let g = Guard::from_toml_str("").unwrap();
         let a = g.assess(&Event::new("a", "GET", "/", at(0.0)));
         assert!((1..=99).contains(&a.bot_score));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::snapshot::{FORMAT_VERSION, layout_fingerprint};
+    use serde_json::Value;
+    use std::net::IpAddr;
+    use std::time::{Duration, SystemTime};
+
+    /// Hybrid mode with rules and a small actor cap, so every table is used, LRU
+    /// eviction happens and cooldowns start.
+    const CONFIG: &str = "[guard]\nmax_actors = 50\nwindow_secs = 60\nburst_max_events = 25\nrepetition_max_count = 15\ncooldown_secs = 120\ncooldown_after_blocks = 2\n[guard.adaptive]\nwarmup_secs = 30\n";
+
+    fn at(t: f64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_secs_f64(t)
+    }
+
+    /// Request `i` of a deterministic mix: 80 browsing actors over 5 routes (object ids,
+    /// failed logins, two user agents) and a flooding scraper.
+    fn event(i: u64, t: f64) -> (Event, u16) {
+        let flood = i % 4 == 0;
+        let n = if flood { 250 } else { i * 7 % 80 };
+        let ip: IpAddr = format!("198.51.100.{n}").parse().unwrap();
+        let (method, path, status) = match (flood, i % 5) {
+            (true, _) => ("GET", format!("/product/{}", 5000 + i), 404),
+            (_, 0) => ("GET", format!("/product/{}", 1000 + i % 40), 200),
+            (_, 1) => ("POST", "/login".to_string(), 401),
+            (_, 2) => ("GET", "/search?q=shoes".to_string(), 200),
+            (_, 3) => ("GET", format!("/api/items/{i}"), 200),
+            _ => ("GET", "/".to_string(), 200),
+        };
+        let ua = if i % 3 == 0 {
+            "curl/8.4"
+        } else {
+            "Mozilla/5.0"
+        };
+        let ev = Event::new(format!("ip:{ip}"), method, path, at(t))
+            .with_ip(ip)
+            .with_user_agent(ua);
+        (ev, status)
+    }
+
+    /// Runs requests `range` at 4 per second starting at `t0`.
+    fn traffic(g: &Guard, range: std::ops::Range<u64>, t0: f64) -> Vec<Assessment> {
+        range
+            .map(|i| {
+                let (ev, status) = event(i, t0 + i as f64 * 0.25);
+                let a = g.assess(&ev);
+                g.observe_response(&ev, status);
+                a
+            })
+            .collect()
+    }
+
+    fn assert_same(a: &[Assessment], b: &[Assessment]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.decision, y.decision, "request {i}");
+            assert_eq!(x.risk.to_bits(), y.risk.to_bits(), "request {i}");
+            assert_eq!(
+                x.model_risk.to_bits(),
+                y.model_risk.to_bits(),
+                "request {i}"
+            );
+            assert_eq!(
+                x.rules_risk.to_bits(),
+                y.rules_risk.to_bits(),
+                "request {i}"
+            );
+            assert_eq!(x.features, y.features, "request {i}");
+            assert_eq!(x.reasons, y.reasons, "request {i}");
+        }
+    }
+
+    fn json(s: &Snapshot) -> Value {
+        serde_json::from_slice(&s.to_json()).unwrap()
+    }
+
+    /// The learned state without the wall-clock time it was taken at.
+    fn learned(s: &Snapshot) -> Value {
+        let mut v = json(s);
+        v["state"]["taken_at"] = Value::Null;
+        v
+    }
+
+    fn restored(v: &Value) -> Result<Guard, Error> {
+        let g = Guard::from_toml_str(CONFIG).unwrap();
+        g.restore(Snapshot::from_json(&serde_json::to_vec(v).unwrap())?)?;
+        Ok(g)
+    }
+
+    #[test]
+    fn round_trip_gives_identical_decisions() {
+        let original = Guard::from_toml_str(CONFIG).unwrap();
+        let first = traffic(&original, 0..3000, 0.0);
+        assert!(
+            first.iter().any(|a| a.decision == Decision::Block),
+            "the scraper is blocked"
+        );
+        let snap = original.snapshot();
+        let s = snap.state.as_ref().unwrap();
+        let end = 3000.0 * 0.25;
+        assert!(
+            s.cooldowns.iter().any(|(_, c)| c.until
+                > at(end)
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64()),
+            "and is in a cooldown"
+        );
+        assert!(
+            s.rules.len() > 0 && s.features.actors() == 50,
+            "tables full"
+        );
+        let copy = Guard::from_toml_str(CONFIG).unwrap();
+        copy.restore(Snapshot::from_json(&snap.to_json()).unwrap())
+            .unwrap();
+        assert_eq!(learned(&copy.snapshot()), learned(&snap), "lossless");
+
+        // the same events right after, after a restart gap of an hour and of 400 days
+        for gap in [0.0, 3600.0, 400.0 * 86400.0] {
+            let a = traffic(&original, 3000..3600, end + gap);
+            let b = traffic(&copy, 3000..3600, end + gap);
+            assert_same(&a, &b);
+            assert!(a.iter().all(|x| x.risk.is_finite()));
+        }
+    }
+
+    #[test]
+    fn restart_gap_decays_as_if_time_passed() {
+        let g = Guard::from_toml_str(CONFIG).unwrap();
+        let ev = |t: f64| Event::new("ip:192.0.2.1", "GET", "/", at(t));
+        for i in 0..60 {
+            g.assess(&ev(i as f64 * 0.1));
+        }
+        let burst = |a: &Assessment| a.features[0];
+        let hot = burst(&g.assess(&ev(6.0)));
+        let copy = Guard::from_toml_str(CONFIG).unwrap();
+        copy.restore(g.snapshot()).unwrap();
+        // ten minutes later the burst has decayed as if the gateway had kept running
+        let later = burst(&copy.assess(&ev(606.0)));
+        assert_eq!(later.to_bits(), burst(&g.assess(&ev(606.0))).to_bits());
+        assert!(hot > 3.0 && later < 0.8, "{hot} → {later}");
+    }
+
+    #[test]
+    fn version_and_layout_mismatch_are_refused() {
+        let g = Guard::from_toml_str(CONFIG).unwrap();
+        traffic(&g, 0..500, 0.0);
+        let snap = g.snapshot();
+        assert_eq!(snap.version(), FORMAT_VERSION);
+        assert!(snap.actors() > 0);
+
+        let mut v = json(&snap);
+        v["format"] = Value::from(FORMAT_VERSION + 1);
+        // another format's body isn't even parsed
+        v["state"] = Value::from("whatever format 2 looks like");
+        assert!(matches!(
+            restored(&v),
+            Err(Error::SnapshotVersion { found, expected }) if found == FORMAT_VERSION + 1 && expected == FORMAT_VERSION
+        ));
+
+        let mut v = json(&snap);
+        v["layout"] = Value::from(v["layout"].as_u64().unwrap() ^ 1);
+        assert!(matches!(restored(&v), Err(Error::SnapshotLayout)));
+
+        // a refused snapshot leaves the guard as it was
+        let before = learned(&g.snapshot());
+        let mut v = json(&snap);
+        v["format"] = Value::from(0);
+        let bad = Snapshot::from_json(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert!(g.restore(bad).is_err());
+        assert_eq!(learned(&g.snapshot()), before);
+
+        // another time source
+        let sys = Guard::from_toml_str("[guard]\ntime_source = \"system\"\n").unwrap();
+        assert!(matches!(
+            sys.restore(snap.clone()),
+            Err(Error::SnapshotIncompatible(_))
+        ));
+    }
+
+    #[test]
+    fn a_clock_ahead_of_the_system_clock_is_refused() {
+        let g = Guard::from_toml_str(CONFIG).unwrap();
+        let now = SystemTime::now();
+        g.assess(&Event::new(
+            "a",
+            "GET",
+            "/",
+            now + Duration::from_secs(3600),
+        ));
+        let copy = Guard::from_toml_str(CONFIG).unwrap();
+        assert!(matches!(
+            copy.restore_at(g.snapshot(), now),
+            Err(Error::SnapshotIncompatible(_))
+        ));
+        assert!(
+            copy.restore_at(g.snapshot(), now + Duration::from_secs(3600))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn system_clock_resumes_after_the_gap() {
+        let cfg = "[guard]\ntime_source = \"system\"\n";
+        let g = Guard::from_toml_str(cfg).unwrap();
+        g.assess(&Event::new("a", "GET", "/", at(0.0)));
+        let snap = g.snapshot();
+        let s = snap.state.as_ref().unwrap();
+        let (taken_at, saved) = (s.taken_at, s.clock.unwrap());
+        let copy = Guard::from_toml_str(cfg).unwrap();
+        let day = 86_400.0;
+        copy.restore_at(
+            snap,
+            SystemTime::UNIX_EPOCH + Duration::from_secs_f64(taken_at + day),
+        )
+        .unwrap();
+        let resumed = copy.snapshot().state.unwrap().clock.unwrap();
+        assert!(
+            resumed >= saved + day && resumed < saved + day + 5.0,
+            "{saved} → {resumed}"
+        );
+
+        // a crafted clock and taken_at are bounded
+        let mut v = json(&g.snapshot());
+        v["state"]["clock"] = Value::from(1e300f64.to_bits());
+        v["state"]["taken_at"] = Value::from(0u64);
+        let crafted = Guard::from_toml_str(cfg).unwrap();
+        crafted
+            .restore(Snapshot::from_json(&serde_json::to_vec(&v).unwrap()).unwrap())
+            .unwrap();
+        let clock = crafted.snapshot().state.unwrap().clock.unwrap();
+        assert!(
+            clock <= MAX_SYSTEM_CLOCK_SECS + MAX_RESTART_GAP_SECS + 5.0,
+            "{clock}"
+        );
+    }
+
+    #[test]
+    fn restored_times_are_clamped_to_the_clock() {
+        let g = Guard::from_toml_str(CONFIG).unwrap();
+        traffic(&g, 0..3000, 0.0);
+        let mut v = json(&g.snapshot());
+        let clock = f64::from_bits(v["state"]["clock"].as_u64().unwrap());
+        let bits = |x: f64| Value::from(x.to_bits());
+        // a cooldown for a year, a counter from the future, a negative counter, a window
+        // entry and a route baseline from the future
+        let cooldowns = v["state"]["cooldowns"].as_array_mut().unwrap();
+        assert!(!cooldowns.is_empty());
+        for c in cooldowns.iter_mut() {
+            c[1]["until"] = bits(clock + 365.0 * 86_400.0);
+        }
+        let actor = &mut v["state"]["features"]["actors"][0][1];
+        actor[4][0] = Value::from(vec![bits(-5.0), bits(clock + 1e6)]); // burst [v, t]
+        actor[2] = bits(clock + 1e6); // last_seen
+        v["state"]["rules"]["actors"][0][1][0][0][0] = bits(clock + 1e6); // entry ts
+        v["state"]["features"]["routes"][0][1][0] = bits(clock + 1e6); // first_seen
+        let copy = Guard::from_toml_str(CONFIG).unwrap();
+        copy.restore(Snapshot::from_json(&serde_json::to_vec(&v).unwrap()).unwrap())
+            .unwrap();
+        let s = json(&copy.snapshot());
+        let f = |v: &Value| f64::from_bits(v.as_u64().unwrap());
+        for c in s["state"]["cooldowns"].as_array().unwrap() {
+            assert!(
+                f(&c[1]["until"]) <= clock + 120.0,
+                "at most cooldown_secs ahead"
+            );
+        }
+        let actors = s["state"]["features"]["actors"].as_array().unwrap();
+        let restored = actors
+            .iter()
+            .find(|a| a[0] == v["state"]["features"]["actors"][0][0]);
+        let a = &restored.unwrap()[1];
+        assert_eq!((f(&a[4][0][0]), f(&a[4][0][1])), (0.0, clock));
+        assert_eq!(f(&a[2]), clock);
+        assert!(f(&s["state"]["features"]["routes"][0][1][0]) <= clock);
+        for w in s["state"]["rules"]["actors"].as_array().unwrap() {
+            for e in w[1][0].as_array().unwrap() {
+                assert!(f(&e[0]) <= clock);
+            }
+        }
+        // and the guard keeps deciding with finite numbers
+        assert!(
+            traffic(&copy, 3000..3100, 0.0)
+                .iter()
+                .all(|a| a.risk.is_finite())
+        );
+    }
+
+    /// The serialised shape of format `FORMAT_VERSION`, frozen. If this fails, the
+    /// snapshot's shape changed (a field added, removed, reordered or re-encoded in
+    /// `ActorState`, `ClientState`, `SubnetState`, `RouteState`, `Strikes`, tracker
+    /// `Entry` or the containers): bump `FORMAT_VERSION`, so files of the old shape are
+    /// refused cleanly, and regenerate the file with
+    /// `PG_BLESS=1 cargo test -p pattern-guard --lib golden`.
+    #[test]
+    fn golden_snapshot_keeps_its_shape() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/snapshot-v1.json");
+        if std::env::var_os("PG_BLESS").is_some() {
+            let g = Guard::from_toml_str(
+                "[guard]\nwindow_secs = 60\nburst_max_events = 5\ncooldown_secs = 120\ncooldown_after_blocks = 2\n",
+            )
+            .unwrap();
+            for i in 0..90u64 {
+                let (actor, ua, path, status) = match i % 3 {
+                    0 => (
+                        "ip:198.51.100.7",
+                        "Mozilla/5.0",
+                        format!("/item/{}", i / 3),
+                        200,
+                    ),
+                    1 => ("ip:198.51.100.8", "Mozilla/5.0", "/login".to_string(), 401),
+                    _ => (
+                        "ip:203.0.113.9",
+                        "curl/8",
+                        format!("/item/{}", 1000 + i),
+                        404,
+                    ),
+                };
+                let ev = Event::new(actor, "GET", path, at(i as f64))
+                    .with_ip(actor[3..].parse().unwrap())
+                    .with_user_agent(ua);
+                g.assess(&ev);
+                g.observe_response(&ev, status);
+            }
+            let mut v = json(&g.snapshot());
+            v["state"]["taken_at"] = Value::from(1_700_000_100f64.to_bits());
+            std::fs::write(path, serde_json::to_string_pretty(&v).unwrap() + "\n").unwrap();
+        }
+        let golden: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            golden["format"], FORMAT_VERSION,
+            "FORMAT_VERSION changed: regenerate {path} (see this test's docs)"
+        );
+        let s = &golden["state"];
+        let nonempty = |p: &[&str]| {
+            p.iter()
+                .fold(s, |v, k| &v[*k])
+                .as_array()
+                .is_some_and(|a| !a.is_empty())
+        };
+        assert!(
+            ["actors", "clients", "subnets", "routes"]
+                .iter()
+                .all(|t| nonempty(&["features", t]))
+                && nonempty(&["rules", "actors"])
+                && nonempty(&["cooldowns"]),
+            "the golden file uses every table"
+        );
+        // the layout fingerprint follows the toolchain's hash; the shape is what's tested
+        let mut current = golden.clone();
+        current["layout"] = Value::from(layout_fingerprint());
+        let parsed =
+            Snapshot::from_json(&serde_json::to_vec(&current).unwrap()).unwrap_or_else(|e| {
+                panic!("the format-{FORMAT_VERSION} golden file no longer parses: {e}")
+            });
+        assert!(parsed.state.is_some());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&parsed.to_json()).unwrap(),
+            current,
+            "a format-{FORMAT_VERSION} snapshot no longer serialises the same way: bump FORMAT_VERSION"
+        );
+    }
+
+    #[test]
+    fn restore_reapplies_the_caps() {
+        let big = Guard::from_toml_str("[guard]\nmax_actors = 1000\n").unwrap();
+        for i in 0..500 {
+            big.assess(&Event::new(
+                format!("ip:10.0.{}.{}", i / 250, i % 250),
+                "GET",
+                "/",
+                at(i as f64),
+            ));
+        }
+        let mut v = json(&big.snapshot());
+        // a hand-made entry far over the per-actor list sizes, and a bad ring position
+        let actors = v["state"]["features"]["actors"].as_array_mut().unwrap();
+        let newest = &mut actors.last_mut().unwrap()[1];
+        newest[5][0] = Value::from(
+            (0..500u64)
+                .map(|k| Value::from(vec![Value::from(k), Value::from(vec![0u64, 0])]))
+                .collect::<Vec<_>>(),
+        );
+        let ids: Vec<Value> = (0..40u64).map(|i| serde_json::json!([i, i])).collect();
+        newest[6] = serde_json::json!([ids, 12345]);
+        let small = Guard::from_toml_str("[guard]\nmax_actors = 10\n").unwrap();
+        small
+            .restore(Snapshot::from_json(&serde_json::to_vec(&v).unwrap()).unwrap())
+            .unwrap();
+        let s = json(&small.snapshot());
+        let actors = s["state"]["features"]["actors"].as_array().unwrap();
+        assert_eq!(actors.len(), 10, "the 10 most recent actors");
+        assert_eq!(
+            actors.last().unwrap()[0],
+            v["state"]["features"]["actors"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()[0]
+        );
+        let newest = &actors.last().unwrap()[1];
+        assert_eq!(newest[5][0].as_array().unwrap().len(), 16);
+        assert_eq!(newest[6][0].as_array().unwrap().len(), 32);
+        assert!(newest[6][1].as_u64().unwrap() < 32);
+        // the clamped ring position works
+        for id in 0..100 {
+            small.assess(&Event::new(
+                "ip:10.0.1.249",
+                "GET",
+                format!("/o/{id}"),
+                at(600.0),
+            ));
+        }
+    }
+
+    /// Size and cost of a snapshot with every table at its default cap (100 000 actors,
+    /// 50 000 clients and subnets, 10 000 routes, cooldowns, and with `burst_max_events`
+    /// set the rules windows too), each actor sending `per_actor` requests over distinct
+    /// routes and object ids. While the snapshot is copied, another thread keeps calling
+    /// `assess` and records its slowest call (how long a request waits for the lock).
+    /// `cargo test --release -p pattern-guard --lib -- --ignored full_caps --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_snapshot_at_full_caps() {
+        let word = |mut n: u64| {
+            let mut s = String::new();
+            for _ in 0..3 {
+                s.push((b'a' + (n % 26) as u8) as char);
+                n /= 26;
+            }
+            s
+        };
+        for (cfg, per_actor) in [("", 4u64), ("", 40), ("burst_max_events = 100", 40)] {
+            let cfg = format!("[guard]\n{cfg}\n");
+            let g = Guard::from_toml_str(&cfg).unwrap();
+            let fill = std::time::Instant::now();
+            for i in 0..100_000u64 {
+                let net = i % 60_000; // 60 000 /24 networks, one or two actors each
+                let ip: IpAddr = format!("10.{}.{}.{}", net / 256, net % 256, i / 60_000 + 1)
+                    .parse()
+                    .unwrap();
+                for j in 0..per_actor {
+                    let ev = Event::new(
+                        format!("ip:{ip}"),
+                        "GET",
+                        format!("/{}/{}", word((i + j) % 12_000), i * 50 + j),
+                        at(i as f64 * 0.01 + j as f64 * 0.001),
+                    )
+                    .with_ip(ip)
+                    .with_user_agent(format!("agent-{}", i % 60_000));
+                    g.assess(&ev);
+                    g.observe_response(&ev, if j % 3 == 0 { 404 } else { 200 });
+                }
+            }
+            let fill = fill.elapsed();
+            // the same probe without a snapshot: scheduling noise on this machine
+            let idle = {
+                let mut worst = Duration::ZERO;
+                let ev = Event::new("ip:192.0.2.1", "GET", "/", at(2000.0));
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_millis(300) {
+                    let t = std::time::Instant::now();
+                    g.assess(&ev);
+                    worst = worst.max(t.elapsed());
+                }
+                worst
+            };
+            println!("slowest assess without a snapshot: {idle:.2?}");
+            let done = std::sync::atomic::AtomicBool::new(false);
+            let (snap, copy_time, worst_wait) = std::thread::scope(|sc| {
+                let probe = sc.spawn(|| {
+                    let mut worst = Duration::ZERO;
+                    let ev = Event::new("ip:192.0.2.1", "GET", "/", at(2000.0));
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        let t = std::time::Instant::now();
+                        g.assess(&ev);
+                        worst = worst.max(t.elapsed());
+                    }
+                    worst
+                });
+                let t = std::time::Instant::now();
+                let snap = g.snapshot();
+                let copy_time = t.elapsed();
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                (snap, copy_time, probe.join().unwrap())
+            });
+            let t = std::time::Instant::now();
+            let bytes = snap.to_json();
+            let ser = t.elapsed();
+            let t = std::time::Instant::now();
+            let back = Snapshot::from_json(&bytes).unwrap();
+            let de = t.elapsed();
+            let fresh = Guard::from_toml_str(&cfg).unwrap();
+            let t = std::time::Instant::now();
+            fresh.restore(back).unwrap();
+            let restore = t.elapsed();
+            let s = snap.state.as_ref().unwrap();
+            let [actors, clients, subnets, routes] = s.features.sizes();
+            println!(
+                "{} {per_actor} requests/actor (fill {fill:.1?}): actors {actors} clients {clients} subnets {subnets} \
+                 routes {routes} windows {} cooldowns {}: {:.1} MB JSON; copy {copy_time:.1?} (slowest assess \
+                 meanwhile {worst_wait:.2?}), serialise {ser:.1?}, parse {de:.1?}, restore {restore:.1?}",
+                cfg.trim().replace('\n', " "),
+                s.rules.len(),
+                s.cooldowns.len(),
+                bytes.len() as f64 / 1e6,
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_or_garbage_input_is_refused_without_a_panic() {
+        let g = Guard::from_toml_str(CONFIG).unwrap();
+        traffic(&g, 0..400, 0.0);
+        let bytes = g.snapshot().to_json();
+        for cut in (0..bytes.len()).step_by(97) {
+            assert!(Snapshot::from_json(&bytes[..cut]).is_err(), "cut at {cut}");
+        }
+        let load = |b: &[u8]| {
+            let copy = Guard::from_toml_str(CONFIG).unwrap();
+            Snapshot::from_json(b).and_then(|s| copy.restore(s))
+        };
+        for garbage in [
+            &b""[..],
+            b"\x00\xff garbage",
+            b"null",
+            b"{}",
+            b"{\"format\": 1}",
+            b"{\"format\": 1, \"layout\": 2, \"state\": {}}",
+            b"[1, 2, 3]",
+            b"[1]",
+        ] {
+            assert!(
+                load(garbage).is_err(),
+                "{}",
+                String::from_utf8_lossy(garbage)
+            );
+        }
+        // NaN and infinities are refused
+        let mut v: Value = serde_json::from_slice(&bytes).unwrap();
+        v["state"]["clock"] = Value::from(f64::INFINITY.to_bits());
+        assert!(Snapshot::from_json(&serde_json::to_vec(&v).unwrap()).is_err());
+        // flipped bytes anywhere: an error or a usable guard, never a panic
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..300 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mut b = bytes.clone();
+            let pos = state as usize % b.len();
+            b[pos] = b"0123456789[]{},\":-e9"[(state >> 32) as usize % 20];
+            let copy = Guard::from_toml_str(CONFIG).unwrap();
+            if let Ok(s) = Snapshot::from_json(&b) {
+                if copy.restore(s).is_ok() {
+                    traffic(&copy, 400..420, 200.0);
+                }
+            }
+        }
     }
 }

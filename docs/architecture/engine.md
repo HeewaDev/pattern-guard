@@ -16,6 +16,7 @@ the structure and the data flow.
 | `Guard::assess(&Event) -> Assessment` | Score a request and record it. Call it **once per request, before handling it** |
 | `Guard::observe_response(&Event, status)` | Report the status your handler returned, for the same event |
 | `Guard::check`, `check_with_risk` | Shorthands that return only the decision, or the decision and the risk |
+| `Guard::snapshot() -> Snapshot`, `Guard::restore(Snapshot)`, `restore_at(…, now)` | Copy out / put back what the guard has learned, to survive a restart (see [Snapshots](#snapshots)). `Snapshot` is serde; `to_json` / `from_json` |
 | `Event::new(actor, action, target, time)` + `with_ip`, `with_user_agent`, `with_fingerprint`, `with_weight`, `with_metadata` | The request as the engine sees it |
 | `Assessment { decision, risk, bot_score, model_risk, rules_risk, reasons, features }` | The result. `bot_score` = `1 + round((1 − risk) × 98)` |
 | `Decision` | `Allow < Warn < Delay(d) < Challenge < Block`. `Challenge` appears only when `challenge_below` is set |
@@ -35,7 +36,8 @@ the structure and the data flow.
 | `config.rs` | `Config` / `GuardConfig` / `AdaptiveConfig` / per-actor overrides, `validate`, `EffectiveConfig::risk_to_decision` |
 | `event.rs` | `Event` and its builder; the client key (fingerprint, else user agent) |
 | `decision.rs` | `Decision` |
-| `error.rs` | `Error` (thiserror): config I/O, parse, validation, model errors |
+| `error.rs` | `Error` (thiserror): config I/O, parse, validation, model and snapshot errors |
+| `snapshot.rs` | `Snapshot` (format version, layout fingerprint, the learned state), floats as bits, chunked table copies |
 | `ml/features.rs` | `FeatureEngine`: four LRU tables of decayed state → 28 features |
 | `ml/model.rs` | Standardised logistic regression: `predict` with per-feature contributions, `train` (Adam), TOML format |
 | `rules/tracker.rs` | Sliding window per actor (event time, O(1) incremental counts) for the optional threshold rules |
@@ -77,7 +79,7 @@ creates or refreshes an LRU entry.
 | `time_source` | `now` | Use |
 |---|---|---|
 | `event` (default) | the event's timestamp, made monotonic (`max` of all timestamps seen) | log replay gives exactly the live results; the gateway passes server time |
-| `system` | seconds since the guard was created (`Instant`) | embedders whose event times are unreliable |
+| `system` | seconds since the guard was created (`Instant`), plus where a restored snapshot's clock left off | embedders whose event times are unreliable |
 
 Never pass a client-supplied timestamp: with `event` time, it would drive every window.
 
@@ -197,6 +199,60 @@ increasing complexity:
 3. Keep the shared tables in lock-free structures (atomic decayed counters) and shard the actors.
 
 Whichever option is chosen, the result must be checked against `realworld_eval` before and after.
+
+## Snapshots
+
+`Guard::snapshot()` copies the learned state: the clock, the four feature tables, the rule
+windows and the cooldowns, each table least recently used first. `Guard::restore` builds a
+fresh state from it outside the lock and swaps it in. The engine does no I/O; the caller
+serialises the `Snapshot` (any serde format) and stores it. The gateway does this in
+`persistence.rs`.
+
+- **Copy without stalling requests.** A table is copied 1 024 entries per hold of the
+  state lock, with a 50 µs pause in between (std's `Mutex` isn't fair: without the pause
+  the copying thread takes the lock straight back and waiting requests starve). One hold
+  per table lists its keys in LRU order. At the default caps, the slowest `assess` during
+  a snapshot took 5–20 ms (75–320 ms when copied in one hold).
+- **Versioned.** `format` (`FORMAT_VERSION`) and `layout` (a `hash_str` of `N_FEATURES` and
+  `FEATURE_NAMES`, which also changes if the key hash changes) come first. A mismatch
+  skips the state without parsing it and is refused with `Error::SnapshotVersion` /
+  `SnapshotLayout`. Another `time_source` is `SnapshotIncompatible`. The fingerprint
+  doesn't cover the shape of the state structs: `golden_snapshot_keeps_its_shape` does.
+  It parses a frozen format-1 file (`crates/engine/tests/data/snapshot-v1.json`) and
+  requires it to serialise back unchanged, so a change to `ActorState`, `ClientState`,
+  `RouteState`, `Strikes`, a tracker `Entry` or a container fails the test until
+  `FORMAT_VERSION` is bumped and the file regenerated (`PG_BLESS=1`).
+- **Bounded.** `restore` keeps the most recent entries that fit `max_actors` and
+  `adaptive.max_*`, and cuts every per-entry list to its size (16 / 8 / 32 per actor,
+  32 / 64 per client, rule windows to the largest window any actor's config allows). A
+  ring position outside its buffer is brought inside on load.
+- **Range-checked.** Values are checked for range as well as shape (a crafted file): no
+  stored time may be later than the snapshot's clock (a later one is set to it), a
+  cooldown ends at most `cooldown_secs` after it, counters and baselines are not
+  negative (their logarithms would be NaN), the system-mode clock is at most 10¹⁰ s and
+  the gap added to it at most ten years.
+- **Exact.** Floats are stored as their IEEE-754 bits, because serde_json's default float
+  parsing can be off by one unit in the last place. A restored guard gives bit-identical
+  assessments on the same events (unit-tested). NaN and infinities are refused.
+- **Compact.** States are tuples without field names. JSON size at the default caps:
+  ~160 MB when actors send a few requests each, ~540 MB when every actor and client list
+  is full, ~900 MB with 40-entry rule windows on top. Serialising takes 0.15–0.8 s,
+  parsing 0.3–1.7 s, `restore` 40–500 ms.
+- **Keys, not identities.** Every table is keyed by the 64-bit hashes the engine already
+  uses (actor id, client fingerprint / user agent, route, subnet prefix, rule targets).
+  No raw id, user agent or path is stored. The hash is unkeyed, so `ip:<address>` is quick
+  to recover by brute force; treat a snapshot like an access log.
+
+**Time across a restart.** Every counter stores absolute times, so nothing has to be
+shifted. With `time_source = "event"` the clock resumes at the newest event the snapshot
+saw, and the first event after the restart moves it to the present: every counter decays
+by the real gap, as if the process had kept running and seen no traffic. Large gaps
+(days, years) only drive the decays to zero (`exp` of a large negative number), and
+cooldowns and windows expire. A snapshot whose clock is more than 60 s ahead of the
+system clock is refused: the event clock never goes backwards, so the counters would not
+decay until real time caught up. With `time_source = "system"` the restored clock resumes
+at its saved reading plus the wall-clock time between snapshot and restore (0 if the wall
+clock went backwards).
 
 ## Error handling and validation
 

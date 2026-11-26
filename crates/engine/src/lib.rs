@@ -24,6 +24,7 @@ pub mod guard;
 pub mod logs;
 pub mod ml;
 mod rules;
+pub mod snapshot;
 pub mod util;
 
 pub use ml::{features, model};
@@ -38,3 +39,4 @@ pub use guard::{Assessment, Guard, Reason, ReloadReport};
 pub use model::{Model, TrainOptions};
 /// Payload inspection (WAF), re-exported from the `pattern-guard-waf` crate.
 pub use pattern_guard_waf as waf;
+pub use snapshot::Snapshot;

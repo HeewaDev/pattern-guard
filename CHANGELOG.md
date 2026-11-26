@@ -91,6 +91,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit `TimeoutStopSec=20`. `pattern_guard_gateway::run_until(cfg, config_path, listener,
   admin, stop)` runs the gateway (with SIGHUP reload when `config_path` is set) until a
   future completes.
+- **Engine snapshots**: `Guard::snapshot()` copies what the behavioural engine has learned
+  (clock, actor / client / subnet / route tables, rule windows, cooldowns) and
+  `Guard::restore(snapshot)` puts it back, so learned baselines can survive a restart. The
+  `Snapshot` (new module `pattern_guard::snapshot`) is serde-serialisable
+  (`to_json` / `from_json`); the engine does no I/O. It carries a format version and a
+  layout fingerprint (feature names and key hashing); a mismatch, another `time_source`,
+  or an event clock more than 60 s ahead of the system clock is refused with the new
+  `Error::SnapshotVersion` / `SnapshotLayout` / `SnapshotIncompatible`, malformed input
+  with `SnapshotInvalid`. `restore` re-applies every cap and clamps restored times to the
+  snapshot's clock (cooldowns to `cooldown_secs`). A golden format-1 file fails the tests
+  when the shape changes without a `FORMAT_VERSION` bump. The copy takes the state lock
+  1 024 entries at a time. Floats are stored as their bits, so a restored guard decides
+  exactly as the original would have. `util::stats` types are serde-serialisable;
+  `TimeSource` is `Serialize`.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values

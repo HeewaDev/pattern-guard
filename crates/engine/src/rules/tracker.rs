@@ -8,13 +8,17 @@ use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::config::EffectiveConfig;
+use crate::snapshot::bits::F;
+use crate::snapshot::{With, copy_in_chunks};
 
 /// Fewer gaps than this and interval regularity is not judged (0.2 blocked any actor
 /// whose first two requests happened to be `interval_secs` apart).
 pub const INTERVAL_MIN_GAPS: usize = 5;
 
+#[derive(Debug, Clone)]
 struct Entry {
     ts: f64,
     rep_key: u64,
@@ -22,6 +26,69 @@ struct Entry {
     weight: f64,
     /// Gap to the previous entry matched `interval_secs` ± tolerance.
     interval_hit: bool,
+}
+
+/// In a snapshot: a tuple of the fields, floats as bits.
+impl Serialize for Entry {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (
+            F(self.ts),
+            self.rep_key,
+            self.target_key,
+            F(self.weight),
+            self.interval_hit,
+        )
+            .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Entry {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (F(ts), rep_key, target_key, F(weight), interval_hit) = Deserialize::deserialize(d)?;
+        Ok(Self {
+            ts,
+            rep_key,
+            target_key,
+            weight,
+            interval_hit,
+        })
+    }
+}
+
+/// One actor's window in a snapshot: the entries (oldest first) and the running weight
+/// sum (kept as is: re-adding the weights could differ in the last bit). The other
+/// aggregates are counts, rebuilt from the entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WindowSnapshot(Vec<Entry>, F);
+
+/// What a [`Tracker`] has learned: each actor's window, least recently used first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Learned {
+    actors: Vec<(u64, WindowSnapshot)>,
+}
+
+impl Learned {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.actors.len()
+    }
+}
+
+/// Entries an actor's window keeps at most: rules saturate at 2× their threshold, so
+/// keeping 2× the largest threshold is enough to compute every rule exactly while
+/// bounding memory per actor.
+pub(crate) fn window_cap(cfg: &EffectiveConfig) -> usize {
+    [
+        cfg.burst_max_events,
+        cfg.repetition_max_count,
+        cfg.hopping_max_targets,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .map(|m| 2 * m as usize + 2)
+    .unwrap_or(256)
+    .max(2 * INTERVAL_MIN_GAPS + 2)
 }
 
 #[derive(Default)]
@@ -92,20 +159,7 @@ impl Tracker {
         *w.targets.entry(target_key).or_default() += 1;
         w.weight_sum += weight;
 
-        // Rules saturate at 2× their threshold, so keeping 2× the largest threshold
-        // is enough to compute every rule exactly while bounding memory per actor.
-        let cap = [
-            cfg.burst_max_events,
-            cfg.repetition_max_count,
-            cfg.hopping_max_targets,
-        ]
-        .into_iter()
-        .flatten()
-        .max()
-        .map(|m| 2 * m as usize + 2)
-        .unwrap_or(256)
-        .max(2 * INTERVAL_MIN_GAPS + 2);
-
+        let cap = window_cap(cfg);
         let horizon = now - cfg.window_secs as f64;
         while w.q.len() > 1 && (w.q.len() > cap || w.q.front().is_some_and(|e| e.ts < horizon)) {
             w.pop_front();
@@ -118,6 +172,40 @@ impl Tracker {
             weight_sum: w.weight_sum,
             interval_gaps: w.q.len().saturating_sub(1),
             interval_hits: w.interval_hits,
+        }
+    }
+
+    /// Copies every window of the tracker `with` lends out, a chunk per lock hold (for
+    /// [`crate::Snapshot`]; see `snapshot::copy_in_chunks`).
+    pub(crate) fn snapshot(with: With<'_, Tracker>) -> Learned {
+        let copy = |w: &ActorWindow| WindowSnapshot(w.q.iter().cloned().collect(), F(w.weight_sum));
+        Learned {
+            actors: copy_in_chunks(with, |t| &t.actors, copy),
+        }
+    }
+
+    /// Replaces every window with `s`: at most this tracker's actor cap (the most
+    /// recently used), each window at most `window_cap` entries (the newest), no entry
+    /// later than `as_of` (the snapshot's clock).
+    pub(crate) fn restore(&mut self, s: Learned, window_cap: usize, as_of: f64) {
+        self.actors.clear();
+        let skip = s.actors.len().saturating_sub(self.actors.cap().get());
+        for (k, WindowSnapshot(entries, F(weight_sum))) in s.actors.into_iter().skip(skip) {
+            let mut w = ActorWindow {
+                weight_sum,
+                ..ActorWindow::default()
+            };
+            for mut e in entries {
+                e.ts = e.ts.min(as_of);
+                *w.rep.entry(e.rep_key).or_default() += 1;
+                *w.targets.entry(e.target_key).or_default() += 1;
+                w.q.push_back(e);
+            }
+            w.interval_hits = w.q.iter().skip(1).filter(|e| e.interval_hit).count();
+            while w.q.len() > window_cap.max(1) {
+                w.pop_front();
+            }
+            self.actors.put(k, w);
         }
     }
 }
