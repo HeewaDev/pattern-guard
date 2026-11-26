@@ -69,7 +69,10 @@ Take `policy/rate_limit.rs` or `policy/protocol.rs` as the template.
      startup, with messages that name the section.
    - `check(...) -> Option<XyzHit>` plus `check_at(..., now)` for tests.
    - All state is bounded: `Mutex<LruCache<…>>` with a `MAX_*` constant.
-3. **State** (`state.rs`): a field. In **`lib.rs::build_state`**: `Xyz::compile(&cfg.xyz)?`.
+3. **State** (`state.rs`): the definitions are a field of `Compiled`, built in
+   **`Compiled::compile`** with `Xyz::compile(&cfg.xyz)?`. State the layer learns from traffic
+   (buckets, counters) is a separate type in `Learned`, keyed by the definition's name
+   (`policy::definition_ids`), so it survives a reload.
 4. **Pipeline** (`proxy/mod.rs::handle`):
    - Compute the hit with the other gatekeeper checks (after the allow list and rules, before the fuse).
    - Add a `Layer::Xyz` variant in `proxy/verdict.rs` (and to `Layer::ALL` and `as_str`;

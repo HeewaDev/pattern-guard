@@ -6,6 +6,9 @@
 //!
 //! The store keeps at most `limits.max_bans` of them (the one closest to expiry is
 //! dropped first), and merges IPv6 bans that share a `/64` into one `/64` ban.
+//!
+//! [`Bans`] is the policy (`[bans]`, `[traps]`; compiled), [`Offenders`] the recent
+//! blocks and ban counts per IP (learned).
 
 use std::collections::VecDeque;
 use std::net::IpAddr;
@@ -26,19 +29,33 @@ struct Offender {
     bans: u32,
 }
 
+/// The ban and trap policy (compiled; rebuilt on reload).
 pub struct Bans {
     cfg: BanConfig,
     traps: TrapConfig,
-    offenders: Mutex<LruCache<IpAddr, Offender>>,
+}
+
+/// Recent blocks and earlier bans per IP, for the threshold and the escalation
+/// (learned; kept across reloads).
+pub struct Offenders(Mutex<LruCache<IpAddr, Offender>>);
+
+impl Default for Offenders {
+    fn default() -> Self {
+        Self(Mutex::new(LruCache::new(
+            NonZeroUsize::new(100_000).unwrap(),
+        )))
+    }
+}
+
+impl Offenders {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LruCache<IpAddr, Offender>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 impl Bans {
     pub fn new(cfg: BanConfig, traps: TrapConfig) -> Self {
-        Self {
-            cfg,
-            traps,
-            offenders: Mutex::new(LruCache::new(NonZeroUsize::new(100_000).unwrap())),
-        }
+        Self { cfg, traps }
     }
 
     /// The trap prefix this path hits, if any.
@@ -52,16 +69,27 @@ impl Bans {
     }
 
     /// Records an enforced block; returns the ban length if this block triggered a ban.
-    pub fn record_block(&self, ip: IpAddr, intel: &IntelStore) -> Option<Duration> {
-        self.record_block_at(ip, intel, Instant::now())
+    pub fn record_block(
+        &self,
+        offenders: &Offenders,
+        ip: IpAddr,
+        intel: &IntelStore,
+    ) -> Option<Duration> {
+        self.record_block_at(offenders, ip, intel, Instant::now())
     }
 
-    fn record_block_at(&self, ip: IpAddr, intel: &IntelStore, now: Instant) -> Option<Duration> {
+    fn record_block_at(
+        &self,
+        offenders: &Offenders,
+        ip: IpAddr,
+        intel: &IntelStore,
+        now: Instant,
+    ) -> Option<Duration> {
         if !self.cfg.enabled {
             return None;
         }
         let window = Duration::from_secs(self.cfg.window_secs.max(1));
-        let mut g = self.offenders.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = offenders.lock();
         let o = g.get_or_insert_mut(ip, Offender::default);
         while o
             .recent
@@ -87,9 +115,15 @@ impl Bans {
     }
 
     /// Bans immediately (traps); counts towards escalation.
-    pub fn ban_now(&self, ip: IpAddr, intel: &IntelStore, reason: String) -> Duration {
+    pub fn ban_now(
+        &self,
+        offenders: &Offenders,
+        ip: IpAddr,
+        intel: &IntelStore,
+        reason: String,
+    ) -> Duration {
         let now = Instant::now();
-        let mut g = self.offenders.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = offenders.lock();
         let o = g.get_or_insert_mut(ip, Offender::default);
         let secs = self.duration_for(o.bans, self.traps.ban_secs);
         o.bans += 1;
@@ -137,45 +171,46 @@ mod tests {
             "[bans]\nthreshold = 3\nwindow_secs = 10\nban_secs = 60\nescalation = 2.0\nmax_ban_secs = 200\n",
         );
         let intel = IntelStore::default();
+        let o = Offenders::default();
         let ip: IpAddr = "203.0.113.7".parse().unwrap();
         let t0 = Instant::now();
-        assert!(b.record_block_at(ip, &intel, t0).is_none());
+        assert!(b.record_block_at(&o, ip, &intel, t0).is_none());
         assert!(
-            b.record_block_at(ip, &intel, t0 + Duration::from_secs(1))
+            b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(1))
                 .is_none()
         );
         // a block outside the window doesn't count with the old ones
         assert!(
-            b.record_block_at(ip, &intel, t0 + Duration::from_secs(20))
+            b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(20))
                 .is_none()
         );
         assert!(
-            b.record_block_at(ip, &intel, t0 + Duration::from_secs(21))
+            b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(21))
                 .is_none()
         );
         let first = b
-            .record_block_at(ip, &intel, t0 + Duration::from_secs(22))
+            .record_block_at(&o, ip, &intel, t0 + Duration::from_secs(22))
             .unwrap();
         assert_eq!(first.as_secs(), 60);
         let e = intel.lookup(ip).unwrap();
         assert_eq!((e.action, e.source.as_str()), (IntelAction::Ban, SOURCE));
         for i in 0..2 {
             assert!(
-                b.record_block_at(ip, &intel, t0 + Duration::from_secs(30 + i))
+                b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(30 + i))
                     .is_none()
             );
         }
         assert_eq!(
-            b.record_block_at(ip, &intel, t0 + Duration::from_secs(33))
+            b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(33))
                 .unwrap()
                 .as_secs(),
             120
         );
         for i in 0..2 {
-            b.record_block_at(ip, &intel, t0 + Duration::from_secs(40 + i));
+            b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(40 + i));
         }
         assert_eq!(
-            b.record_block_at(ip, &intel, t0 + Duration::from_secs(43))
+            b.record_block_at(&o, ip, &intel, t0 + Duration::from_secs(43))
                 .unwrap()
                 .as_secs(),
             200,
@@ -189,16 +224,17 @@ mod tests {
             "[bans]\nenabled = false\n[traps]\npaths = [\"/wp-login.php\", \"/.env\"]\nban_secs = 900\n",
         );
         let intel = IntelStore::default();
+        let o = Offenders::default();
         let ip: IpAddr = "198.51.100.9".parse().unwrap();
         for _ in 0..50 {
             assert!(
-                b.record_block(ip, &intel).is_none(),
+                b.record_block(&o, ip, &intel).is_none(),
                 "automatic bans disabled"
             );
         }
         assert_eq!(b.trap("/wp-login.php?x=1"), Some("/wp-login.php"));
         assert_eq!(b.trap("/shop"), None);
-        assert_eq!(b.ban_now(ip, &intel, "trap".into()).as_secs(), 900);
+        assert_eq!(b.ban_now(&o, ip, &intel, "trap".into()).as_secs(), 900);
         assert!(intel.lookup(ip).is_some());
     }
 }

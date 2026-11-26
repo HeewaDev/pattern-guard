@@ -432,7 +432,7 @@ async fn deny_list_uses_client_ip_from_trusted_proxy() {
 #[tokio::test]
 async fn proof_of_work_challenge_round_trip() {
     let gw = start_gateway("").await;
-    gw.state.intel.add(
+    gw.state.learned.intel.add(
         Cidr::parse("192.0.2.60").unwrap(),
         IntelEntry {
             action: IntelAction::Challenge,
@@ -501,7 +501,7 @@ async fn proof_of_work_challenge_round_trip() {
         StatusCode::OK,
         "other IP isn't flagged, so passes anyway"
     );
-    gw.state.intel.add(
+    gw.state.learned.intel.add(
         Cidr::parse("192.0.2.61").unwrap(),
         IntelEntry {
             action: IntelAction::Challenge,
@@ -544,7 +544,7 @@ async fn crowdsec_decisions_are_enforced() {
     ))
     .await;
     for _ in 0..50 {
-        if !gw.state.intel.is_empty() {
+        if !gw.state.learned.intel.is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -591,6 +591,7 @@ async fn suricata_alerts_become_blocks() {
     for _ in 0..40 {
         if gw
             .state
+            .learned
             .intel
             .lookup("192.0.2.80".parse().unwrap())
             .is_some()

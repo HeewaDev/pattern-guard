@@ -18,6 +18,7 @@ use crate::state::State;
 fn bans_json(state: &State) -> String {
     let now = std::time::Instant::now();
     let items: Vec<_> = state
+        .learned
         .intel
         .list(policy::bans::SOURCE)
         .into_iter()
@@ -39,7 +40,7 @@ fn unban(state: &State, query: &str) -> (&'static str, String, StatusCode) {
         .and_then(Cidr::parse);
     match ip {
         Some(c) => {
-            state.intel.remove(c, policy::bans::SOURCE);
+            state.learned.intel.remove(c, policy::bans::SOURCE);
             (
                 "application/json",
                 serde_json::json!({ "unbanned": c.to_string() }).to_string(),
@@ -76,13 +77,15 @@ pub(crate) async fn serve_admin(state: Arc<State>, listener: TcpListener) {
                         ),
                         "/metrics" => (
                             "text/plain; version=0.0.4",
-                            st.metrics.render(st.intel.len()),
+                            st.runtime.metrics.render(st.learned.intel.len()),
                             StatusCode::OK,
                         ),
                         "/healthz" => ("text/plain", "ok".to_string(), StatusCode::OK),
-                        "/inventory" => {
-                            ("application/json", st.inventory.to_json(), StatusCode::OK)
-                        }
+                        "/inventory" => (
+                            "application/json",
+                            st.learned.inventory.to_json(),
+                            StatusCode::OK,
+                        ),
                         _ => ("text/plain", "not found".to_string(), StatusCode::NOT_FOUND),
                     };
                     let mut r = Response::new(proxy::full(body));

@@ -20,13 +20,14 @@ fn rss_mib() -> f64 {
 #[cfg(target_os = "linux")]
 fn rate_limit_keys(n: usize, len: usize) {
     use pattern_guard_gateway::config::GatewayConfig;
-    use pattern_guard_gateway::policy::rate_limit::RateLimiter;
+    use pattern_guard_gateway::policy::rate_limit::{Buckets, Limits};
 
     let cfg = GatewayConfig::from_toml_str(
         "upstream = \"http://127.0.0.1:1\"\n[[rate_limits]]\nname = \"api\"\npath = \"/api/\"\nkey = \"header:x-api-key\"\nrequests = 100\nper_secs = 60\n",
     )
     .unwrap();
-    let rl = RateLimiter::compile(&cfg.rate_limits).unwrap();
+    let rl = Limits::compile(&cfg.rate_limits).unwrap();
+    let buckets = Buckets::default();
     let ip = "203.0.113.9".parse().unwrap();
     let pad = "k".repeat(len);
     let req = |i: usize| {
@@ -38,10 +39,10 @@ fn rate_limit_keys(n: usize, len: usize) {
             .0
     };
     // warm up the allocator with one request of the same shape
-    assert!(rl.check(ip, &req(usize::MAX)).is_none());
+    assert!(rl.check(&buckets, ip, &req(usize::MAX)).is_none());
     let before = rss_mib();
     for i in 0..n {
-        assert!(rl.check(ip, &req(i)).is_none());
+        assert!(rl.check(&buckets, ip, &req(i)).is_none());
     }
     let grown = rss_mib() - before;
     println!("{n} unique {len}-byte API keys: RSS +{grown:.1} MiB");

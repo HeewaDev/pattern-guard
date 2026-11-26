@@ -2,6 +2,11 @@
 //! such as an API key). Every matching limit consumes a token; the most severe
 //! exceeded limit decides.
 //!
+//! [`Limits`] are the definitions compiled from `[[rate_limits]]`; [`Buckets`] are the
+//! learned token buckets. A bucket belongs to its limit by the limit's name (see
+//! `policy::definition_ids`), so a limit that is still configured after a reload keeps
+//! its buckets.
+//!
 //! Buckets are keyed by a keyed 64-bit hash of the key, never by the key itself: a
 //! client controls header values (up to hyper's ~400 KB request head), and 200 000
 //! buckets keyed by whole values could hold tens of GiB.
@@ -28,6 +33,8 @@ enum Key {
 }
 
 struct Limit {
+    /// Which buckets are this limit's (stable across reloads).
+    id: u64,
     name: String,
     path_prefix: Option<String>,
     path_re: Option<Regex>,
@@ -53,62 +60,30 @@ pub struct LimitHit {
     pub retry_after: u64,
 }
 
-pub struct RateLimiter {
+/// The configured rate limits (compiled; rebuilt on reload).
+pub struct Limits {
     limits: Vec<Limit>,
-    /// (limit index, hash of the key) → bucket.
-    buckets: Mutex<LruCache<(usize, u64), Bucket>>,
+}
+
+/// The token buckets of every limit (learned; kept across reloads).
+pub struct Buckets {
+    /// (limit id, hash of the key) → bucket.
+    buckets: Mutex<LruCache<(u64, u64), Bucket>>,
     /// SipHash with a random per-process key, so clients can't craft colliding keys
     /// to share (and drain) someone else's bucket.
     hasher: RandomState,
 }
 
-fn severity(a: LimitAction) -> u8 {
-    match a {
-        LimitAction::Delay => 1,
-        LimitAction::Challenge => 2,
-        LimitAction::Block => 3,
+impl Default for Buckets {
+    fn default() -> Self {
+        Self {
+            buckets: Mutex::new(LruCache::new(NonZeroUsize::new(MAX_BUCKETS).unwrap())),
+            hasher: RandomState::new(),
+        }
     }
 }
 
-impl RateLimiter {
-    pub fn compile(cfgs: &[RateLimitConfig]) -> Result<Self, String> {
-        let mut limits = Vec::with_capacity(cfgs.len());
-        for c in cfgs {
-            let bad = |m: &str| format!("rate limit {:?}: {m}", c.name);
-            if c.requests == 0 || c.per_secs.is_nan() || c.per_secs <= 0.0 {
-                return Err(bad("requests must be ≥ 1 and per_secs > 0"));
-            }
-            let key = match c.key.as_str() {
-                "ip" => Key::Ip,
-                "ip_route" => Key::IpRoute,
-                k => match k.strip_prefix("header:") {
-                    Some(h) if !h.is_empty() => Key::Header(h.to_ascii_lowercase()),
-                    _ => return Err(bad("key must be ip, ip_route or header:<name>")),
-                },
-            };
-            limits.push(Limit {
-                name: c.name.clone(),
-                path_prefix: c.path.clone(),
-                path_re: c
-                    .path_regex
-                    .as_deref()
-                    .map(Regex::new)
-                    .transpose()
-                    .map_err(|e| bad(&format!("bad path_regex: {e}")))?,
-                methods: c.methods.iter().map(|m| m.to_ascii_uppercase()).collect(),
-                key,
-                capacity: c.requests as f64,
-                refill_per_sec: c.requests as f64 / c.per_secs,
-                action: c.action,
-            });
-        }
-        Ok(Self {
-            limits,
-            buckets: Mutex::new(LruCache::new(NonZeroUsize::new(MAX_BUCKETS).unwrap())),
-            hasher: RandomState::new(),
-        })
-    }
-
+impl Buckets {
     /// The bucket key of limit `l` for this request: a 64-bit hash, so a bucket costs
     /// the same whatever the size of the value it is keyed by. The leading tag keeps an
     /// IP and a header value with the same text apart.
@@ -131,6 +106,64 @@ impl RateLimiter {
         h.finish()
     }
 
+    pub fn len(&self) -> usize {
+        self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+fn severity(a: LimitAction) -> u8 {
+    match a {
+        LimitAction::Delay => 1,
+        LimitAction::Challenge => 2,
+        LimitAction::Block => 3,
+    }
+}
+
+impl Limits {
+    pub fn compile(cfgs: &[RateLimitConfig]) -> Result<Self, String> {
+        let ids = super::definition_ids(cfgs.iter().map(|c| c.name.as_str()));
+        let mut limits = Vec::with_capacity(cfgs.len());
+        for (c, id) in cfgs.iter().zip(ids) {
+            let bad = |m: &str| format!("rate limit {:?}: {m}", c.name);
+            if c.requests == 0 || c.per_secs.is_nan() || c.per_secs <= 0.0 {
+                return Err(bad("requests must be ≥ 1 and per_secs > 0"));
+            }
+            let key = match c.key.as_str() {
+                "ip" => Key::Ip,
+                "ip_route" => Key::IpRoute,
+                k => match k.strip_prefix("header:") {
+                    Some(h) if !h.is_empty() => Key::Header(h.to_ascii_lowercase()),
+                    _ => return Err(bad("key must be ip, ip_route or header:<name>")),
+                },
+            };
+            limits.push(Limit {
+                id,
+                name: c.name.clone(),
+                path_prefix: c.path.clone(),
+                path_re: c
+                    .path_regex
+                    .as_deref()
+                    .map(Regex::new)
+                    .transpose()
+                    .map_err(|e| bad(&format!("bad path_regex: {e}")))?,
+                methods: c.methods.iter().map(|m| m.to_ascii_uppercase()).collect(),
+                key,
+                capacity: c.requests as f64,
+                refill_per_sec: c.requests as f64 / c.per_secs,
+                action: c.action,
+            });
+        }
+        Ok(Self { limits })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.limits.is_empty()
+    }
+
     fn applies(l: &Limit, parts: &Parts, path: &PathView) -> bool {
         l.path_prefix
             .as_deref()
@@ -139,32 +172,36 @@ impl RateLimiter {
             && (l.methods.is_empty() || l.methods.iter().any(|m| m == parts.method.as_str()))
     }
 
-    pub fn check(&self, ip: IpAddr, parts: &Parts) -> Option<LimitHit> {
-        self.check_at(ip, parts, Instant::now())
+    pub fn check(&self, buckets: &Buckets, ip: IpAddr, parts: &Parts) -> Option<LimitHit> {
+        self.check_at(buckets, ip, parts, Instant::now())
     }
 
-    fn check_at(&self, ip: IpAddr, parts: &Parts, now: Instant) -> Option<LimitHit> {
+    fn check_at(
+        &self,
+        buckets: &Buckets,
+        ip: IpAddr,
+        parts: &Parts,
+        now: Instant,
+    ) -> Option<LimitHit> {
         if self.limits.is_empty() {
             return None;
         }
         let path = PathView::new(parts.uri.path());
         // Hash before taking the lock: hashing a large header value must not hold up
         // every other request.
-        let keys: Vec<(usize, u64)> = self
+        let keys: Vec<(&Limit, u64)> = self
             .limits
             .iter()
-            .enumerate()
-            .filter(|(_, l)| Self::applies(l, parts, &path))
-            .map(|(i, l)| (i, self.key(l, ip, parts, &path)))
+            .filter(|l| Self::applies(l, parts, &path))
+            .map(|l| (l, buckets.key(l, ip, parts, &path)))
             .collect();
         if keys.is_empty() {
             return None;
         }
         let mut worst: Option<LimitHit> = None;
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        for (i, key) in keys {
-            let l = &self.limits[i];
-            let b = buckets.get_or_insert_mut((i, key), || Bucket {
+        let mut map = buckets.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        for (l, key) in keys {
+            let b = map.get_or_insert_mut((l.id, key), || Bucket {
                 tokens: l.capacity,
                 at: now,
             });
@@ -198,12 +235,31 @@ mod tests {
     use hyper::Request;
     use std::time::Duration;
 
-    fn limiter(toml: &str) -> RateLimiter {
+    fn limits(toml: &str) -> Limits {
         let cfg = crate::config::GatewayConfig::from_toml_str(&format!(
             "upstream = \"http://127.0.0.1:1\"\n{toml}"
         ))
         .unwrap();
-        RateLimiter::compile(&cfg.rate_limits).unwrap()
+        Limits::compile(&cfg.rate_limits).unwrap()
+    }
+
+    /// Definitions and buckets together, as the gateway holds them.
+    struct Limiter {
+        limits: Limits,
+        buckets: Buckets,
+    }
+
+    impl Limiter {
+        fn check_at(&self, ip: IpAddr, parts: &Parts, now: Instant) -> Option<LimitHit> {
+            self.limits.check_at(&self.buckets, ip, parts, now)
+        }
+    }
+
+    fn limiter(toml: &str) -> Limiter {
+        Limiter {
+            limits: limits(toml),
+            buckets: Buckets::default(),
+        }
     }
 
     fn req(method: &str, uri: &str, headers: &[(&str, &str)]) -> Parts {
@@ -283,11 +339,35 @@ action = "delay"
     }
 
     #[test]
+    fn buckets_follow_limits_by_name() {
+        let mut rl = limiter(
+            "[[rate_limits]]\nname = \"login\"\npath = \"/login\"\nrequests = 2\nper_secs = 60\n",
+        );
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+        let t0 = Instant::now();
+        let login = req("POST", "/login", &[]);
+        for _ in 0..2 {
+            assert!(rl.check_at(ip, &login, t0).is_none());
+        }
+        // new definitions: another limit in front of it, and its own budget raised
+        rl.limits = limits(
+            "[[rate_limits]]\nname = \"search\"\npath = \"/search\"\nrequests = 1\nper_secs = 60\n\
+             [[rate_limits]]\nname = \"login\"\npath = \"/login\"\nrequests = 3\nper_secs = 60\n",
+        );
+        assert!(rl.check_at(ip, &req("GET", "/search", &[]), t0).is_none());
+        assert!(
+            rl.check_at(ip, &login, t0).is_some(),
+            "the bucket is still empty: no fresh burst for new definitions"
+        );
+        assert_eq!(rl.buckets.len(), 2);
+    }
+
+    #[test]
     fn invalid_config_rejected() {
         let cfg = crate::config::GatewayConfig::from_toml_str(
             "upstream = \"http://127.0.0.1:1\"\n[[rate_limits]]\nname = \"x\"\nkey = \"cookie\"\nrequests = 1\nper_secs = 1\n",
         )
         .unwrap();
-        assert!(RateLimiter::compile(&cfg.rate_limits).is_err());
+        assert!(Limits::compile(&cfg.rate_limits).is_err());
     }
 }

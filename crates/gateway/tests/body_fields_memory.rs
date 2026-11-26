@@ -6,7 +6,7 @@ use std::net::IpAddr;
 
 use hyper::Request;
 use pattern_guard_gateway::config::GatewayConfig;
-use pattern_guard_gateway::policy::operations::Operations;
+use pattern_guard_gateway::policy::operations::{OperationCaches, Operations};
 
 /// Peak resident memory of this process (`VmHWM`), in MiB.
 fn peak_rss_mib() -> f64 {
@@ -37,6 +37,7 @@ account = "json:email"
     )
     .unwrap();
     let ops = Operations::compile(&cfg.operations, &cfg.logins).unwrap();
+    let caches = OperationCaches::default();
     // 10 MiB of `[0,0,…]`: as a serde_json::Value, 32 bytes per element
     let mut body = String::with_capacity(10 << 20);
     body.push('[');
@@ -56,11 +57,11 @@ account = "json:email"
     };
     let ip: IpAddr = "198.51.100.7".parse().unwrap();
     // the same request on a route without operations or logins
-    let (hit, ticket) = ops.check(ip, &req("/other"), body.as_bytes());
+    let (hit, ticket) = ops.check(&caches, ip, &req("/other"), body.as_bytes());
     assert!(hit.is_none());
     drop(ticket);
     let before = peak_rss_mib();
-    let (hit, ticket) = ops.check(ip, &req("/login"), body.as_bytes());
+    let (hit, ticket) = ops.check(&caches, ip, &req("/login"), body.as_bytes());
     assert!(hit.is_none());
     drop(ticket);
     let grown = peak_rss_mib() - before;

@@ -35,7 +35,7 @@ use crate::config::{LimitAction, Mode, OperationAction, RuleAction};
 use crate::intel::IntelAction;
 use crate::ipnet::any_contains;
 use crate::policy::path::PathView;
-use crate::state::State;
+use crate::state::{Compiled, State};
 use crate::util::header_str;
 
 pub type Body = BoxBody<Bytes, hyper::Error>;
@@ -56,8 +56,12 @@ fn param_name(location: &str) -> Option<&str> {
     })
 }
 
+/// Handles one request. `c` is the config snapshot taken when the request arrived (see
+/// `server::serve`): the whole request uses it, so a reload in the middle never mixes
+/// two configs.
 pub async fn handle(
     state: Arc<State>,
+    c: Arc<Compiled>,
     peer: SocketAddr,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
@@ -65,18 +69,18 @@ pub async fn handle(
     let id = format!(
         "{:x}-{:x}",
         crate::util::now_secs(),
-        state.req_counter.fetch_add(1, Relaxed)
+        state.runtime.req_counter.fetch_add(1, Relaxed)
     );
     let (parts, body) = req.into_parts();
-    let ip = client_ip(&state, peer.ip(), &parts.headers);
+    let ip = client_ip(&c, peer.ip(), &parts.headers);
 
     if parts.uri.path() == VERIFY_PATH {
-        return Ok(verify(&state, ip, parts.uri.query().unwrap_or("")));
+        return Ok(verify(&state, &c, ip, parts.uri.query().unwrap_or("")));
     }
 
     // 413 / 408 (too slow) / 503 (body budget) / 400; the reservation is held until the
     // request is done, i.e. as long as the buffered body.
-    let (body, _body_reservation) = match crate::server::read_body(&state, body).await {
+    let (body, _body_reservation) = match crate::server::read_body(&state, &c, body).await {
         Ok(b) => b,
         Err(refusal) => return Ok(*refusal),
     };
@@ -87,29 +91,34 @@ pub async fn handle(
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| "/".into());
 
-    if any_contains(&state.allow, ip) {
-        return Ok(forward(&state, parts, body, peer.ip(), ip, &id, None)
+    if any_contains(&c.allow, ip) {
+        return Ok(forward(&state, &c, parts, body, peer.ip(), ip, &id, None)
             .await
             .0);
     }
 
     // ---- custom rules (an `allow` rule bypasses inspection like the allow list) ----
-    let country = state.geo_db.as_ref().and_then(|g| g.lookup(ip));
-    let rule = state.rules.evaluate(ip, &parts, country);
+    let country = c.geo_db.as_ref().and_then(|g| g.lookup(ip));
+    let rule = c.rules.evaluate(ip, &parts, country);
     if matches!(rule.terminal, Some((RuleAction::Allow, _))) {
-        return Ok(forward(&state, parts, body, peer.ip(), ip, &id, None)
+        return Ok(forward(&state, &c, parts, body, peer.ip(), ip, &id, None)
             .await
             .0);
     }
-    let limit = state.rate_limiter.check(ip, &parts);
+    let limit = c.rate_limits.check(&state.learned.rate_buckets, ip, &parts);
     // business operations and logins (settled with the upstream status below)
-    let (op_hit, op_ticket) = state.operations.check(ip, &parts, &body);
-    let violation = state.protocol.check(&parts);
-    let trap = state.bans.trap(parts.uri.path()).map(str::to_string);
+    let (op_hit, op_ticket) = c
+        .operations
+        .check(&state.learned.operations, ip, &parts, &body);
+    let violation = c.protocol.check(&parts);
+    let trap = c.bans.trap(parts.uri.path()).map(str::to_string);
     if let Some(t) = &trap {
-        state
-            .bans
-            .ban_now(ip, &state.intel, format!("honeypot trap {t}"));
+        c.bans.ban_now(
+            &state.learned.offenders,
+            ip,
+            &state.learned.intel,
+            format!("honeypot trap {t}"),
+        );
     }
 
     // ---- behavioural ML (always recorded, even if another layer blocks) ----
@@ -123,7 +132,7 @@ pub async fn handle(
     if let Some(ua) = header_str(&parts.headers, "user-agent") {
         event = event.with_user_agent(ua);
     }
-    if let Some(fp) = state
+    if let Some(fp) = c
         .cfg
         .client_ip
         .fingerprint_header
@@ -132,12 +141,12 @@ pub async fn handle(
     {
         event = event.with_fingerprint(fp);
     }
-    let assessment = state.guard.assess(&event);
+    let assessment = state.learned.guard.assess(&event);
 
     // ---- WAF ----
-    let findings: Vec<Finding> = if state.cfg.waf.enabled
+    let findings: Vec<Finding> = if c.cfg.waf.enabled
         && !rule.skip_waf
-        && !state
+        && !c
             .cfg
             .waf
             .exclude_paths
@@ -153,8 +162,9 @@ pub async fn handle(
                     .map(|v| (k.as_str().to_string(), v.to_string()))
             })
             .collect();
-        let inspect_len = body.len().min(state.cfg.waf.inspect_body_bytes);
+        let inspect_len = body.len().min(c.cfg.waf.inspect_body_bytes);
         state
+            .runtime
             .waf
             .inspect(&HttpRequest {
                 path_and_query: &path_q,
@@ -164,11 +174,10 @@ pub async fn handle(
             })
             .findings
             .into_iter()
-            .filter(|f| f.score >= state.cfg.waf.log_score)
+            .filter(|f| f.score >= c.cfg.waf.log_score)
             .filter(|f| {
                 !param_name(&f.location).is_some_and(|n| {
-                    state
-                        .cfg
+                    c.cfg
                         .waf
                         .exclude_params
                         .iter()
@@ -180,12 +189,12 @@ pub async fn handle(
         Vec::new()
     };
     for f in &findings {
-        state.metrics.inc_waf(f.class.as_str());
+        state.runtime.metrics.inc_waf(f.class.as_str());
     }
 
     // ---- reputation ----
-    let intel = state.intel.lookup(ip);
-    let denied = any_contains(&state.deny, ip);
+    let intel = state.learned.intel.lookup(ip);
+    let denied = any_contains(&c.deny, ip);
 
     // ---- fuse: raise order = tie-break order (see verdict.rs) ----
     let mut verdict = Verdict::default();
@@ -216,7 +225,7 @@ pub async fn handle(
         };
         verdict.raise(Signal::new(a, Layer::Rule, format!("rule:{name}")));
     }
-    let geo = match state.geo_policy.verdict(country) {
+    let geo = match c.geo_policy.verdict(country) {
         Some(crate::geo::GeoVerdict::Block) => Some(Action::Block),
         Some(crate::geo::GeoVerdict::Challenge) => Some(Action::Challenge),
         None => None,
@@ -280,7 +289,7 @@ pub async fn handle(
             format!("rule-log:{name}"),
         ));
     }
-    if any_contains(&state.challenge_list, ip) {
+    if any_contains(&c.challenge_list, ip) {
         verdict.raise(Signal::new(
             Action::Challenge,
             Layer::ChallengeList,
@@ -299,7 +308,7 @@ pub async fn handle(
         ));
     }
     if let Some(top) = findings.iter().max_by(|a, b| a.score.total_cmp(&b.score)) {
-        if top.score >= state.cfg.waf.block_score {
+        if top.score >= c.cfg.waf.block_score {
             verdict.raise(Signal::new(
                 Action::Block,
                 Layer::Waf,
@@ -326,12 +335,11 @@ pub async fn handle(
             format!("ml:{}", why.join(",")),
         ));
     }
-    if !state.cfg.challenge.enabled {
+    if !c.cfg.challenge.enabled {
         verdict.challenge_disabled();
     }
     if matches!(verdict.action(), Action::Challenge | Action::Delay)
-        && state
-            .challenger
+        && c.challenger
             .has_clearance(ip, header_str(&parts.headers, "cookie"))
     {
         verdict.clear();
@@ -339,28 +347,35 @@ pub async fn handle(
     let action = verdict.action();
     let layer = verdict.layer();
 
-    let enforce = state.cfg.mode == Mode::Prevent;
+    let enforce = c.cfg.mode == Mode::Prevent;
     let decide_us = started.elapsed().as_micros() as u64;
-    state.metrics.duration_us_sum.fetch_add(decide_us, Relaxed);
-    state.metrics.requests.fetch_add(1, Relaxed);
+    state
+        .runtime
+        .metrics
+        .duration_us_sum
+        .fetch_add(decide_us, Relaxed);
+    state.runtime.metrics.requests.fetch_add(1, Relaxed);
     let counter = match (action, &assessment.decision) {
-        (Action::Block, _) => &state.metrics.block,
-        (Action::Challenge, _) => &state.metrics.challenge,
-        (Action::Delay, _) => &state.metrics.delay,
-        (Action::Allow, Decision::Warn) => &state.metrics.warn,
-        _ => &state.metrics.allow,
+        (Action::Block, _) => &state.runtime.metrics.block,
+        (Action::Challenge, _) => &state.runtime.metrics.challenge,
+        (Action::Delay, _) => &state.runtime.metrics.delay,
+        (Action::Allow, Decision::Warn) => &state.runtime.metrics.warn,
+        _ => &state.runtime.metrics.allow,
     };
     counter.fetch_add(1, Relaxed);
     if action == Action::Block {
-        state.metrics.inc_blocked_by(layer.as_str());
+        state.runtime.metrics.inc_blocked_by(layer.as_str());
     }
     if !enforce && action > Action::Allow {
-        state.metrics.would_mitigate.fetch_add(1, Relaxed);
+        state.runtime.metrics.would_mitigate.fetch_add(1, Relaxed);
     }
 
     // Repeat offenders get banned (bans and traps don't count, they already are one).
     if enforce && action == Action::Block && layer.counts_towards_bans() {
-        if let Some(d) = state.bans.record_block(ip, &state.intel) {
+        if let Some(d) = c
+            .bans
+            .record_block(&state.learned.offenders, ip, &state.learned.intel)
+        {
             verdict.note(format!("banned for {}s", d.as_secs()));
         }
     }
@@ -390,9 +405,10 @@ pub async fn handle(
             Action::Block => {
                 let respond = verdict.respond();
                 let status = respond.status().as_u16();
-                state.guard.observe_response(&event, status);
+                state.learned.guard.observe_response(&event, status);
                 if let Some(t) = &template {
                     state
+                        .learned
                         .inventory
                         .record(parts.method.as_str(), t, status, true);
                 }
@@ -411,7 +427,10 @@ pub async fn handle(
                 // Neutral for the behavioural engine: a human who meets a challenge must
                 // not look like a client collecting failures.
                 if let Some(t) = &template {
-                    state.inventory.record(parts.method.as_str(), t, 403, true);
+                    state
+                        .learned
+                        .inventory
+                        .record(parts.method.as_str(), t, 403, true);
                 }
                 log_decision(&state, &parts, &ctx, 403);
                 let resp = if wants_html(&parts.headers) {
@@ -419,14 +438,13 @@ pub async fn handle(
                     // once solved when it came from this origin, else the user returns to
                     // the form (see challenge::resubmission).
                     let page = if parts.method == hyper::Method::GET {
-                        state.challenger.page(ip, &path_q)
+                        c.challenger.page(ip, &path_q)
                     } else if let Some(fields) =
                         crate::challenge::resubmission(&parts.headers, &parts.method, &body)
                     {
-                        state.challenger.page_resubmit(ip, &path_q, &fields)
+                        c.challenger.page_resubmit(ip, &path_q, &fields)
                     } else {
-                        state
-                            .challenger
+                        c.challenger
                             .page(ip, &crate::challenge::return_after_post(&parts.headers))
                     };
                     respond(StatusCode::FORBIDDEN, "text/html; charset=utf-8", page)
@@ -442,12 +460,10 @@ pub async fn handle(
             Action::Delay => {
                 let d = match assessment.decision {
                     Decision::Delay(d) => d,
-                    _ => Duration::from_secs_f64(state.cfg.delay_max_secs.max(0.0)),
+                    _ => Duration::from_secs_f64(c.cfg.delay_max_secs.max(0.0)),
                 };
-                tokio::time::sleep(
-                    d.min(Duration::from_secs_f64(state.cfg.delay_max_secs.max(0.0))),
-                )
-                .await;
+                tokio::time::sleep(d.min(Duration::from_secs_f64(c.cfg.delay_max_secs.max(0.0))))
+                    .await;
             }
             Action::Allow => {}
         }
@@ -455,6 +471,7 @@ pub async fn handle(
 
     let (resp, status, leak) = forward(
         &state,
+        &c,
         parts.clone_head(),
         body,
         peer.ip(),
@@ -464,9 +481,10 @@ pub async fn handle(
     )
     .await;
     op_ticket.complete(status);
-    state.guard.observe_response(&event, status);
+    state.learned.guard.observe_response(&event, status);
     if let Some(t) = &template {
         state
+            .learned
             .inventory
             .record(parts.method.as_str(), t, status, false);
     }
@@ -483,7 +501,7 @@ pub async fn handle(
     } else if action > Action::Allow
         || !findings.is_empty()
         || !rule.logged.is_empty()
-        || state.cfg.log.include_allowed
+        || c.cfg.log.include_allowed
     {
         log_decision(&state, &parts, &ctx, status);
     }

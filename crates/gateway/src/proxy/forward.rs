@@ -19,7 +19,7 @@ use super::client_ip::forwarding_chain;
 use super::responses::{full, respond};
 use crate::config::{LeakAction, Mode};
 use crate::hardening::leaks::LeakInspector;
-use crate::state::State;
+use crate::state::{Compiled, State};
 use crate::util::header_str;
 
 const HOP_BY_HOP: [&str; 9] = [
@@ -52,8 +52,10 @@ impl CloneHead for hyper::http::request::Parts {
 }
 
 /// Forwards the request. `peer` is the TCP peer, `ip` the resolved client.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn forward(
     state: &State,
+    c: &Compiled,
     parts: hyper::http::request::Parts,
     body: Bytes,
     peer: IpAddr,
@@ -67,8 +69,8 @@ pub(super) async fn forward(
         .map(|p| p.as_str())
         .unwrap_or("/");
     let uri = match Uri::builder()
-        .scheme(state.upstream_scheme.clone())
-        .authority(state.upstream_authority.clone())
+        .scheme(c.upstream_scheme.clone())
+        .authority(c.upstream_authority.clone())
         .path_and_query(pq)
         .build()
     {
@@ -83,7 +85,7 @@ pub(super) async fn forward(
     };
     let html = header_str(&parts.headers, "accept").is_some_and(|a| a.contains("text/html"));
     // From the headers as received: `Connection` may name the client-IP header.
-    let chain = forwarding_chain(state, peer, &parts.headers);
+    let chain = forwarding_chain(c, peer, &parts.headers);
     let mut headers = parts.headers;
     strip_hop_by_hop(&mut headers);
     // Never trust client-supplied copies of our own headers.
@@ -108,18 +110,18 @@ pub(super) async fn forward(
     }
     if let Ok(v) = HeaderValue::from_str(&ip.to_string()) {
         headers.insert("x-real-ip", v.clone());
-        if let Ok(name) = HeaderName::from_bytes(state.cfg.client_ip.header.as_bytes()) {
+        if let Ok(name) = HeaderName::from_bytes(c.cfg.client_ip.header.as_bytes()) {
             if name != "x-forwarded-for" {
                 headers.insert(name, v);
             }
         }
     }
-    if !state.cfg.preserve_host {
-        if let Ok(v) = HeaderValue::from_str(state.upstream_authority.as_str()) {
+    if !c.cfg.preserve_host {
+        if let Ok(v) = HeaderValue::from_str(c.upstream_authority.as_str()) {
             headers.insert(header::HOST, v);
         }
     }
-    if state.cfg.forward_scores {
+    if c.cfg.forward_scores {
         if let Ok(v) = HeaderValue::from_str(id) {
             headers.insert("x-pattern-guard-request-id", v);
         }
@@ -138,24 +140,20 @@ pub(super) async fn forward(
     *req.uri_mut() = uri;
     *req.headers_mut() = headers;
 
-    let timeout = Duration::from_secs(state.cfg.upstream_timeout_secs.max(1));
-    match tokio::time::timeout(timeout, state.client.request(req)).await {
+    let timeout = Duration::from_secs(c.cfg.upstream_timeout_secs.max(1));
+    match tokio::time::timeout(timeout, state.runtime.client.request(req)).await {
         Ok(Ok(resp)) => {
             let status = resp.status().as_u16();
             let (mut rp, b) = resp.into_parts();
             strip_hop_by_hop(&mut rp.headers);
-            state.security_headers.apply(&mut rp.headers);
-            match state
-                .leaks
-                .as_ref()
-                .filter(|l| l.should_inspect(&rp.headers))
-            {
+            c.security_headers.apply(&mut rp.headers);
+            match c.leaks.as_ref().filter(|l| l.should_inspect(&rp.headers)) {
                 None => (Response::from_parts(rp, b.boxed()), status, None),
-                Some(insp) => inspect_response(state, insp, rp, b, status, html, id).await,
+                Some(insp) => inspect_response(state, c, insp, rp, b, status, html, id).await,
             }
         }
         Ok(Err(e)) => {
-            state.metrics.upstream_errors.fetch_add(1, Relaxed);
+            state.runtime.metrics.upstream_errors.fetch_add(1, Relaxed);
             eprintln!("pattern-guard-gateway: upstream error: {e}");
             (
                 respond(
@@ -168,7 +166,7 @@ pub(super) async fn forward(
             )
         }
         Err(_) => {
-            state.metrics.upstream_errors.fetch_add(1, Relaxed);
+            state.runtime.metrics.upstream_errors.fetch_add(1, Relaxed);
             (
                 respond(
                     StatusCode::GATEWAY_TIMEOUT,
@@ -198,8 +196,10 @@ fn strip_hop_by_hop(h: &mut HeaderMap) {
 
 /// Buffers up to `max_bytes` of a text response, scans it for data leaks and either
 /// replaces it (block, prevent mode) or passes it on unchanged (prefix + rest of stream).
+#[allow(clippy::too_many_arguments)]
 async fn inspect_response(
     state: &State,
+    c: &Compiled,
     insp: &LeakInspector,
     rp: hyper::http::response::Parts,
     mut body: Incoming,
@@ -222,7 +222,7 @@ async fn inspect_response(
                 }
             }
             Some(Err(e)) => {
-                state.metrics.upstream_errors.fetch_add(1, Relaxed);
+                state.runtime.metrics.upstream_errors.fetch_add(1, Relaxed);
                 eprintln!("pattern-guard-gateway: upstream body error: {e}");
                 return (
                     respond(
@@ -246,8 +246,9 @@ async fn inspect_response(
     }
     let leak = insp.scan(&buf[..buf.len().min(insp.max_bytes)]);
     if let Some(sig) = leak {
-        if insp.action == LeakAction::Block && state.cfg.mode == Mode::Prevent {
+        if insp.action == LeakAction::Block && c.cfg.mode == Mode::Prevent {
             state
+                .runtime
                 .metrics
                 .inc_blocked_by(super::Layer::DataLeak.as_str());
             let mut r = if html {
@@ -266,7 +267,7 @@ async fn inspect_response(
                     format!("{{\"error\":\"internal_error\",\"request_id\":\"{id}\"}}"),
                 )
             };
-            state.security_headers.apply(r.headers_mut());
+            c.security_headers.apply(r.headers_mut());
             return (r, 500, Some((sig, true)));
         }
     }

@@ -66,14 +66,15 @@ fn clip(s: &str, max: usize) -> Cow<'_, str> {
 /// can't turn stderr into a bottleneck. Full detail goes to the async decision log.
 fn console_slot(state: &State) -> bool {
     let now = crate::util::now_secs();
-    let last = state.console_second.load(Relaxed);
+    let last = state.runtime.console_second.load(Relaxed);
     if last != now
         && state
+            .runtime
             .console_second
             .compare_exchange(last, now, Relaxed, Relaxed)
             .is_ok()
     {
-        let suppressed = state.console_suppressed.swap(0, Relaxed);
+        let suppressed = state.runtime.console_suppressed.swap(0, Relaxed);
         if suppressed > 0 {
             eprintln!(
                 "pattern-guard-gateway: … {suppressed} more mitigations in the last second(s), see decision log / metrics"
@@ -81,7 +82,7 @@ fn console_slot(state: &State) -> bool {
         }
         true
     } else {
-        state.console_suppressed.fetch_add(1, Relaxed);
+        state.runtime.console_suppressed.fetch_add(1, Relaxed);
         false
     }
 }
@@ -174,7 +175,7 @@ pub(super) fn log_decision(
             clip(&c.reasons.join(" | "), MAX_CONSOLE)
         );
     }
-    if let Some(log) = &state.log {
+    if let Some(log) = &state.runtime.log {
         log.log(line(parts, c, status));
     }
 }

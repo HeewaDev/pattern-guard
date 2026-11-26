@@ -11,10 +11,10 @@ learning layers.
 |---|---|
 | `main.rs` | Arguments (`--config`, `--check`), loads the config, calls `run` |
 | `lib.rs` | `build_state` (compiles everything once), `start_background` (tasks), `run`; re-exports `serve` |
-| `server.rs` | `serve`: accept loop, per-IP connection cap (`ConnGuard`), header-read timeout, one task per connection |
+| `server.rs` | `serve`: accept loop, per-IP connection cap (`Slot`), header-read timeout, one task per connection |
 | `admin.rs` | Admin server: `/metrics`, `/healthz`, `/inventory`, `/bans`, `POST /bans/unban` |
 | `util.rs` | `now_secs`, `header_str`, `form_decode` (exact one-pass form decoding) |
-| `state.rs` | `State`: everything shared between requests, behind one `Arc` |
+| `state.rs` | `State { compiled, learned, runtime }`: the config snapshot (`Compiled`, swapped as a whole), what is learned from traffic (`Learned`) and process plumbing (`Runtime`). See [Shared state](#shared-state-and-concurrency) |
 | `config.rs` | `GatewayConfig` and every section (serde, `deny_unknown_fields`), defaults, `validate()` |
 | `proxy/mod.rs` | `handle`: the request pipeline and enforcement |
 | `proxy/verdict.rs` | Fusion: `Action`, `Layer` (the logged layer names), `Signal`, `Respond`, `Verdict` |
@@ -25,9 +25,11 @@ learning layers.
 | `proxy/decision_log.rs` | Decision-log JSON line and the rate-limited console line |
 | `policy/path.rs` | `PathView`: raw and canonical path; protections match either, exemptions need both |
 | `policy/rules.rs` | `[[rules]]`: ordered custom rules (allow / block / challenge / delay / log / skip_waf) |
-| `policy/rate_limit.rs` | `[[rate_limits]]`: token buckets per IP, IP + route, or header value |
-| `policy/operations.rs` | `[[operations]]` and `[[logins]]`: per-account budgets, allowed sources, replay protection, login failure tracking |
-| `policy/bans.rs` | `[bans]` escalating bans for repeat offenders, `[traps]` honeypot paths |
+| `policy/rate_limit.rs` | `[[rate_limits]]`: `Limits` (definitions) and `Buckets` (token buckets per IP, IP + route, or header value) |
+| `policy/operations.rs` | `[[operations]]`: per-account budgets, allowed sources, replay protection. `Operations` (definitions of operations and logins, one check and one ticket for both) and `OperationCaches` |
+| `policy/logins.rs` | `[[logins]]`: login failure tracking per account and per IP |
+| `policy/fields.rs` | Where operations and logins apply (`Route`) and the identifiers they read (`Field`, `Body`), hashed with SHA-256 |
+| `policy/bans.rs` | `[bans]` escalating bans for repeat offenders, `[traps]` honeypot paths (`Bans`), and the counts per IP (`Offenders`) |
 | `policy/protocol.rs` | `[protocol]`: methods, sizes, NUL bytes, `Host`, restricted extensions |
 | `geo.rs` | IP-to-country CSV (`GeoDb`, binary search over ranges) and `[geo]` country policy |
 | `challenge/` | `Challenger`: issues and verifies proof-of-work, signs and checks clearance cookies, renders `page.html` |
@@ -46,8 +48,8 @@ learning layers.
 ```
 main ─► GatewayConfig::load ─► validate
      └► run ─► bind listen + admin_listen
-            ├► build_state            compile rules / limits / operations, load guard.toml + model,
-            │                         load GeoDb, build Inspector, Challenger, HTTP client
+            ├► build_state            Compiled::compile (rules / limits / operations, GeoDb, Challenger),
+            │                         load guard.toml + model, build Inspector, HTTP client
             ├► start_background
             │    ├─ crowdsec::run       every poll_secs: GET /v1/decisions/stream (startup=true first)
             │    ├─ feeds::run ×N       every 1 s: read new lines of each alert file (≤ 8 MiB per read)
@@ -66,7 +68,7 @@ CrowdSec without a key) is found at startup, never at request time.
 
 - **Per-IP connection cap** (`limits.max_connections_per_ip`, default 256) on the *peer*
   address. Trusted proxies are exempt, because every client arrives through them. The count is held by
-  a `ConnGuard` (RAII) in `State.conns: Mutex<HashMap<IpAddr, u32>>`. Over the cap,
+  a `Slot` (RAII) in `Runtime.conns: Mutex<HashMap<IpAddr, u32>>`. Over the cap,
   the socket is dropped without a response.
 - **Header read timeout** (`limits.header_read_timeout_secs`, default 10) against
   slowloris. Keep-alive is on.
@@ -84,7 +86,7 @@ The stages below are in code order.
 | 4 | Body | `server::read_body`, frame by frame, up to `max_body_bytes` (default 10 MiB): a `Content-Length` over it → **413** up front; less than `body_min_bytes_per_sec` × `body_read_timeout_secs` per period (30 KiB per 30 s by default) → **408**; over the global `max_buffered_body_bytes` budget (256 MiB, reserved as frames arrive, released when the request ends) → **503** + `Retry-After`; broken framing or a disconnect → **400**. Requests in flight per resolved client IP are capped first (`max_requests_in_flight_per_ip`, 256 → **429**, allow list exempt) |
 | 5 | Allow list | `access.allow` → forward immediately: no ML, WAF, operations or logging |
 | 6 | Rules | Country lookup (if a GeoDb is loaded), then `rules.evaluate`. The first terminal rule wins, `log` rules accumulate, `skip_waf` sets a flag. A terminal `allow` → forward immediately |
-| 7 | Gatekeeper checks | `rate_limiter.check`, `operations.check` (returns a hit and a **ticket**), `protocol.check`, `bans.trap`. A trap hit calls `bans.ban_now` straight away |
+| 7 | Gatekeeper checks | `rate_limits.check`, `operations.check` (returns a hit and a **ticket**), `protocol.check`, `bans.trap`. A trap hit calls `bans.ban_now` straight away |
 | 8 | Behavioural ML | `guard.assess(event)` with actor `ip:<addr>`, method, path + query, server time, IP, UA and fingerprint header. **This runs on every request from here on**, including ones blocked below |
 | 9 | WAF | Unless `waf.enabled = false`, a `skip_waf` rule, or an `exclude_paths` prefix: `waf.inspect` over path, query, headers, cookies and the first `inspect_body_bytes` (64 KiB) of the body. Findings below `log_score` (4) or on an `exclude_params` name are dropped |
 | 10 | Reputation | `intel.lookup(ip)` (the strongest live entry) and `access.deny` |
@@ -237,15 +239,32 @@ with SHA-256, keeping 64 bits. Caches hold at most 200 000 entries, and 256 acco
 
 ## Shared state and concurrency
 
-`State` is built once and shared as `Arc<State>`. Nothing in it is replaced while the
-process runs. A request that reaches the fuse takes these locks:
+`State` is built once and shared as `Arc<State>`. It has three parts:
+
+- `compiled: RwLock<Arc<Compiled>>`: everything built from the config (the `GatewayConfig`
+  itself, rules, rate-limit and operation definitions, the ban and trap policy, protocol,
+  access lists, geo database and policy, security headers, leak signatures, upstream, the
+  `Challenger`). `server.rs` takes one snapshot per request with `State::compiled()` (a read
+  lock and an `Arc` clone) and passes it to the admission check and `proxy::handle`, so a
+  request uses one config from start to end. Each accepted connection takes one too, for its
+  connection-level limits.
+- `learned`: what is learned from traffic. The behavioural `Guard`, the `IntelStore`,
+  ban `Offenders`, rate-limit `Buckets`, `OperationCaches` (with the login counters) and the
+  `Inventory`. Entries of rate limits, operations and logins are keyed by the definition's
+  name (`policy::definition_ids`), not its position in the config.
+- `runtime`: the WAF `Inspector` (config-independent and expensive to build), the upstream
+  HTTP client, `Metrics`, the decision log, the connection and in-flight counts, the request
+  counter and the console throttle.
+
+A request that reaches the fuse takes these locks:
 
 | State | Type | Taken per request | Notes |
 |---|---|---|---|
-| `guard` (engine) | one `Mutex` inside `Guard` | 2× (`assess`, `observe_response`) | **the main serialisation point**; ~2 µs held |
-| `rate_limiter.buckets` | `Mutex<LruCache>` (200 000) | 1× if any limit is configured | all limits are checked under one lock |
-| `operations` caches | several `Mutex<LruCache>` | only on matching routes | settled again in `Ticket::complete` |
-| `bans.offenders` | `Mutex<LruCache>` (100 000) | on a Block in prevent mode | |
+| `compiled` | `RwLock<Arc<Compiled>>` | 1 read (clone the `Arc`) | written only by a reload |
+| `learned.guard` (engine) | one `Mutex` inside `Guard` | 2× (`assess`, `observe_response`) | **the main serialisation point**; ~2 µs held |
+| `learned.rate_buckets` | `Mutex<LruCache>` (200 000) | 1× if any limit is configured | all limits are checked under one lock |
+| `learned.operations` | several `Mutex<LruCache>` | only on matching routes | settled again in `Ticket::complete` |
+| `learned.offenders` | `Mutex<LruCache>` (100 000) | on a Block in prevent mode | |
 | `intel` | `RwLock` | 1 read | single IPs and /64s are map lookups; other ranges a linear scan |
 | `in_flight` | `Mutex<HashMap>` | per request (enter and leave) | requests in flight per resolved client IP |
 | `conns` | `Mutex<HashMap>` | per connection, not per request | |

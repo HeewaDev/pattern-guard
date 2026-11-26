@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 use crate::ipnet::{any_contains, normalize};
 use crate::observability::metrics::Metrics;
 use crate::proxy;
-use crate::state::State;
+use crate::state::{Compiled, State};
 
 /// Request-body bytes reserved against `limits.max_buffered_body_bytes`; released when
 /// dropped (keep it alive as long as the buffered body is).
@@ -92,21 +92,23 @@ fn refused(status: StatusCode, msg: &'static str) -> Box<Response<proxy::Body>> 
 /// The returned reservation must live as long as the body bytes.
 pub(crate) async fn read_body(
     state: &State,
+    c: &Compiled,
     mut body: Incoming,
 ) -> Result<(Bytes, BodyReservation), Box<Response<proxy::Body>>> {
-    let max = state.cfg.max_body_bytes;
+    let metrics = &state.runtime.metrics;
+    let max = c.cfg.max_body_bytes;
     if body.size_hint().lower() > max as u64 {
-        state.metrics.body_too_large.fetch_add(1, Relaxed);
+        metrics.body_too_large.fetch_add(1, Relaxed);
         return Err(refused(
             StatusCode::PAYLOAD_TOO_LARGE,
             "request body too large",
         ));
     }
-    let lim = &state.cfg.limits;
-    let budget = state.cfg.body_budget().map(|b| b as u64);
+    let lim = &c.cfg.limits;
+    let budget = c.cfg.body_budget().map(|b| b as u64);
     let period = Duration::from_secs(lim.body_read_timeout_secs.max(1));
     let per_period = lim.body_min_bytes_per_sec.saturating_mul(period.as_secs());
-    let mut reservation = BodyReservation::new(state.metrics.clone());
+    let mut reservation = BodyReservation::new(metrics.clone());
     let mut chunks: Vec<Bytes> = Vec::new();
     let mut total = 0usize;
     let mut deadline = tokio::time::Instant::now() + period;
@@ -114,7 +116,7 @@ pub(crate) async fn read_body(
     loop {
         let frame = match tokio::time::timeout_at(deadline, body.frame()).await {
             Err(_) => {
-                state.metrics.rejected_body_timeout.fetch_add(1, Relaxed);
+                metrics.rejected_body_timeout.fetch_add(1, Relaxed);
                 return Err(refused(
                     StatusCode::REQUEST_TIMEOUT,
                     "request body too slow",
@@ -131,14 +133,14 @@ pub(crate) async fn read_body(
         };
         total += data.len();
         if total > max {
-            state.metrics.body_too_large.fetch_add(1, Relaxed);
+            metrics.body_too_large.fetch_add(1, Relaxed);
             return Err(refused(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request body too large",
             ));
         }
         if !reservation.try_reserve(data.len() as u64, budget) {
-            state.metrics.rejected_body_budget.fetch_add(1, Relaxed);
+            metrics.rejected_body_budget.fetch_add(1, Relaxed);
             return Err(refused(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "too many request bodies in progress, retry shortly",
@@ -168,9 +170,9 @@ pub(crate) async fn read_body(
 /// Which per-IP count a [`Slot`] holds.
 #[derive(Clone, Copy)]
 enum Count {
-    /// Open connections per peer address (`State::conns`).
+    /// Open connections per peer address (`Runtime::conns`).
     Connections,
-    /// Requests being handled per resolved client address (`State::in_flight`).
+    /// Requests being handled per resolved client address (`Runtime::in_flight`).
     InFlight,
 }
 
@@ -184,8 +186,8 @@ struct Slot {
 
 fn counts(state: &State, count: Count) -> &std::sync::Mutex<HashMap<IpAddr, u32>> {
     match count {
-        Count::Connections => &state.conns,
-        Count::InFlight => &state.in_flight,
+        Count::Connections => &state.runtime.conns,
+        Count::InFlight => &state.runtime.in_flight,
     }
 }
 
@@ -231,21 +233,26 @@ impl Drop for Slot {
 /// doesn't apply. The allow list is exempt. Over the cap: 429 with `Retry-After: 1`.
 fn admit(
     state: &Arc<State>,
+    c: &Compiled,
     peer: IpAddr,
     headers: &hyper::HeaderMap,
 ) -> Result<Option<Slot>, Box<Response<proxy::Body>>> {
-    let limit = state.cfg.limits.max_requests_in_flight_per_ip;
+    let limit = c.cfg.limits.max_requests_in_flight_per_ip;
     if limit == 0 {
         return Ok(None);
     }
-    let ip = proxy::client_ip(state, peer, headers);
-    if any_contains(&state.allow, ip) {
+    let ip = proxy::client_ip(c, peer, headers);
+    if any_contains(&c.allow, ip) {
         return Ok(None);
     }
     match Slot::acquire(state, ip, Count::InFlight, limit) {
         Some(slot) => Ok(Some(slot)),
         None => {
-            state.metrics.rejected_in_flight.fetch_add(1, Relaxed);
+            state
+                .runtime
+                .metrics
+                .rejected_in_flight
+                .fetch_add(1, Relaxed);
             Err(refused(
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many concurrent requests",
@@ -266,12 +273,18 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
             }
         };
         let pip = normalize(peer.ip());
-        let limit = state.cfg.limits.max_connections_per_ip;
-        let guard = if limit > 0 && !any_contains(&state.trusted, pip) {
+        // connection settings come from the config current when it was accepted
+        let c = state.compiled();
+        let limit = c.cfg.limits.max_connections_per_ip;
+        let guard = if limit > 0 && !any_contains(&c.trusted, pip) {
             match Slot::acquire(&state, pip, Count::Connections, limit) {
                 Some(slot) => Some(slot),
                 None => {
-                    state.metrics.connections_rejected.fetch_add(1, Relaxed);
+                    state
+                        .runtime
+                        .metrics
+                        .connections_rejected
+                        .fetch_add(1, Relaxed);
                     continue; // drop the stream
                 }
             }
@@ -279,18 +292,20 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
             None
         };
         let st = state.clone();
-        let header_timeout = Duration::from_secs(state.cfg.limits.header_read_timeout_secs.max(1));
+        let header_timeout = Duration::from_secs(c.cfg.limits.header_read_timeout_secs.max(1));
         tokio::spawn(async move {
             let _guard = guard;
             let svc = service_fn(move |req: hyper::Request<Incoming>| {
                 let st = st.clone();
                 async move {
+                    // one config snapshot for the whole request, from admission on
+                    let c = st.compiled();
                     // held until the response head is ready (body read, inspection, upstream)
-                    let _slot = match admit(&st, peer.ip(), req.headers()) {
+                    let _slot = match admit(&st, &c, peer.ip(), req.headers()) {
                         Ok(slot) => slot,
                         Err(refusal) => return Ok(*refusal),
                     };
-                    proxy::handle(st, peer, req).await
+                    proxy::handle(st, c, peer, req).await
                 }
             });
             let mut b = http1::Builder::new();

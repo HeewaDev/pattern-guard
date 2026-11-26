@@ -178,8 +178,8 @@ async fn slow_body_gets_408() {
     assert!(head.contains("connection: close"), "{head}");
     assert!(t.elapsed() < Duration::from_secs(3));
     assert!(closed(&mut s).await, "connection closed after the 408");
-    assert_eq!(state.metrics.rejected_body_timeout.load(Relaxed), 1);
-    assert_eq!(state.metrics.buffered_body_bytes.load(Relaxed), 0);
+    assert_eq!(state.runtime.metrics.rejected_body_timeout.load(Relaxed), 1);
+    assert_eq!(state.runtime.metrics.buffered_body_bytes.load(Relaxed), 0);
 }
 
 /// With `body_min_bytes_per_sec = 0` only a stall counts: a slow trickle passes, a
@@ -229,7 +229,7 @@ async fn buffered_bodies_share_a_budget() {
     let part = vec![b'a'; 900 * 1024];
     let a = start_upload(gw, mib, &part).await;
     let b = start_upload(gw, mib, &part).await;
-    let m = state.metrics.clone();
+    let m = state.runtime.metrics.clone();
     eventually("two stalled bodies buffered", || {
         m.buffered_body_bytes.load(Relaxed) == 2 * part.len() as u64
     })
@@ -239,9 +239,9 @@ async fn buffered_bodies_share_a_budget() {
     let (status, head) = read_response(&mut c).await;
     assert_eq!(status, 503);
     assert!(head.contains("retry-after: 1"), "{head}");
-    assert_eq!(state.metrics.rejected_body_budget.load(Relaxed), 1);
+    assert_eq!(state.runtime.metrics.rejected_body_budget.load(Relaxed), 1);
     assert_eq!(
-        state.metrics.buffered_body_bytes.load(Relaxed),
+        state.runtime.metrics.buffered_body_bytes.load(Relaxed),
         2 * part.len() as u64,
         "the refused body released its share"
     );
@@ -254,7 +254,7 @@ async fn buffered_bodies_share_a_budget() {
     let mut d = TcpStream::connect(gw).await.unwrap();
     let head = format!("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {mib}\r\n\r\n");
     assert_eq!(roundtrip(&mut d, &head, &vec![b'b'; mib]).await, 200);
-    assert_eq!(state.metrics.buffered_body_bytes.load(Relaxed), 0);
+    assert_eq!(state.runtime.metrics.buffered_body_bytes.load(Relaxed), 0);
 }
 
 /// Behind a trusted proxy every client arrives from the proxy's address, which is exempt
@@ -273,7 +273,8 @@ async fn in_flight_requests_are_capped_per_resolved_client() {
     let b = start_upload_with(gw, &from("203.0.113.5"), 100, b"half").await;
     let st = state.clone();
     eventually("two requests in flight", move || {
-        st.in_flight
+        st.runtime
+            .in_flight
             .lock()
             .unwrap()
             .get(&"203.0.113.5".parse().unwrap())
@@ -286,7 +287,7 @@ async fn in_flight_requests_are_capped_per_resolved_client() {
     let (status, head) = read_response(&mut s).await;
     assert_eq!(status, 429);
     assert!(head.contains("retry-after: 1"), "{head}");
-    assert_eq!(state.metrics.rejected_in_flight.load(Relaxed), 1);
+    assert_eq!(state.runtime.metrics.rejected_in_flight.load(Relaxed), 1);
     // … other clients behind the same proxy, and allow-listed ones, are not
     let mut s = TcpStream::connect(gw).await.unwrap();
     assert_eq!(roundtrip(&mut s, &get("203.0.113.6"), b"").await, 200);
@@ -298,7 +299,7 @@ async fn in_flight_requests_are_capped_per_resolved_client() {
     drop((a, b, c, d));
     let st = state.clone();
     eventually("slots released", move || {
-        st.in_flight.lock().unwrap().is_empty()
+        st.runtime.in_flight.lock().unwrap().is_empty()
     })
     .await;
     let mut s = TcpStream::connect(gw).await.unwrap();
@@ -313,7 +314,7 @@ async fn oversized_content_length_is_refused_up_front() {
     let (status, head) = read_response(&mut s).await;
     assert_eq!(status, 413);
     assert!(head.contains("connection: close"));
-    assert_eq!(state.metrics.body_too_large.load(Relaxed), 1);
+    assert_eq!(state.runtime.metrics.body_too_large.load(Relaxed), 1);
     // a chunked body without a length is still cut off at the limit
     let mut s = TcpStream::connect(gw).await.unwrap();
     let chunk = format!("{:x}\r\n{}\r\n", 600, "c".repeat(600));
@@ -444,8 +445,8 @@ async fn decision_log_queue_is_bounded_by_bytes() {
         );
         assert_eq!(roundtrip(&mut s, &head, b"").await, 200);
     }
-    let queued = state.log.as_ref().unwrap().queued_bytes();
-    let dropped = state.metrics.decision_log_dropped.load(Relaxed);
+    let queued = state.runtime.log.as_ref().unwrap().queued_bytes();
+    let dropped = state.runtime.metrics.decision_log_dropped.load(Relaxed);
 
     // Let the writer through (before any assertion: a writer blocked in open() would
     // keep the runtime from shutting down) and count what it had queued.
@@ -493,7 +494,7 @@ async fn inventory_skips_protocol_rejects_and_caps_templates() {
     // 7 KB path: accepted
     let head = format!("GET /long{} HTTP/1.1\r\nhost: x\r\n\r\n", seg.repeat(300));
     assert_eq!(roundtrip(&mut s, &head, b"").await, 200);
-    let json = state.inventory.to_json();
+    let json = state.learned.inventory.to_json();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(
         v["count"], 1,
@@ -529,12 +530,25 @@ async fn trap_bans_are_capped_and_aggregated_per_slash64() {
         assert_eq!(roundtrip(&mut s, &hit(xff), b"").await, 403);
     }
     let bans = state
+        .learned
         .intel
         .list(pattern_guard_gateway::policy::bans::SOURCE);
-    assert_eq!((state.intel.len(), bans.len()), (100, 100));
-    assert_eq!(state.intel.evicted(), 200);
-    assert!(state.intel.lookup("10.0.1.43".parse().unwrap()).is_some());
-    assert!(state.intel.lookup("10.0.0.0".parse().unwrap()).is_none());
+    assert_eq!((state.learned.intel.len(), bans.len()), (100, 100));
+    assert_eq!(state.learned.intel.evicted(), 200);
+    assert!(
+        state
+            .learned
+            .intel
+            .lookup("10.0.1.43".parse().unwrap())
+            .is_some()
+    );
+    assert!(
+        state
+            .learned
+            .intel
+            .lookup("10.0.0.0".parse().unwrap())
+            .is_none()
+    );
 
     // 500 addresses of one /64: merged into a single /64 ban after 16
     for i in 1..=500u32 {
@@ -542,6 +556,7 @@ async fn trap_bans_are_capped_and_aggregated_per_slash64() {
         assert_eq!(roundtrip(&mut s, &hit(xff), b"").await, 403);
     }
     let bans = state
+        .learned
         .intel
         .list(pattern_guard_gateway::policy::bans::SOURCE);
     let nets: Vec<_> = bans.iter().filter(|(k, _)| k.contains('/')).collect();
@@ -552,9 +567,10 @@ async fn trap_bans_are_capped_and_aggregated_per_slash64() {
             .all(|(k, _)| !k.starts_with("2001:db8:1:2::") || k.ends_with("/64")),
         "no single-address bans left in the /64"
     );
-    assert!(state.intel.len() <= 100);
+    assert!(state.learned.intel.len() <= 100);
     // an address of that /64 that never made a request is banned too
     let e = state
+        .learned
         .intel
         .lookup("2001:db8:1:2:aaaa::1".parse().unwrap())
         .unwrap();

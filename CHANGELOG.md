@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Gateway library API: state split** (`pattern_guard_gateway::state`). `State` is now
+  `{ compiled, learned, runtime }`: `State::compiled()` returns the config snapshot
+  (`Compiled`: the `GatewayConfig`, rules, limit and operation definitions, lists, the
+  `Challenger`, …), `learned` holds the `Guard`, `IntelStore`, rate buckets, operation and
+  login caches, ban counts and the inventory, and `runtime` the HTTP client, metrics,
+  decision log, connection counts and the WAF. `policy::rate_limit::RateLimiter` is split into
+  `Limits` + `Buckets`, `Operations::check` takes an `OperationCaches`, `Bans` takes an
+  `Offenders`, and `proxy::client_ip` / `proxy::handle` take the `Compiled` snapshot.
+  Migration: `state.intel` → `state.learned.intel`, `state.metrics` →
+  `state.runtime.metrics`, `state.cfg` → `state.compiled().cfg`. Behaviour and the decision
+  log are unchanged.
 - **Project layout**: a virtual workspace with one crate per product area and
   feature folders inside each: `crates/engine` (`pattern-guard`: `ml/`, `rules/`,
   `util/`), `crates/waf` (`pattern-guard-waf`, new crate, re-exported as

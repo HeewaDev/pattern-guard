@@ -105,18 +105,21 @@ What this buys:
 
 ```rust
 pub struct State {
-    pub compiled: Swap<Compiled>,  // from config, rebuilt on reload: rules, limit and operation definitions,
-                                   // protocol, geo policy, lists, security headers, leak signatures, upstream
-    pub learned: Learned,          // kept across reloads, snapshotted for persistence: guard, intel, bans,
-                                   // rate buckets, operation and login caches, inventory
-    pub runtime: Runtime,          // process-wide: HTTP client, metrics, event log, connection counts,
-                                   // request counter, challenger
+    compiled: RwLock<Arc<Compiled>>, // from config, rebuilt on reload: rules, limit and operation definitions,
+                                     // protocol, geo policy, lists, security headers, leak signatures, upstream
+    pub learned: Learned,            // kept across reloads, snapshotted for persistence: guard, intel, bans,
+                                     // rate buckets, operation and login caches, inventory
+    pub runtime: Runtime,            // process-wide: HTTP client, metrics, event log, connection counts,
+                                     // request counter, console throttle, WAF inspector
 }
 ```
 
-`Swap` is either `arc_swap::ArcSwap` (lock-free, but a new dependency that needs a decision) or
-`RwLock<Arc<Compiled>>` (clone the `Arc` once per request). `RateLimiter` splits into
-`Limits` (compiled) and `Buckets` (learned). `Operations` splits the same way, with logins in their own file.
+The swap is `RwLock<Arc<Compiled>>`: `State::compiled()` clones the `Arc` once per request
+(and once per connection for the connection-level limits), so no new dependency was needed.
+`RateLimiter` is split into `Limits` (compiled) and `Buckets` (learned). `Operations` is split the same way
+(`Operations` + `OperationCaches`), with logins in `logins.rs` and the shared field
+extraction in `fields.rs`. `Bans` keeps the policy, and `Offenders` the learned counts. Learned
+entries are keyed by a definition's name (`policy::definition_ids`), not its position.
 
 ### File structure
 
@@ -305,7 +308,7 @@ before and after.
 | 6 | WAF `Location` + applicability; the gateway uses `location.param()` | M | F2 | M2 exclusions |
 | 7 | WAF folder restructure (pure moves, one commit) | M | — | M2 work without conflicts |
 | 8 | `config/` folder, validation next to each section | S–M | F5 | — |
-| 9 | `State { compiled, learned, runtime }`; split `RateLimiter` and `Operations` into definitions + caches | M | F3 | M3 reload and persistence |
+| 9 | ✅ `State { compiled, learned, runtime }`; split `RateLimiter` and `Operations` into definitions + caches | M | F3 | M3 reload and persistence |
 | 10 | Engine `waf` feature; the gateway depends on the WAF directly | S | F4 | — |
 | 11 | `tests/e2e/` with a shared harness | S | F9 | — |
 | 12 | Prefix structure for intel ranges; measure with ~50 000 ranges in `loadtest` | M | F8 | M3 throughput |
