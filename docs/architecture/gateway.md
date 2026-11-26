@@ -10,8 +10,9 @@ learning layers.
 | Path | Responsibility |
 |---|---|
 | `main.rs` | Arguments (`--config`, `--check`), loads the config, calls `run` |
-| `lib.rs` | `build_state` (compiles everything once), `start_background` (tasks), `run`; re-exports `serve` |
+| `lib.rs` | `build_state` (compiles everything once), `start_background` (tasks), `run` / `run_until`; re-exports `serve` |
 | `server.rs` | `serve`: accept loop, per-IP connection cap (`Slot`), header-read timeout, one task per connection |
+| `shutdown.rs` | Graceful shutdown: SIGTERM / SIGINT, `Drain` and its `Token`s (stop accepting, finish requests in progress, close the rest at the grace deadline), decision-log flush |
 | `admin.rs` | Admin server: `/metrics`, `/healthz`, `/inventory`, `/bans`, `POST /bans/unban` |
 | `util.rs` | `now_secs`, `header_str`, `form_decode` (exact one-pass form decoding) |
 | `state.rs` | `State { compiled, learned, runtime }`: the config snapshot (`Compiled`, swapped as a whole), what is learned from traffic (`Learned`) and process plumbing (`Runtime`). See [Shared state](#shared-state-and-concurrency) |
@@ -49,19 +50,29 @@ learning layers.
 
 ```
 main ─► GatewayConfig::load ─► validate
-     └► run ─► bind listen + admin_listen
+     └► run ─► bind listen + admin_listen ─► run_until(…, shutdown::signal())
             ├► build_state            Compiled::compile (rules / limits / operations, GeoDb, Challenger),
             │                         load guard.toml + model, build Inspector, HTTP client
             ├► start_background
             │    ├─ crowdsec::run       every poll_secs: GET /v1/decisions/stream (startup=true first)
             │    ├─ feeds::run ×N       every 1 s: read new lines of each alert file (≤ 8 MiB per read)
-            │    ├─ intel sweeper       every 30 s: drop expired entries
-            │    └─ serve_admin         /metrics /healthz /inventory /bans /bans/unban
+            │    └─ intel sweeper       every 30 s: drop expired entries
+            ├► serve_admin            /metrics /healthz /inventory /bans /bans/unban
             ├► EventLog writer        (spawned by build_state when log.decisions is set)
             ├► watch_sighup           (Unix) SIGHUP → spawn_blocking(reload_from_path)
-            └► serve (accept loop) ──► one task per connection ──► hyper http1 ──► proxy::handle
-     until Ctrl-C (no connection draining yet; see target.md)
+            └► serve_until (accept loop) ──► one task per connection ──► hyper http1 ──► proxy::handle
+     until SIGTERM / SIGINT ─► shutdown::finish
+            ├► Drain: both accept loops return (listeners closed, new connections refused);
+            │         every connection gets hyper's graceful_shutdown (idle keep-alive: closed
+            │         at once; a request in progress: answered, then closed)
+            ├► after limits.shutdown_grace_secs (default 7): connections still open are dropped
+            └► EventLog::flush        queued lines written (until the deadline, at least 1 s)
 ```
+
+`serve` (used by the tests) is `serve_until` with a token that never fires. A connection
+task holds a `Token` (a `watch::Receiver`); the `Drain` waits for `Sender::closed()`, so
+it knows when the last connection is gone without counting. The grace period is read from
+the config current when the shutdown starts, so it follows reloads.
 
 **Reload** (`reload.rs`): `reload` / `reload_from_path` run under one lock, so reloads never
 interleave. They set the restart-only keys (`RESTART_ONLY`) back to their running values,
@@ -337,6 +348,7 @@ network.
 |---|---|
 | Upstream down or slow | 502 / 504, `upstream_errors`; the ML still sees the request |
 | Gateway process dies | Traffic stops (fail-closed). Run it under a supervisor with `/healthz` checks |
+| Stopped (SIGTERM / SIGINT) | New connections refused at once; requests in progress finish within `limits.shutdown_grace_secs`, the rest are cut; queued decision-log lines are written |
 | CrowdSec unreachable | Last known decisions stay until they expire; `crowdsec_ok = 0` |
 | Feed file missing or rotated | Retried every second; restarts at offset 0 after a rotation |
 | Decision-log disk full or slow | Lines dropped; requests unaffected |

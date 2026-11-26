@@ -16,6 +16,10 @@ ExecReload=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gate
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=1
+# On SIGTERM the gateway stops accepting, lets requests in progress finish for up to
+# limits.shutdown_grace_secs (default 7) and writes the queued decision-log lines.
+# Keep this a few seconds above shutdown_grace_secs.
+TimeoutStopSec=20
 # CROWDSEC_BOUNCER_KEY=... and other secrets
 EnvironmentFile=-/etc/pattern-guard/env
 LimitNOFILE=65536

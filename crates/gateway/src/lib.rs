@@ -19,6 +19,7 @@ pub mod policy;
 pub mod proxy;
 mod reload;
 mod server;
+mod shutdown;
 pub mod state;
 pub mod util;
 
@@ -27,6 +28,7 @@ pub use reload::watch_sighup;
 pub use reload::{RESTART_ONLY, Reloaded, reload, reload_from_path};
 pub use server::serve;
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,13 +72,18 @@ pub fn start_background(state: &Arc<State>, admin: Option<TcpListener>) -> Resul
         }
     });
     if let Some(l) = admin {
-        tokio::spawn(admin::serve_admin(state.clone(), l));
+        tokio::spawn(admin::serve_admin(
+            state.clone(),
+            l,
+            shutdown::Token::never(),
+        ));
     }
     Ok(())
 }
 
-/// Binds listeners from the config and runs until Ctrl-C. With `config_path` (the file
-/// `cfg` was loaded from), a `SIGHUP` reloads the config from it (Unix).
+/// Binds listeners from the config and runs until SIGTERM or SIGINT, then shuts down
+/// gracefully (see [`run_until`]). With `config_path` (the file `cfg` was loaded from),
+/// a `SIGHUP` reloads the config from it (Unix).
 pub async fn run(cfg: GatewayConfig, config_path: Option<PathBuf>) -> Result<(), String> {
     let listener = TcpListener::bind(cfg.listen)
         .await
@@ -89,9 +96,27 @@ pub async fn run(cfg: GatewayConfig, config_path: Option<PathBuf>) -> Result<(),
         ),
         None => None,
     };
+    run_until(cfg, config_path, listener, admin, shutdown::signal()).await
+}
+
+/// Runs the gateway on bound listeners until `stop` completes, then shuts down
+/// gracefully: closes the listeners, gives the requests in progress
+/// `limits.shutdown_grace_secs` to finish, closes what is left and flushes the decision
+/// log. Returns when that is done. `config_path`: as for [`run`].
+pub async fn run_until(
+    cfg: GatewayConfig,
+    config_path: Option<PathBuf>,
+    listener: TcpListener,
+    admin: Option<TcpListener>,
+    stop: impl Future<Output = ()>,
+) -> Result<(), String> {
     let listen: SocketAddr = listener.local_addr().map_err(|e| e.to_string())?;
     let state = build_state(cfg)?;
-    start_background(&state, admin)?;
+    let drain = shutdown::Drain::new();
+    start_background(&state, None)?;
+    if let Some(l) = admin {
+        tokio::spawn(admin::serve_admin(state.clone(), l, drain.token()));
+    }
     #[cfg(unix)]
     if let Some(path) = config_path {
         watch_sighup(state.clone(), path)?;
@@ -105,13 +130,11 @@ pub async fn run(cfg: GatewayConfig, config_path: Option<PathBuf>) -> Result<(),
         c.cfg.mode,
         state.learned.guard.model().description
     );
-    tokio::select! {
-        _ = serve(state.clone(), listener) => Ok(()),
-        _ = tokio::signal::ctrl_c() => {
-            eprintln!("pattern-guard-gateway: shutting down");
-            Ok(())
-        }
-    }
+    let accept = tokio::spawn(server::serve_until(state.clone(), listener, drain.token()));
+    stop.await;
+    shutdown::finish(&state, &drain).await;
+    accept.abort();
+    Ok(())
 }
 
 #[allow(dead_code)]

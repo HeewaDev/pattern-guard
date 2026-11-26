@@ -118,7 +118,7 @@ open-appsec's engine (Apache-2.0) and OWASP CRS. The full list, with source path
 - [ ] Shard the behavioural engine by actor hash; lock-free reputation reads.
 - [x] Hot reload of config and model on SIGHUP. [ ] Persist baselines, reputation and clearances (snapshot + load).
 - [ ] WebSocket passthrough; HTTP/2 to upstream; stream bodies beyond the inspection window.
-- [ ] Graceful shutdown and connection draining; configurable fail-open/fail-closed.
+- [x] Graceful shutdown and connection draining (`limits.shutdown_grace_secs`). [ ] Configurable fail-open/fail-closed.
 - [x] Dockerfile (Debian slim, non-root), docker-compose demo, hardened systemd unit in `deploy/`. [ ] CrowdSec in the compose demo, Helm chart.
 - [ ] `ext_authz` (Envoy) / `auth_request` (nginx) decision endpoint for users who keep their proxy.
 

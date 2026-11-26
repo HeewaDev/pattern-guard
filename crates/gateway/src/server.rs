@@ -1,6 +1,7 @@
 //! Connection-level protection: the accept loop for the protected listener (per-IP
 //! connection cap with trusted proxies exempt, header-read timeout against slowloris,
-//! one task per connection), the in-flight request cap per resolved client IP, and the
+//! one task per connection, stopped by the graceful shutdown in `shutdown.rs`), the
+//! in-flight request cap per resolved client IP, and the
 //! request-body reader (minimum rate / stall timeout, global budget for buffered body
 //! bytes).
 
@@ -22,6 +23,7 @@ use tokio::net::TcpListener;
 use crate::ipnet::{any_contains, normalize};
 use crate::observability::metrics::Metrics;
 use crate::proxy;
+use crate::shutdown::{self, Token};
 use crate::state::{Compiled, State};
 
 /// Request-body bytes reserved against `limits.max_buffered_body_bytes`; released when
@@ -261,10 +263,20 @@ fn admit(
     }
 }
 
-/// Accept loop for the protected listener. Runs until the listener fails.
+/// Accept loop for the protected listener. Runs forever (accept errors are retried).
 pub async fn serve(state: Arc<State>, listener: TcpListener) {
+    serve_until(state, listener, Token::never()).await
+}
+
+/// The accept loop. Returns, closing the listener, when the shutdown starts; the
+/// connections then finish under `token`'s children (see `shutdown`).
+pub(crate) async fn serve_until(state: Arc<State>, listener: TcpListener, mut token: Token) {
     loop {
-        let (stream, peer) = match listener.accept().await {
+        let accepted = tokio::select! {
+            r = listener.accept() => r,
+            _ = token.draining() => return,
+        };
+        let (stream, peer) = match accepted {
             Ok(x) => x,
             Err(e) => {
                 eprintln!("pattern-guard-gateway: accept error: {e}");
@@ -293,6 +305,7 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
         };
         let st = state.clone();
         let header_timeout = Duration::from_secs(c.cfg.limits.header_read_timeout_secs.max(1));
+        let conn_token = token.child();
         tokio::spawn(async move {
             let _guard = guard;
             let svc = service_fn(move |req: hyper::Request<Incoming>| {
@@ -313,7 +326,8 @@ pub async fn serve(state: Arc<State>, listener: TcpListener) {
             b.timer(TokioTimer::new())
                 .header_read_timeout(header_timeout)
                 .keep_alive(true);
-            let _ = b.serve_connection(TokioIo::new(stream), svc).await;
+            let conn = b.serve_connection(TokioIo::new(stream), svc);
+            shutdown::serve_conn(conn, conn_token, |c| c.graceful_shutdown()).await;
         });
     }
 }

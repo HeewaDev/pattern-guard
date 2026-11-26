@@ -81,6 +81,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Weekly 24 h fuzz run** (`.github/workflows/fuzz-long.yml`): the five fuzz targets in
   parallel for 4.8 h each, then corpus minimisation. The nightly and weekly runs keep the
   corpus in the Actions cache, so coverage builds up from run to run.
+- **Graceful shutdown** of the gateway: SIGTERM or SIGINT closes the listeners (traffic and
+  admin; new connections are refused), lets requests in progress finish for up to the new
+  `limits.shutdown_grace_secs` (default 7, 0 = at once; reloadable), closes idle
+  keep-alive connections at once and the rest at the deadline, then writes the queued
+  decision-log lines (after the grace period, at least 1 s). Ctrl-C used to drop
+  everything, including requests half-way through. The default leaves room inside
+  Docker's 10 s stop timeout; the compose file sets `stop_grace_period: 15s`, the systemd
+  unit `TimeoutStopSec=20`. `pattern_guard_gateway::run_until(cfg, config_path, listener,
+  admin, stop)` runs the gateway (with SIGHUP reload when `config_path` is set) until a
+  future completes.
 - **Business-operation protection** (`[[operations]]`): per-account budgets keyed by a
   header, cookie, query, form or JSON field (hashed, never stored), allowed source IPs
   (e.g. payment callbacks), and replay / race-condition protection for unique values

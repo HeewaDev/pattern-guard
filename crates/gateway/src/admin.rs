@@ -1,6 +1,6 @@
 //! Admin server on `admin_listen`: `/metrics`, `/healthz`, `/inventory`, `/bans`,
 //! `POST /bans/unban`. It has no authentication: bind it to loopback or a private
-//! network.
+//! network. It stops with the gateway's graceful shutdown.
 
 use std::sync::Arc;
 
@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use crate::ipnet::Cidr;
 use crate::policy;
 use crate::proxy;
+use crate::shutdown::{self, Token};
 use crate::state::State;
 
 fn bans_json(state: &State) -> String {
@@ -55,12 +56,17 @@ fn unban(state: &State, query: &str) -> (&'static str, String, StatusCode) {
     }
 }
 
-pub(crate) async fn serve_admin(state: Arc<State>, listener: TcpListener) {
+pub(crate) async fn serve_admin(state: Arc<State>, listener: TcpListener, mut token: Token) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
+        let accepted = tokio::select! {
+            r = listener.accept() => r,
+            _ = token.draining() => return,
+        };
+        let Ok((stream, _)) = accepted else {
             continue;
         };
         let st = state.clone();
+        let conn_token = token.child();
         tokio::spawn(async move {
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let st = st.clone();
@@ -95,9 +101,8 @@ pub(crate) async fn serve_admin(state: Arc<State>, listener: TcpListener) {
                     Ok::<_, std::convert::Infallible>(r)
                 }
             });
-            let _ = http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), svc)
-                .await;
+            let conn = http1::Builder::new().serve_connection(TokioIo::new(stream), svc);
+            shutdown::serve_conn(conn, conn_token, |c| c.graceful_shutdown()).await;
         });
     }
 }

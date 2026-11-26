@@ -1274,3 +1274,158 @@ async fn config_reload_applies_to_the_next_request_and_spares_those_in_flight() 
     assert!(metrics.contains("pattern_guard_config_reloads_total{result=\"ok\"} 1"));
     assert!(metrics.contains("pattern_guard_config_reloads_total{result=\"error\"} 1"));
 }
+
+/// Upstream whose `/slow` answers only once `release` is notified (it reports each such
+/// request on `arrived`); every other path answers at once.
+async fn start_slow_upstream(
+    arrived: tokio::sync::mpsc::UnboundedSender<()>,
+    release: Arc<tokio::sync::Notify>,
+) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (s, _) = l.accept().await.unwrap();
+            let (arrived, release) = (arrived.clone(), release.clone());
+            tokio::spawn(async move {
+                let svc = service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let (arrived, release) = (arrived.clone(), release.clone());
+                    async move {
+                        if req.uri().path() == "/slow" {
+                            let _ = arrived.send(());
+                            release.notified().await;
+                            return Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                "slow done",
+                            ))));
+                        }
+                        Ok(Response::new(Full::new(Bytes::from("fast"))))
+                    }
+                });
+                let _ = http1::Builder::new()
+                    .serve_connection(TokioIo::new(s), svc)
+                    .await;
+            });
+        }
+    });
+    addr
+}
+
+/// The whole gateway (`run_until`): its address, the trigger that starts the graceful
+/// shutdown, and the task that ends when the shutdown is done.
+async fn run_gateway(
+    toml: &str,
+) -> (
+    SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), String>>,
+) {
+    let cfg = GatewayConfig::from_toml_str(toml).unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(pattern_guard_gateway::run_until(
+        cfg,
+        None,
+        l,
+        None,
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    (addr, stop, server)
+}
+
+/// Polls until connecting to `addr` is refused (the listener is closed).
+async fn wait_until_refused(addr: SocketAddr) {
+    let refused = async {
+        while tokio::net::TcpStream::connect(addr).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), refused)
+        .await
+        .expect("the listener closes when the shutdown starts");
+}
+
+#[tokio::test]
+async fn graceful_shutdown_lets_requests_in_progress_finish() {
+    let (arrived_tx, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let up = start_slow_upstream(arrived_tx, release.clone()).await;
+    let log = std::env::temp_dir().join(format!("pg-e2e-shutdown-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let (addr, stop, server) = run_gateway(&format!(
+        "upstream = \"http://{up}\"\nmode = \"detect\"\n[limits]\nshutdown_grace_secs = 10\n[log]\ndecisions = {:?}\ninclude_allowed = true\n",
+        log.display().to_string()
+    ))
+    .await;
+
+    // an idle keep-alive connection must not hold the shutdown up
+    let keep_alive = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+    let r = keep_alive
+        .get(format!("http://{addr}/fast").parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    r.into_body().collect().await.unwrap();
+
+    let slow = tokio::spawn(send(addr, "GET", "/slow", &[], ""));
+    arrived.recv().await.unwrap();
+    let started = std::time::Instant::now();
+    stop.send(()).unwrap();
+
+    // new connections are refused as soon as the shutdown starts
+    wait_until_refused(addr).await;
+    // the request in progress still gets its answer
+    release.notify_one();
+    let r = slow.await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.body, "slow done");
+    // and the gateway is done right after it, long before the 10 s grace period ends
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("shutdown within the grace period")
+        .unwrap()
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // with the decision log flushed
+    let lines = std::fs::read_to_string(&log).unwrap();
+    assert!(lines.lines().any(|l| l.contains("\"/slow\"")), "{lines}");
+    drop(keep_alive);
+    let _ = std::fs::remove_file(&log);
+}
+
+#[tokio::test]
+async fn graceful_shutdown_closes_what_is_left_after_the_grace_period() {
+    let (arrived_tx, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+    let up = start_slow_upstream(arrived_tx, Arc::new(tokio::sync::Notify::new())).await;
+    let (addr, stop, server) = run_gateway(&format!(
+        "upstream = \"http://{up}\"\nmode = \"detect\"\n[limits]\nshutdown_grace_secs = 1\n"
+    ))
+    .await;
+    // a request whose upstream never answers
+    let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+    let stuck = tokio::spawn(async move {
+        client
+            .get(format!("http://{addr}/slow").parse().unwrap())
+            .await
+    });
+    arrived.recv().await.unwrap();
+    let started = std::time::Instant::now();
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("the gateway stops after the grace period")
+        .unwrap()
+        .unwrap();
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(1) && took < Duration::from_secs(3),
+        "{took:?}"
+    );
+    assert!(
+        stuck.await.unwrap().is_err(),
+        "the connection was closed at the deadline"
+    );
+    wait_until_refused(addr).await;
+}

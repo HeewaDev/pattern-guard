@@ -34,6 +34,8 @@ max_buffered_body_bytes = 268435456    # request bodies buffered at once by all 
 decision_log_queue_bytes = 16777216    # decision-log lines waiting for a slow disk; more are dropped
 max_bans = 100000                      # gateway bans kept; the one closest to expiry goes first
 max_intel_entries_per_source = 500000  # per CrowdSec origin / Suricata / Wazuh
+shutdown_grace_secs = 7                # on SIGTERM: time for requests in progress to finish;
+                                       #   keep the supervisor's stop timeout a few seconds above it
 
 [waf]
 enabled = true

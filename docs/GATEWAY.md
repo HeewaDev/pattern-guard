@@ -500,6 +500,29 @@ pattern-guard-gateway: reload: listen, guard.max_actors can only change with a r
 Every other key applies on reload. The WAF signatures are part of the binary; a new version
 needs a restart.
 
+## Graceful shutdown
+
+On SIGTERM (`docker stop`, `systemctl stop`, Kubernetes) or SIGINT (Ctrl-C) the gateway:
+
+1. closes its listeners (traffic and admin), so new connections are refused at once and
+   your load balancer moves on to another instance;
+2. lets the requests in progress finish: each one gets its response, then its connection
+   is closed. Idle keep-alive connections are closed straight away;
+3. closes the connections still open after `limits.shutdown_grace_secs` (default 7,
+   0 = at once, at most 3600; it applies on reload);
+4. then, **after** the grace period, writes the decision-log lines still queued (until
+   the end of the grace period, at least 1 second) and exits.
+
+A stop therefore takes as long as the slowest request in progress, at most
+`shutdown_grace_secs` plus what comes after it (about a second). The supervisor must wait
+longer than that before it kills the process. The default of 7 s leaves 3 s inside
+Docker's default stop timeout of 10 s; compose here sets `stop_grace_period: 15s`
+([deploy/docker/compose.yml](../deploy/docker/compose.yml), or `docker stop -t 15`), and
+the systemd unit `TimeoutStopSec=20` (systemd's default is 90 s,
+[deploy/systemd/](../deploy/systemd/pattern-guard-gateway.service)). If your upstream has
+slow endpoints (reports, uploads, long polling), raise `shutdown_grace_secs` towards
+`upstream_timeout_secs` and the supervisor's timeout with it.
+
 ## Admin endpoints (`admin_listen`, keep private)
 
 | Path | |

@@ -22,12 +22,19 @@ go around the gateway.
 ```bash
 docker build -t pattern-guard .
 docker run -d --name pattern-guard -p 8080:8080 -p 127.0.0.1:9901:9901 \
+  --stop-timeout 15 \
   -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" \
   -v pattern-guard-logs:/var/log/pattern-guard \
   pattern-guard
 docker run --rm -v "$PWD/gateway.toml:/etc/pattern-guard/gateway.toml:ro" pattern-guard \
   --config /etc/pattern-guard/gateway.toml --check
 ```
+
+- `docker stop` sends SIGTERM. The gateway then refuses new connections, gives the
+  requests in progress `limits.shutdown_grace_secs` (default 7) to finish, and after that writes the
+  queued decision-log lines. Docker kills a container 10 s after SIGTERM by default, so
+  give it a few seconds more (`--stop-timeout 15`, or `stop_grace_period: 15s` in
+  compose). See [GATEWAY.md](GATEWAY.md#graceful-shutdown).
 
 - The image (~125 MB, Debian slim) runs as an unprivileged user (uid 10001). It contains
   `pattern-guard-gateway`, the `pattern-guard` CLI and the example configs in
@@ -128,6 +135,7 @@ Group=pattern-guard
 ExecStart=/usr/local/bin/pattern-guard-gateway --config /etc/pattern-guard/gateway.toml
 Restart=always
 RestartSec=1
+TimeoutStopSec=20                             # > limits.shutdown_grace_secs (default 7)
 # EnvironmentFile=/etc/pattern-guard/env      # CROWDSEC_BOUNCER_KEY=...
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -146,6 +154,11 @@ sudo chown pattern-guard: /var/log/pattern-guard
 sudo systemctl daemon-reload && sudo systemctl enable --now pattern-guard-gateway
 journalctl -u pattern-guard-gateway -f
 ```
+
+`systemctl stop` and `systemctl restart` send SIGTERM: the gateway drains (see
+[GATEWAY.md](GATEWAY.md#graceful-shutdown)) and exits within `limits.shutdown_grace_secs`
+plus about a second. `TimeoutStopSec` must stay above that, or systemd kills it before
+the decision log is written.
 
 To read Suricata or Wazuh alert files, add the service user to the group that owns them
 (e.g. `sudo usermod -aG wazuh pattern-guard`) and add their directories to

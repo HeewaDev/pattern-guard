@@ -149,6 +149,11 @@ pub struct LimitsConfig {
     /// Wazuh). Over the cap, that source's entry closest to expiry is dropped.
     #[serde(default = "d_max_intel_per_source")]
     pub max_intel_entries_per_source: usize,
+    /// On SIGTERM / SIGINT the gateway stops accepting connections and gives the
+    /// requests in progress this many seconds to finish; then it closes the rest, flushes
+    /// the decision log and exits. 0 = close them at once.
+    #[serde(default = "d_shutdown_grace")]
+    pub shutdown_grace_secs: u64,
 }
 
 impl Default for LimitsConfig {
@@ -167,6 +172,10 @@ impl GatewayConfig {
         }
     }
 }
+
+/// Largest `limits.shutdown_grace_secs`: an hour (no request needs longer, and a typo
+/// shouldn't make a stop hang for days).
+pub const MAX_SHUTDOWN_GRACE_SECS: u64 = 3_600;
 
 /// Smallest `limits.decision_log_queue_bytes`: room for the largest line (values and
 /// findings are truncated, see `proxy/decision_log.rs`).
@@ -792,6 +801,9 @@ fn d_max_bans() -> usize {
 fn d_max_intel_per_source() -> usize {
     500_000 // = intel::store::DEFAULT_MAX_PER_SOURCE
 }
+fn d_shutdown_grace() -> u64 {
+    7 // the decision-log flush comes after it: all within Docker's 10 s stop timeout
+}
 fn d_block_score() -> f64 {
     7.0
 }
@@ -885,6 +897,11 @@ impl GatewayConfig {
                 "limits.max_bans and limits.max_intel_entries_per_source must be at least 1".into(),
             );
         }
+        if self.limits.shutdown_grace_secs > MAX_SHUTDOWN_GRACE_SECS {
+            return Err(format!(
+                "limits.shutdown_grace_secs must be at most {MAX_SHUTDOWN_GRACE_SECS}"
+            ));
+        }
         if self.challenge.difficulty > 28 {
             return Err(
                 "challenge.difficulty above 28 bits would take minutes in a browser".into(),
@@ -964,5 +981,8 @@ mod tests {
         assert!(!bad(
             "body_min_bytes_per_sec = 0\nmax_buffered_body_bytes = 0"
         ));
+        assert_eq!(c.limits.shutdown_grace_secs, 7);
+        assert!(!bad("shutdown_grace_secs = 0"));
+        assert!(bad("shutdown_grace_secs = 3601"));
     }
 }

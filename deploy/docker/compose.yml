@@ -21,6 +21,9 @@ services:
     depends_on:
       - app
     restart: unless-stopped
+    # `docker stop` sends SIGTERM: requests in progress get limits.shutdown_grace_secs
+    # (default 7) to finish; the log is written after that. Docker kills after 10 s by default.
+    stop_grace_period: 15s
 
   app:
     image: traefik/whoami:v1.10       # echoes the request it receives (shows the x-pattern-guard-* headers)
