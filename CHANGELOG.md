@@ -298,6 +298,9 @@ Gateway issues found in the same review:
 - **Nightly fuzzing never ran**: the prebuilt cargo-fuzz in CI is a musl build, which
   builds for `x86_64-unknown-linux-musl` by default, a target nightly has no standard
   library for. `fuzz.yml` now passes `--target x86_64-unknown-linux-gnu`.
+- **The `config` fuzz target didn't build** after the gateway state split (it named the old
+  `RateLimiter`). It now fuzzes `Compiled::compile`, which also runs `validate()` as a
+  reload does, and the stable CI job type-checks `fuzz/` on every push.
 - **WAF**: every `Inspector::new()` leaked the five indicator patterns it builds from the
   shared command and MongoDB-operator lists (~1.3 KB, `Box::leak`). They are owned now.
   LeakSanitizer reported it on the first input of every WAF fuzz target. Detection is

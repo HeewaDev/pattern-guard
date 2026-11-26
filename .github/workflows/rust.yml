@@ -39,6 +39,10 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      # fuzz/ is its own workspace, so the steps above never compile it; a renamed gateway
+      # API would otherwise only break the nightly fuzz run
+      - name: type-check the fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
 
   deny:
     name: Licences, advisories, sources (cargo-deny)
