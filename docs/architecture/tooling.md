@@ -29,6 +29,7 @@ labelled.jsonl ──► train ──► model.toml ──► guard.toml: model 
 | `gen_traffic [--seed N] [--hours H] [--unseen]` | Writes labelled synthetic JSONL for `pattern-guard train` / `replay` | — |
 | `waf_eval --attack F … --benign F …` | WAF detection and false positives per file (one value per line) | external payload lists (PayloadsAllTheThings, SecLists, fuzzdb) and benign lists |
 | `crs_eval FILE [--pl N]` | WAF against the OWASP CRS regression tests (attack categories 930–944). `DUMP=1` prints every score; `SHOW_NEG=1` lists blocked negative tests | `crs_tests.jsonl` from `scripts/extract_crs_tests.py` |
+| `check_gates GATES SET=FILE…` | Compares metrics files with `tools/eval/gates.toml`; prints a Markdown table, exits 1 when a gate fails or a gated set is missing | `--metrics FILE` of `waf_eval`, `crs_eval`, `realworld_eval` |
 
 ```
 coreruleset checkout ──► python3 -I scripts/extract_crs_tests.py ──► crs_tests.jsonl ──► crs_eval
@@ -50,6 +51,17 @@ Development lines that also appear in a hold-out list are removed (PayloadsAllTh
 some SecLists / fuzzdb lists), so the hold-out stays a hold-out. `scripts/eval_waf.sh` runs all of
 it and prints one summary; run it from an older worktree with `DATA=…` to compare commits on
 the same data.
+
+**Gates.** `waf_eval`, `crs_eval` and `realworld_eval` take `--metrics FILE` and write their
+summary numbers as JSON (names in each binary's doc comment); their printed output is
+unchanged. `scripts/eval_gates.sh` runs all of them (`METRICS_DIR=…` keeps the files) and
+`check_gates` compares the numbers with `tools/eval/gates.toml`: the development lists per
+class and in total, benign false blocks per file, CRS per attack category and at PL1, and
+the adaptive engine's false positives and detection. Gates were set from main's
+measurements minus 0.5 points (or one value, for small sets); false blocks have no
+tolerance. Raise a gate in the commit that improves its number. The hold-out lists are
+measured and printed by the same script but have no `--metrics` and no gates, so a
+failing gate never invites tuning on them.
 
 **Data hygiene.** Hold-out lists are never used for tuning. A result measured on development
 data must say so.
@@ -81,11 +93,10 @@ data must say so.
 | `rust.yml` · `check` | every push and pull request to `main` | Rust **1.85** (the MSRV, also the Docker build image): `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, `cargo bench --workspace --no-run` |
 | `rust.yml` · `stable` | same | newest stable Rust: `cargo test --workspace`, `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` |
 | `rust.yml` · `deny` | same | `cargo-deny` with `deny.toml`: permissive licences only, every RustSec advisory fails, crates.io only |
+| `eval.yml` | every push to `main`, pull requests touching `crates/waf`, `crates/engine`, `tools/eval` or the data scripts, by hand | fetches the pinned data (`tools/eval/data` cached, keyed on `datasets.sha256` and the fetch script), runs `scripts/eval_gates.sh`: fails below a gate; the gate table, every evaluation's output and the hold-out numbers (not gated) go to the job summary |
 | `fuzz.yml` | nightly (300 s per target), pull requests touching parsers (60 s), by hand | `cargo fuzz` on nightly for each target in `fuzz/`, starting from the cached corpus (saved again except on pull requests); a crashing input is uploaded as an artefact |
 | `fuzz-long.yml` | weekly (Friday 19:00 UTC), by hand | the 24 h run: the five targets in parallel for 4.8 h each (job timeout 330 min, under GitHub's 6 h cap), then `cargo fuzz cmin` and the corpus is cached for the next run |
 
-Not in CI yet: evaluation gates (`waf_eval`, `crs_eval`, `realworld_eval` must not regress).
-They need the evaluation datasets to be fetchable reproducibly first; see [target.md](target.md).
 
 ## Fuzzing (`fuzz/`)
 

@@ -546,6 +546,7 @@ version = "0.3.0"
 dependencies = [
  "pattern-guard",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

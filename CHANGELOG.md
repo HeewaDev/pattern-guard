@@ -57,6 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model names exactly this version's features; a reload refuses to switch to a model that
   doesn't, but keeps accepting one with the running model's layout (an older model the
   guard started with), with a warning on the first such reload.
+- **Evaluation gates in CI** (`.github/workflows/eval.yml`): on pushes to `main` and pull
+  requests touching the WAF, the engine or `tools/eval`, the pinned evaluation data is
+  fetched (cached) and `scripts/eval_gates.sh` checks `waf_eval` (development lists per
+  class, benign false blocks per file), `crs_eval` (per attack category, PL1) and
+  `realworld_eval` (legitimate requests blocked and stopped, detection) against
+  `tools/eval/gates.toml`. The hold-out lists are measured in the job summary, never gated.
+  The three binaries gain `--metrics FILE` (JSON; printed output unchanged); new
+  `check_gates` binary. `waf_eval` now rejects unknown options instead of reading them as
+  benign files.
 - **Weekly 24 h fuzz run** (`.github/workflows/fuzz-long.yml`): the five fuzz targets in
   parallel for 4.8 h each, then corpus minimisation. The nightly and weekly runs keep the
   corpus in the Actions cache, so coverage builds up from run to run.

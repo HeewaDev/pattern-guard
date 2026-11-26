@@ -1,0 +1,50 @@
+name: Evaluation
+
+# Detection and false-positive gates: the WAF on the development payload lists and the
+# benign corpus, the OWASP CRS regression tests, and the behavioural engine on simulated
+# traffic must not fall below tools/eval/gates.toml. The hold-out lists are measured and
+# shown in the job summary but never gated.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "crates/waf/**"
+      - "crates/engine/**"
+      - "tools/eval/**"
+      - "scripts/fetch_eval_data.sh"
+      - "scripts/extract_crs_tests.py"
+      - "scripts/eval_gates.sh"
+      - ".github/workflows/eval.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    name: Evaluation gates (development sets, CRS, benign, behaviour)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML (CRS test extraction)
+        run: python -m pip install pyyaml
+      # Downloads are pinned and checksummed, so the cache only changes with the pins.
+      - name: Cache the evaluation data
+        uses: actions/cache@v4
+        with:
+          path: tools/eval/data
+          key: eval-data-${{ hashFiles('tools/eval/datasets.sha256', 'scripts/fetch_eval_data.sh') }}
+      - name: Fetch, verify and build the evaluation sets
+        run: scripts/fetch_eval_data.sh
+      - name: Build the evaluation tools
+        run: cargo build --release -p pattern-guard-eval --bins
+      - name: Evaluate and check the gates
+        run: scripts/eval_gates.sh

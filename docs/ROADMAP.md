@@ -57,7 +57,10 @@ Effort: S ≈ days, M ≈ 1–2 weeks, L ≈ 3–5 weeks, for one experienced de
 - [ ] Shadow deployment on at least one real site for 2+ weeks (`mode = "detect"`); weekly false-positive review.
 - [ ] Labelled real dataset: CSIC-2010-style HTTP dataset for the WAF; public nginx logs (e.g. Zaker 2019, check licence) for behaviour.
 - [ ] `pattern-guard replay` report includes per-layer breakdown and exportable false-positive list.
-- [ ] CI gates: `realworld_eval` and `waf_eval` hold-out numbers must not regress beyond tolerance.
+- [x] CI gates (`eval.yml`, `tools/eval/gates.toml`): `waf_eval` development sets and benign corpus,
+      `crs_eval` (per category, PL1) and `realworld_eval` must not regress beyond tolerance. The
+      hold-out numbers are reported there but deliberately not gated, so a red gate never invites
+      tuning on hold-out data.
 - [ ] `cargo-fuzz` targets: log parsing, WAF decoding, gateway request path.
 
 **Done when:** real-traffic KPIs above are measured and published in FEATURES.md §3, CI

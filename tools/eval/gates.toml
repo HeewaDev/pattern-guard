@@ -1,0 +1,55 @@
+# Evaluation gates, checked in CI by .github/workflows/eval.yml (scripts/eval_gates.sh →
+# check_gates). Metric names are documented in each binary (`--metrics FILE`).
+#
+# Set from main at 723aaac (2026-11-26) on the data of scripts/fetch_eval_data.sh:
+# - detection: the measured value minus a tolerance of 0.5 percentage points, or of one
+#   value where a set is so small that one value is more (rounded down to 0.1);
+# - benign false blocks: the measured count, no tolerance (0 stays 0);
+# - CRS negatives, which are not guaranteed-benign requests: measured + 0.5 points.
+#
+# The hold-out lists (SecLists, fuzzdb) are measured in the same job but never gated, so
+# a failing gate never invites tuning on them. When a change improves a number, raise its
+# gate in the same commit; when a gate must go down, say why in the commit message.
+
+# waf_eval: development attacks (PayloadsAllTheThings) and the benign corpus
+[waf_dev]
+attacks_blocked_pct = { min = 81.9 }      # 82.42 % of 4 437
+cmdi_blocked_pct = { min = 54.1 }         # 54.63 % of 432
+lfi_blocked_pct = { min = 65.5 }          # 66.05 % of 751
+nosql_blocked_pct = { min = 53.8 }        # 57.69 % of 26
+sqli_blocked_pct = { min = 94.4 }         # 94.96 % of 1 132
+ssti_blocked_pct = { min = 92.5 }         # 93.46 % of 107
+traversal_blocked_pct = { min = 99.4 }    # 99.93 % of 1 381
+xss_blocked_pct = { min = 57.8 }          # 58.39 % of 608
+benign_false_blocks = { max = 1 }         # of 17 719
+doc-lines_false_blocks = { max = 1 }
+names_false_blocks = { max = 0 }
+words_false_blocks = { max = 0 }
+user-agents_false_blocks = { max = 0 }
+
+# crs_eval: OWASP CRS regression tests, rules of every paranoia level (development data)
+[crs]
+attacks_blocked_pct = { min = 53.8 }      # 54.32 % of 3 730 (categories 930–944)
+negatives_blocked_pct = { max = 10.2 }    # 9.67 % of 765
+cat930_blocked_pct = { min = 59.7 }       # 61.19 % of 67, local file inclusion
+cat931_blocked_pct = { min = 24.3 }       # 27.03 % of 37, remote file inclusion
+cat932_blocked_pct = { min = 34.4 }       # 34.93 % of 793, remote code execution
+cat933_blocked_pct = { min = 29.7 }       # 30.28 % of 327, PHP injection
+cat934_blocked_pct = { min = 69.0 }       # 69.58 % of 240, generic (SSRF / SSTI / Node)
+cat941_blocked_pct = { min = 60.2 }       # 60.77 % of 209, XSS
+cat942_blocked_pct = { min = 45.1 }       # 45.69 % of 871, SQL injection
+cat943_blocked_pct = { min = 93.0 }       # 95.35 % of 43, session fixation
+cat944_blocked_pct = { min = 75.2 }       # 75.77 % of 1 143, Java
+
+# crs_eval --pl 1: paranoia level 1 rules only (the ROADMAP KPI)
+[crs_pl1]
+attacks_blocked_pct = { min = 64.0 }      # 64.51 % of 2 082
+negatives_blocked_pct = { max = 13.8 }    # 13.25 % of 453
+
+# realworld_eval: the adaptive engine with the built-in model on one simulated hour
+[realworld]
+legit_blocked = { max = 24 }                          # of 73 311 legitimate requests
+legit_stopped_pct = { max = 0.49 }                    # 0.435 % (blocked, challenged or delayed)
+detection_pct = { min = 98.1 }                        # 98.64 % of attack requests
+avg_per_attack_type_pct = { min = 92.9 }              # 93.50 %
+attacks_blocked_or_challenged_pct = { min = 91.9 }    # 92.44 %

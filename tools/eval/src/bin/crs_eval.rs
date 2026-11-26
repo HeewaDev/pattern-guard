@@ -3,7 +3,12 @@
 //! The CRS tests (Apache-2.0, github.com/coreruleset/coreruleset, tests/regression/tests)
 //! are not vendored. Extract them to JSONL with `scripts/extract_crs_tests.py`, then:
 //!
-//! `cargo run --release -p pattern-guard-eval --bin crs_eval -- crs_tests.jsonl [--pl 1]`
+//! `cargo run --release -p pattern-guard-eval --bin crs_eval -- crs_tests.jsonl [--pl 1] [--metrics FILE]`
+//!
+//! `--metrics FILE` also writes the numbers as JSON for `check_gates`: for the attack
+//! categories 930–944 `attacks_blocked_pct` and `negatives_blocked_pct`, per category
+//! `cat<N>_blocked_pct` and `cat<N>_negatives_blocked_pct`, and per paranoia level
+//! `pl<N>_blocked_pct`.
 //!
 //! Each CRS test asserts that *one CRS rule* does (positive) or does not (negative) fire,
 //! run at paranoia level 4. So:
@@ -14,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use pattern_guard::waf::{HttpRequest, Inspector};
+use pattern_guard_eval::gates::{Metrics, pct};
 use serde_json::Value;
 
 const BLOCK: f64 = 7.0;
@@ -50,13 +56,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = args
         .first()
-        .expect("usage: crs_eval crs_tests.jsonl [--pl N]");
-    let max_pl: u64 = args
-        .iter()
-        .position(|a| a == "--pl")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4);
+        .expect("usage: crs_eval crs_tests.jsonl [--pl N] [--metrics FILE]");
+    let flag = |f: &str| {
+        args.iter()
+            .position(|a| a == f)
+            .and_then(|i| args.get(i + 1))
+    };
+    let max_pl: u64 = flag("--pl").and_then(|v| v.parse().ok()).unwrap_or(4);
+    let metrics_path = flag("--metrics");
     // SHOW=<category> prints missed attacks; SHOW_NEG=<category> prints blocked negatives;
     let show_misses = std::env::var("SHOW").ok();
     let show_blocked_negatives = std::env::var("SHOW_NEG").ok();
@@ -147,13 +154,7 @@ fn main() {
         }
     }
 
-    let pct = |a: usize, b: usize| {
-        if b == 0 {
-            0.0
-        } else {
-            100.0 * a as f64 / b as f64
-        }
-    };
+    let mut metrics = Metrics::new("crs_eval");
     println!(
         "CRS regression tests, rules up to paranoia level {max_pl} (block = score ≥ {BLOCK})\n"
     );
@@ -178,6 +179,11 @@ fn main() {
             tpb += r.pos_blocked;
             tn += r.neg;
             tnb += r.neg_blocked;
+            metrics.set(format!("cat{c}_blocked_pct"), pct(r.pos_blocked, r.pos));
+            metrics.set(
+                format!("cat{c}_negatives_blocked_pct"),
+                pct(r.neg_blocked, r.neg),
+            );
         }
     }
     println!("{}", "-".repeat(88));
@@ -192,6 +198,7 @@ fn main() {
     );
     println!("\nBy CRS paranoia level of the tested rule (attack categories and protocol rules):");
     for (pl, r) in &by_pl {
+        metrics.set(format!("pl{pl}_blocked_pct"), pct(r.pos_blocked, r.pos));
         println!(
             "  PL{pl}: {:>5} attacks, {:>5.1}% blocked   |   {:>4} negatives, {:>5.1}% blocked*",
             r.pos,
@@ -203,4 +210,10 @@ fn main() {
     println!(
         "\n* CRS negatives only assert that one specific rule stays silent; they are not guaranteed-benign requests."
     );
+    if let Some(p) = metrics_path {
+        metrics.set("attacks_blocked_pct", pct(tpb, tp));
+        metrics.set("negatives_blocked_pct", pct(tnb, tn));
+        metrics.set("attacks", tp as f64);
+        metrics.write(p);
+    }
 }

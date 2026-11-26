@@ -2,12 +2,19 @@
 //! staggered attacks — including attack variants and a legitimate traffic spike that
 //! the built-in model never saw during training (marked `[unseen]`).
 //!
-//! `cargo run --release -p pattern-guard-eval --bin realworld_eval [-- --model path/to/model.toml] [--seed N]`
+//! `cargo run --release -p pattern-guard-eval --bin realworld_eval [-- --model path/to/model.toml] [--seed N] [--metrics FILE]`
+//!
+//! `--metrics FILE` also writes the adaptive engine's numbers as JSON for `check_gates`:
+//! legitimate requests stopped / blocked / challenged (`legit_*_pct`, and `legit_blocked`
+//! as a count), attack requests stopped (`detection_pct`), the average per attack type
+//! (`avg_per_attack_type_pct`) and attack requests blocked or challenged
+//! (`attacks_blocked_or_challenged_pct`).
 //!
 //! Runs the same traffic through:
 //!  1. the 0.2-style rules (thresholds from the 0.2 guard.toml.example), and
 //!  2. the adaptive engine with the built-in (or given) model.
 
+use pattern_guard_eval::gates::{Metrics, pct};
 use pattern_guard_eval::sim;
 
 use std::collections::{BTreeMap, HashSet};
@@ -39,7 +46,7 @@ struct Row {
     actors_stopped: HashSet<String>,
 }
 
-fn run(name: &str, guard: &Guard, recs: &[sim::Rec]) {
+fn run(name: &str, guard: &Guard, recs: &[sim::Rec]) -> Metrics {
     let mut rows: BTreeMap<&str, Row> = BTreeMap::new();
     let start = Instant::now();
     for r in recs {
@@ -100,15 +107,26 @@ fn run(name: &str, guard: &Guard, recs: &[sim::Rec]) {
             lc += r.challenged;
         }
     }
+    let avg_per_attack = 100.0 * per_attack.iter().sum::<f64>() / per_attack.len() as f64;
     println!(
         "\nFalse positives: {:.2}% of legitimate requests stopped ({:.2}% blocked, {:.2}% challenged)  |  detection: {:.1}% of attack requests (avg per attack type {:.1}%; {:.1}% blocked or challenged)",
         100.0 * ls as f64 / lt as f64,
         100.0 * lb as f64 / lt as f64,
         100.0 * lc as f64 / lt as f64,
         100.0 * ast as f64 / at as f64,
-        100.0 * per_attack.iter().sum::<f64>() / per_attack.len() as f64,
+        avg_per_attack,
         100.0 * ahard as f64 / at as f64
     );
+    let mut m = Metrics::new("realworld_eval");
+    m.set("legit_stopped_pct", pct(ls, lt));
+    m.set("legit_blocked_pct", pct(lb, lt));
+    m.set("legit_challenged_pct", pct(lc, lt));
+    m.set("legit_blocked", lb as f64);
+    m.set("legit", lt as f64);
+    m.set("detection_pct", pct(ast, at));
+    m.set("avg_per_attack_type_pct", avg_per_attack);
+    m.set("attacks_blocked_or_challenged_pct", pct(ahard, at));
+    m
 }
 
 fn main() {
@@ -138,9 +156,12 @@ fn main() {
         adaptive = adaptive.with_model(Model::load(p).unwrap());
     }
     let desc = adaptive.model().description.clone();
-    run(
+    let metrics = run(
         &format!("0.3 adaptive engine (model: {desc})"),
         &adaptive,
         &recs,
     );
+    if let Some(p) = flag("--metrics") {
+        metrics.write(&p);
+    }
 }

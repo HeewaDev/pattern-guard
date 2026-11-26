@@ -144,6 +144,7 @@ re-verified line by line.
 | 3.3 | Real production traffic (shadow mode) | ⬜ needs a site; run gateway in `detect` mode or `pattern-guard replay` on access logs |
 | 3.4 | Performance under load | 🧪 ~28 000 req/s, p99 ≈ 3.4 ms through the gateway (4 vCPU shared with client and upstream, `crates/gateway/examples/loadtest.rs`; measured before the 2026-11 fixes) · WAF ~15.5 µs per typical request, worst hostile request ~35–45 ms (was ~7 s) (`crates/waf/benches/inspect_bench.rs`) · ⬜ shard the engine lock |
 | 3.5 | End-to-end gateway tests | ✅ 19 tests over real TCP: encoded paths vs policies, WAF, multipart uploads, business operations + logins, deny list via trusted proxy, PoW round trip + IP binding, CrowdSec mock, Suricata feed, detect mode + log, body limit, admin endpoints, custom rules, rate limits, bans + traps + unban, protocol statuses, security headers, data-leak blocking (incl. streaming past the inspection window), country policy |
+| 3.6 | Evaluation gates in CI (`.github/workflows/eval.yml`, `tools/eval/gates.toml`) | ✅ on every push to `main` and on pull requests touching the WAF, the engine or `tools/eval`: development payload lists per class, benign corpus (false blocks stay at 1), CRS per category and at PL1, `realworld_eval` (legitimate blocked, stopped, detection). The hold-out lists are measured in the job summary, never gated |
 
 ## 4. Enterprise protection target: what "protect them at best" requires
 
@@ -153,10 +154,10 @@ to [ROADMAP.md](ROADMAP.md).
 
 | # | Threat | Pattern-Guard today | Target | Next step |
 |---|---|---|---|---|
-| 4.1 | SQL injection | WAF indicators + SQL tokenizer (CRS 942: 42.8 %, PL1 68.8 %) | OWASP CRS-grade coverage | Keyword-pair scores (2b.6), libinjection if the dependency is approved (2b.1), CRS 942 regression tests in CI |
+| 4.1 | SQL injection | WAF indicators + SQL tokenizer (CRS 942: 42.8 %, PL1 68.8 %) | OWASP CRS-grade coverage | Keyword-pair scores (2b.6), libinjection if the dependency is approved (2b.1); CRS 942 is gated in CI (3.6) |
 | 4.2 | XSS | WAF indicators + evasion handling (CRS 941: 60.8 %) | Context-aware detection and evasion testing | HTML/attribute/JS context parsing, evasion corpus |
-| 4.3 | LFI / RFI | WAF indicators, CRS file lists, URL analysis (CRS 930: 47.8 %, 931: 18.9 %) | Extensive regression corpus | CRS 930/931 + SecLists/fuzzdb hold-out as a CI gate |
-| 4.4 | Command injection | WAF indicators, shell-command analyser (CRS 932: 34.8 %, commix hold-out 100 %) | Multiple encoding and evasion tests | Evasion re-scan loop (2b.2), commix hold-out as a CI gate |
+| 4.3 | LFI / RFI | WAF indicators, CRS file lists, URL analysis (CRS 930: 47.8 %, 931: 18.9 %) | Extensive regression corpus | CRS 930/931 are gated in CI (3.6); the SecLists/fuzzdb hold-out is measured there, never gated |
+| 4.4 | Command injection | WAF indicators, shell-command analyser (CRS 932: 34.8 %, commix hold-out 100 %) | Multiple encoding and evasion tests | Evasion re-scan loop (2b.2); CRS 932 is gated in CI (3.6), the commix hold-out only measured |
 | 4.5 | Credential stuffing | Behavioural ML + `[[logins]]` (failures per account across IPs, failing accounts per IP) | Account-level correlation | Breached-password check (2.5); per-account signals into the ML |
 | 4.6 | Distributed bot attacks | Actor / subnet / client features | Cross-instance detection | Shared state between gateway instances (e.g. Redis or gossip), push decisions to CrowdSec (2c.11) |
 | 4.7 | API abuse | Rate limits + ML + `[[operations]]` (per-account budgets, allowed sources, replay protection) | Endpoint and business-operation awareness | OpenAPI enforcement (1.9), learned per-operation baselines, spend / volume alerts |
